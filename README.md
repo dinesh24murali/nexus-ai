@@ -42,6 +42,10 @@ Work through `docs/01_prompts/` in order. For each file:
 | `04_api_spec.prompt.md` | OpenAPI 3.1 Spec |
 | `05_implementation_plan.prompt.md` | Phased Implementation Plan |
 | `06_dev_setup.prompt.md` | Developer Setup Guide |
+| `07_design_system.prompt.md` | Design System |
+| `08_ai_system_design.prompt.md` | AI System Design (graph, tools, RAG, memory, streaming) — AI projects |
+| `09_eval_plan.prompt.md` | LLM Eval Plan → seeds `evals/` — AI projects |
+| `10_llm_threat_model.prompt.md` | LLM Threat Model (OWASP LLM Top 10) — AI projects |
 
 After generating docs:
 - Review and adjust outputs
@@ -59,6 +63,7 @@ For every feature or bugfix:
 4. Tell AI to implement
 5. AI updates CHANGELOG.md and memory files
 6. make verify   (for frontend changes)
+   make eval     (for prompt / model / graph / retrieval changes)
 7. AI moves task to tasks/done/
 ```
 
@@ -80,6 +85,7 @@ For every feature or bugfix:
 ├── tests/
 │   ├── e2e/                # Playwright end-to-end tests
 │   └── contract/           # OpenAPI contract tests
+├── evals/                  # LLM eval datasets, thresholds, regression gate
 ├── verify/                 # Verification scripts and playbooks
 ├── backend/                # Backend source code
 ├── frontend/               # Frontend source code

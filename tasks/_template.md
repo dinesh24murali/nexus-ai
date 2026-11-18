@@ -27,6 +27,17 @@
 - **Memory files:** <!-- List relevant memory files to read first, or "none" -->
 - **Docs:** <!-- Link to relevant PRD section, ADR, or architecture doc, or "none" -->
 
+## AI Impact
+
+<!-- Fill in if the task touches prompts, models, tools, graph, retrieval or memory. Otherwise write "none". -->
+
+- **Prompts touched:** <!-- names + versions -->
+- **Models / params changed:** <!-- e.g. temperature, max tokens -->
+- **Graph / tools / retrieval changes:**
+- **Eval datasets affected / added:** <!-- evals/datasets/... -->
+- **Threat model entries:** <!-- LLM-Txx -->
+- **Expected cost / latency delta:**
+
 ## Files Expected to Change
 
 <!-- List the files you expect to create or modify. AI: fill this in the scratch file. -->

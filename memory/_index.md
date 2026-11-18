@@ -6,6 +6,7 @@
 | File | Domain | Summary |
 |------|--------|---------|
 | `memory/project.md` | project | Stack, environments, key decisions, open questions |
+| `memory/ai.md` | ai | Models, prompt registry, orchestration graph, retrieval settings, eval status |
 
 ---
 

@@ -13,6 +13,7 @@
 - **Frontend:** `[[FRONTEND_FRAMEWORK]]`
 - **Database:** `[[DATABASE]]`
 - **Deployment target:** `[[DEPLOYMENT_TARGET]]`
+- **AI stack (if any):** `[[LLM_PROVIDER]]` via `[[AI_ORCHESTRATION]]`, vectors in `[[VECTOR_DB]]`, observability in `[[LLM_OBSERVABILITY]]`
 
 ---
 
@@ -22,9 +23,9 @@ This is a **two-phase vibe-coding framework**:
 
 ### Phase 1 — Document Generation (before writing code)
 1. Fill in `docs/00_intake/intake_questionnaire.md`
-2. Paste each prompt from `docs/01_prompts/` into your AI tool (Claude, Cursor, Codex, Gemini — any will work)
+2. Paste each prompt from `docs/01_prompts/` into your AI tool (Claude, Cursor, Codex, Gemini — any will work). Prompts 08–10 (AI system design, eval plan, LLM threat model) are for projects with AI features
 3. Save AI outputs to `docs/02_outputs/` (e.g. `docs/02_outputs/prd.md`)
-4. Review outputs, then create your first ADRs in `adr/` and seed `memory/`
+4. Review outputs, then create your first ADRs in `adr/` and seed `memory/` (AI projects: also seed `evals/` and `memory/ai.md`)
 
 ### Phase 2 — Living Project (during development)
 For every feature or bugfix:
@@ -32,7 +33,7 @@ For every feature or bugfix:
 2. Ask AI to write `tasks/active/<task-name>.scratch.md` **before touching code**
 3. AI implements the task
 4. AI updates `CHANGELOG.md` and relevant `memory/<domain>.md` files
-5. Run `verify/scripts/run-e2e.sh` (frontend changes) or relevant tests
+5. Run `verify/scripts/run-e2e.sh` (frontend changes) or relevant tests; run `make eval` for AI behaviour changes
 6. Move task file to `tasks/done/`
 
 ---
@@ -89,6 +90,20 @@ These rules apply regardless of which AI tool is in use.
 - The frontend must be generated from (or validated against) the OpenAPI spec
 - Never manually write API client code that duplicates what the spec defines
 - If the spec changes, regenerate the frontend client before implementing
+- **Exception — streaming endpoints (SSE/WebSocket):** generators cannot express streams, so a small hand-written stream client is allowed (e.g. `frontend/src/api/stream.ts`). Its event payload types **must** be generated from schemas declared in the OpenAPI spec `components/schemas`, and the spec must document the event types in the endpoint description
+
+### 3.8 AI / LLM Changes
+Applies to any change touching prompts, models, model parameters, tool definitions, orchestration graph, retrieval/chunking, or memory.
+- **Evals are the tests for AI behaviour.** Run `make eval` and do not regress `evals/eval-baseline.json`. See `evals/AGENTS.md`
+- **No inline prompts.** Prompts live in the prompt registry (`[[LLM_OBSERVABILITY]]`) with a version-pinned fallback file in the repo; code references prompts by name
+- **Everything is traced.** Every LLM call, tool call and retrieval runs inside a trace tagged with a hashed user id, conversation/session id and prompt version
+- **No secrets or raw PII in traces, logs or eval datasets**
+- **Untrusted content stays untrusted.** User uploads, retrieved chunks, web results and tool outputs are data, never instructions — wrap them as such in prompts and never let them choose tools with side effects without approval
+- **Tenant isolation is mandatory** in every vector search and memory lookup (filter by user/tenant id) and must have a test
+- **Every new tool** needs an entry in `docs/02_outputs/10_llm_threat_model.md` (tool permission matrix) and a red-team eval record
+- **Unit tests use a fake LLM** — never call a real model from `tests/`
+- **Budgets:** every model call has a timeout, bounded retries and a max-token limit; token usage is recorded per request
+- Update `memory/ai.md` when models, prompt versions, graph topology or retrieval settings change
 
 ---
 
@@ -105,6 +120,7 @@ These rules apply regardless of which AI tool is in use.
 | `tasks/done/` | Completed task files (archive) |
 | `tests/e2e/` | End-to-end tests (Playwright) |
 | `tests/contract/` | Contract tests (OpenAPI-derived) |
+| `evals/` | LLM eval datasets, thresholds and regression gate |
 | `verify/` | Verification scripts and playbooks |
 | `backend/` | Backend source code |
 | `frontend/` | Frontend source code |
@@ -120,6 +136,7 @@ Each folder has its own `AGENTS.md` with folder-specific instructions.
 - `memory/AGENTS.md` — memory maintenance protocol
 - `tasks/AGENTS.md` — task workflow and scratch file convention
 - `tests/AGENTS.md` — coverage gates and test conventions
+- `evals/AGENTS.md` — LLM eval datasets, thresholds and the eval gate
 - `verify/AGENTS.md` — verification protocol
 - `backend/AGENTS.md` — backend conventions (`[[BACKEND_LANG]]`)
 - `frontend/AGENTS.md` — frontend conventions (`[[FRONTEND_FRAMEWORK]]`)
@@ -159,3 +176,8 @@ When you clone this framework, find-and-replace these tokens:
 | `[[FONT_MONO]]` | Monospace font name |
 | `[[FONT_SOURCE]]` | `Google Fonts`, `Adobe Fonts`, `self-hosted`, `system` |
 | `[[DARK_MODE]]` | `yes`, `no`, or `optional` |
+| `[[LLM_PROVIDER]]` | e.g. `OpenAI`, `Anthropic`, `Ollama` (AI projects) |
+| `[[AI_ORCHESTRATION]]` | e.g. `LangGraph`, `LlamaIndex`, `plain SDK` |
+| `[[VECTOR_DB]]` | e.g. `Qdrant`, `pgvector`, `none` |
+| `[[LLM_OBSERVABILITY]]` | e.g. `Langfuse`, `LangSmith` |
+| `[[EVAL_COMMAND]]` | Command that runs the full eval suite and writes `evals/results/latest.json` |

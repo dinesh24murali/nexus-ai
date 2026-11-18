@@ -16,7 +16,7 @@ docs/
 ## Order of Operations
 
 1. **Fill in `00_intake/intake_questionnaire.md`** — this is the source of truth for all `[[PLACEHOLDER]]` tokens
-2. **Work through `01_prompts/` in order** (01 → 06):
+2. **Work through `01_prompts/` in order** (01 → 07, then 08 → 10 for projects with AI features):
    - Fill placeholders from the intake answers
    - Paste the prompt into your AI tool
    - Save the output to `02_outputs/` with a matching filename (e.g. `02_outputs/01_prd.md`)
@@ -28,4 +28,6 @@ docs/
 - Do **not** modify files in `01_prompts/` — these are prompt templates
 - Place all generated documents in `02_outputs/`
 - The OpenAPI spec (`04_api_spec`) in `02_outputs/` is the contract for contract tests in `tests/contract/`
+- The eval plan (`09_eval_plan`) in `02_outputs/` is the source for `evals/eval-baseline.json` and `evals/datasets/`
+- The LLM threat model (`10_llm_threat_model`) threat IDs (`LLM-Txx`) must be referenced by red-team eval cases
 - If a document is revised, save the new version to `02_outputs/` (overwrite is fine; git history tracks changes)

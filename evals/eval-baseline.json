@@ -1,0 +1,5 @@
+{
+  "_comment": "LLM eval thresholds. The eval suite writes evals/results/latest.json; `make eval` fails if any metric falls below its threshold (or above, for direction=lower). Seed from docs/02_outputs/09_eval_plan.md. Changing a threshold requires a note in the task file or an ADR.",
+  "tolerance": 0.02,
+  "metrics": {}
+}

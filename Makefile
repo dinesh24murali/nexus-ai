@@ -1,4 +1,8 @@
-.PHONY: scaffold verify adr task check-env init help
+# Eval suite commands — set these once the eval suite exists (see evals/AGENTS.md)
+EVAL_COMMAND ?=
+EVAL_SMOKE_COMMAND ?=
+
+.PHONY: scaffold verify adr task check-env init help up down eval eval-smoke
 
 ## scaffold: Create the initial project structure (run once after cloning)
 scaffold:
@@ -43,6 +47,28 @@ init:
 	@git ls-files | xargs grep -rn '\[\[' --include="*.md" --include="*.yml" --include="*.yaml" --include="*.sh" --include="*.ts" --include="*.json" 2>/dev/null | grep -v Binary || echo "✓ No unreplaced placeholders found"
 	@echo ""
 	@echo "Replace each token, then re-run 'make init' to verify."
+
+## up: Start the local stack (docker compose)
+up:
+	@docker compose up -d --build
+
+## down: Stop the local stack
+down:
+	@docker compose down
+
+## eval: Run the full LLM eval suite and gate on evals/eval-baseline.json
+eval:
+	@if [ -z "$(EVAL_COMMAND)" ]; then echo "Set EVAL_COMMAND (command that writes evals/results/latest.json)"; exit 1; fi
+	@mkdir -p evals/results
+	@$(EVAL_COMMAND)
+	@python3 evals/check_baseline.py
+
+## eval-smoke: Run the small eval subset (CI) and gate on smoke thresholds
+eval-smoke:
+	@if [ -z "$(EVAL_SMOKE_COMMAND)" ]; then echo "Set EVAL_SMOKE_COMMAND (command that writes evals/results/latest.json)"; exit 1; fi
+	@mkdir -p evals/results
+	@$(EVAL_SMOKE_COMMAND)
+	@python3 evals/check_baseline.py --smoke
 
 ## help: Show this help
 help:

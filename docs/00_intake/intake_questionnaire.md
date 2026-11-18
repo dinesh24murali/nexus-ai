@@ -165,6 +165,59 @@
 
 ---
 
+## 11. AI / LLM (skip if the product has no AI features)
+
+**11.1 LLM provider:**
+`[[LLM_PROVIDER]]`  (e.g. OpenAI, Anthropic, Azure OpenAI, Ollama, multi-provider)
+
+**11.2 Models and their roles:**
+(e.g. "gpt-4.1 for chat, gpt-4.1-mini for titles/memory extraction, text-embedding-3-small for embeddings")
+
+
+**11.3 Orchestration framework:**
+`[[AI_ORCHESTRATION]]`  (e.g. LangGraph, LangChain, LlamaIndex, plain SDK)
+
+**11.4 AI features in v1 (tick all that apply):**
+- [ ] Conversational chat (streaming, threads)
+- [ ] Retrieval-augmented generation (RAG) over user/company documents
+- [ ] Tool use / agents (web search, code exec, internal APIs)
+- [ ] Human-in-the-loop approval of agent actions
+- [ ] Long-term memory across conversations
+- [ ] Structured extraction / classification
+- [ ] Other:
+
+**11.5 Knowledge sources for RAG:**
+(e.g. user-uploaded PDFs/DOCX up to 20 MB, a docs site, a database; expected corpus size)
+
+
+**11.6 Vector database:**
+`[[VECTOR_DB]]`  (e.g. Qdrant, pgvector, Pinecone, Weaviate, none)
+
+**11.7 Latency budget:**
+(e.g. time-to-first-token < 1.5 s p95, full answer < 15 s p95)
+
+
+**11.8 Cost budget:**
+(e.g. < $0.01 per message on average, per-user daily token cap of 200k)
+
+
+**11.9 Quality targets / eval expectations:**
+(e.g. RAG faithfulness ≥ 0.85, tool-selection accuracy ≥ 0.9, "no regression vs. previous release")
+
+
+**11.10 Safety & guardrails:**
+(e.g. input moderation, prompt-injection defences, PII redaction, topics to refuse, age restrictions)
+
+
+**11.11 LLM observability tool:**
+`[[LLM_OBSERVABILITY]]`  (e.g. Langfuse self-hosted, Langfuse Cloud, LangSmith, OpenTelemetry only)
+
+**11.12 Data retention for prompts/completions/traces:**
+(e.g. traces kept 30 days, user can delete conversations and memories, no training on user data)
+
+
+---
+
 ## 10. Open Questions
 
 List any unknowns or decisions not yet made:
