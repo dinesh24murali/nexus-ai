@@ -1,12 +1,12 @@
 # Eval suite commands — set these once the eval suite exists (see evals/AGENTS.md)
-EVAL_COMMAND ?=
-EVAL_SMOKE_COMMAND ?=
+EVAL_COMMAND ?= cd backend && uv run python -m evals.run --suite full
+EVAL_SMOKE_COMMAND ?= cd backend && uv run python -m evals.run --suite smoke
 
 .PHONY: scaffold verify adr task check-env init help up down eval eval-smoke
 
 ## scaffold: Create the initial project structure (run once after cloning)
 scaffold:
-	@echo "Scaffolding [[PROJECT_NAME]]..."
+	@echo "Scaffolding Nexus AI..."
 	@mkdir -p docs/02_outputs
 	@mkdir -p tasks/active tasks/done
 	@mkdir -p tests/e2e tests/contract

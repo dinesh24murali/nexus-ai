@@ -1,4 +1,4 @@
-# [[PROJECT_NAME]] — Vibecode Framework
+# Nexus AI — Vibecode Framework
 
 > A provider-agnostic vibe-coding framework. Works with Claude Code, Cursor, Codex, Gemini, or any AI tool.
 

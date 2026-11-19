@@ -1,7 +1,7 @@
 # Task: 000-project-setup
 
 **Status:** done
-**Created:** [[PROJECT_START_DATE]]
+**Created:** 2026-11-18
 **ADR refs:** ADR-0001
 
 ---

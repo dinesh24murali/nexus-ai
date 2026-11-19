@@ -2,8 +2,8 @@
 
 ## Stack
 
-- **Framework:** `[[FRONTEND_FRAMEWORK]]`
-- **UI library:** `[[UI_LIBRARY]]`
+- **Framework:** `React 18 + Vite + TypeScript`
+- **UI library:** `Tailwind CSS + shadcn/ui`
 - **API client:** generated from `docs/02_outputs/04_api_spec.yaml`
 
 > Replace these placeholders with your actual stack after cloning.
@@ -32,7 +32,7 @@
 ### API Client
 - The API client in `src/api/` (or equivalent) is **generated from** `docs/02_outputs/04_api_spec.yaml`
 - Do not manually write API fetch calls that duplicate the spec
-- To regenerate: `[[CODEGEN_COMMAND]]` (fill in your actual codegen command)
+- To regenerate: `cd frontend && npm run gen:api` (fill in your actual codegen command)
 - **Streaming exception:** streaming endpoints (SSE/WebSocket) use one hand-written stream client (e.g. `src/api/stream.ts`); its event types must come from the generated schema types — see `AGENTS.md` §3.7
 - Render model output as untrusted: sanitize markdown/HTML, no `dangerouslySetInnerHTML` on raw model text, external links get `rel="noopener noreferrer"`
 
@@ -57,7 +57,7 @@
 ## Running Locally
 
 ```bash
-# Fill in with actual commands for [[FRONTEND_FRAMEWORK]]
+# Fill in with actual commands for React 18 + Vite + TypeScript
 # Example for Next.js:
 # cd frontend && npm run dev
 ```

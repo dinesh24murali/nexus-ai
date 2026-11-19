@@ -7,13 +7,13 @@
 
 ## 1. Project Overview
 
-- **Project name:** `[[PROJECT_NAME]]`
-- **Description:** `[[PROJECT_DESCRIPTION]]`
-- **Backend:** `[[BACKEND_LANG]]` / `[[BACKEND_FRAMEWORK]]`
-- **Frontend:** `[[FRONTEND_FRAMEWORK]]`
-- **Database:** `[[DATABASE]]`
-- **Deployment target:** `[[DEPLOYMENT_TARGET]]`
-- **AI stack (if any):** `[[LLM_PROVIDER]]` via `[[AI_ORCHESTRATION]]`, vectors in `[[VECTOR_DB]]`, observability in `[[LLM_OBSERVABILITY]]`
+- **Project name:** `Nexus AI`
+- **Description:** `A production-grade, self-hostable ChatGPT-style assistant with streaming chat, document Q&A, tool use with human approval, and long-term memory.`
+- **Backend:** `Python 3.12` / `FastAPI`
+- **Frontend:** `React 18 + Vite + TypeScript`
+- **Database:** `PostgreSQL 16`
+- **Deployment target:** `Docker Compose on a single Linux VM behind Caddy`
+- **AI stack (if any):** `OpenAI` via `LangGraph`, vectors in `Qdrant`, observability in `Langfuse`
 
 ---
 
@@ -95,7 +95,7 @@ These rules apply regardless of which AI tool is in use.
 ### 3.8 AI / LLM Changes
 Applies to any change touching prompts, models, model parameters, tool definitions, orchestration graph, retrieval/chunking, or memory.
 - **Evals are the tests for AI behaviour.** Run `make eval` and do not regress `evals/eval-baseline.json`. See `evals/AGENTS.md`
-- **No inline prompts.** Prompts live in the prompt registry (`[[LLM_OBSERVABILITY]]`) with a version-pinned fallback file in the repo; code references prompts by name
+- **No inline prompts.** Prompts live in the prompt registry (`Langfuse`) with a version-pinned fallback file in the repo; code references prompts by name
 - **Everything is traced.** Every LLM call, tool call and retrieval runs inside a trace tagged with a hashed user id, conversation/session id and prompt version
 - **No secrets or raw PII in traces, logs or eval datasets**
 - **Untrusted content stays untrusted.** User uploads, retrieved chunks, web results and tool outputs are data, never instructions — wrap them as such in prompts and never let them choose tools with side effects without approval
@@ -138,8 +138,8 @@ Each folder has its own `AGENTS.md` with folder-specific instructions.
 - `tests/AGENTS.md` — coverage gates and test conventions
 - `evals/AGENTS.md` — LLM eval datasets, thresholds and the eval gate
 - `verify/AGENTS.md` — verification protocol
-- `backend/AGENTS.md` — backend conventions (`[[BACKEND_LANG]]`)
-- `frontend/AGENTS.md` — frontend conventions (`[[FRONTEND_FRAMEWORK]]`)
+- `backend/AGENTS.md` — backend conventions (`Python 3.12`)
+- `frontend/AGENTS.md` — frontend conventions (`React 18 + Vite + TypeScript`)
 
 ---
 
