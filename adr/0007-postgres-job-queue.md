@@ -2,6 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-11-19
+**Revised:** 2026-11-19 (task 003: periodic `reap_stale_runs` job, psycopg 3)
 **Deciders:** Nexus AI Team
 
 ---
@@ -12,7 +13,7 @@ Ingestion, title generation, memory extraction and account purges must run off t
 
 ## Decision
 
-Implement a `jobs` table in Postgres consumed by a worker process using `SELECT … FOR UPDATE SKIP LOCKED`, with `idempotency_key` uniqueness, `attempts/max_attempts`, exponential backoff via `run_after`, a 5-minute visibility timeout for stale `running` jobs, and graceful shutdown.
+Implement a `jobs` table in Postgres consumed by a worker process using `SELECT … FOR UPDATE SKIP LOCKED`, with `idempotency_key` uniqueness, `attempts/max_attempts`, exponential backoff via `run_after`, a 5-minute visibility timeout for stale `running` jobs, and graceful shutdown. The worker also runs a small set of periodic tasks on fixed intervals (first: `reap_stale_runs` every 30 s, ADR-0006). Driver: psycopg 3.
 
 ## Consequences
 
@@ -38,3 +39,4 @@ Implement a `jobs` table in Postgres consumed by a worker process using `SELECT 
 ## References
 
 - `docs/02_outputs/08_ai_system_design.md` §9
+- ADR-0006

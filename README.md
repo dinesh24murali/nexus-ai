@@ -121,6 +121,18 @@ make help       # Show all commands
 
 ---
 
+## Privacy
+
+What a running Nexus AI instance stores and shares (details: `docs/02_outputs/02_functional_spec.md` §8 and `docs/02_outputs/10_llm_threat_model.md` §5):
+
+- **Stored on the server:** account (email, password hash), conversations, uploaded files and their search index, memories (viewable, editable and deletable by the user; memory can be turned off), feedback and daily usage totals. Kept until the user deletes them; deleting the account erases everything within 24 h.
+- **OpenAI:** messages, file passages and memories needed to answer are sent to the OpenAI API with `store=false`; API data is not used for training.
+- **Tavily:** only web-search queries the user approved.
+- **Langfuse Cloud (EU region):** traces of each run, with emails, phone numbers, card/IBAN-like numbers, tokens and keys redacted before they leave the server and user ids hashed; kept 30 days. Self-hosters can keep traces on their own infrastructure with the optional Langfuse profile.
+- **Logs:** request metadata only, never message content; kept 14 days.
+
+---
+
 ## Philosophy
 
 - **Docs first, code second** — AI-generated documents become the spec; code follows

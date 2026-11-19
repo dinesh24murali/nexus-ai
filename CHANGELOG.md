@@ -10,6 +10,7 @@ Format: `- [YYYY-MM-DD] <task-name>: <one-line summary>`
 ## Unreleased
 
 <!-- AI: add entries here as tasks are completed -->
+- [2026-11-19] 003-plan-revisions: docs: applied the plan-review decisions (Q1–Q31) — reference build with invite-only hosted instance; goals rewritten (G6/G7 dropped, G8/G9 added); milestones M1–M6 deploy-first (roadmap tasks 004–010); GPT-5/6 model roles with reasoning effort, Responses API `store=false`, `LLM_MODE=fake`; cache-friendly prompt layout; `remember_fact` taint rule; run lease + reaper + drain; Langfuse Cloud EU (self-hosted v4 optional); repo-canonical prompts (ADR-0008); two-tier quality gates (ADR-0009) with restructured eval/coverage baselines; USD budgets; invite codes + admin CLI; data export deferred; stack versions updated (Python 3.14, LangGraph 1.x, Postgres 18, React 19, Tailwind 4, psycopg 3, hand-written SSE client); API spec 1.1.0; ADRs 0002–0007 revised in place
 - [2026-11-19] 002-phase1-docs: docs: intake filled (defaults marked), project placeholders replaced, Phase 1 docs 01–10 generated (OpenAPI spec validated), ADRs 0002–0007, memory seeded (project/ai/api/auth), eval baseline seeded with 22 metrics
 - [2026-11-18] 001-ai-framework-layer: docs/chore: added AI-engineering layer — intake §11, prompts 08–10 (AI system design, eval plan, LLM threat model), `evals/` gate with `check_baseline.py`, AGENTS §3.8 AI rules + streaming exception, `memory/ai.md`, AI-impact task sections, `make up/down/eval/eval-smoke`, AI env vars
 

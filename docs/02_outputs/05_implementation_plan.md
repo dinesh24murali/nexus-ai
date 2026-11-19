@@ -1,300 +1,320 @@
 # Implementation Plan — Nexus AI v1
 
-**Version:** 1.0 · **Date:** 2026-11-19 · **Inputs:** [PRD](01_prd.md), [Architecture](03_tech_architecture.md), [API](04_api_spec.yaml), [AI design](08_ai_system_design.md), [Eval plan](09_eval_plan.md), [Threat model](10_llm_threat_model.md)
+**Version:** 1.1 · **Date:** 2026-11-19 (revised, task 003) · **Inputs:** [PRD](01_prd.md), [Architecture](03_tech_architecture.md), [API](04_api_spec.yaml), [AI design](08_ai_system_design.md), [Eval plan](09_eval_plan.md), [Threat model](10_llm_threat_model.md)
 
-Each TASK below becomes `tasks/active/<NNN>-<slug>.md` when started (repo task numbers continue from 003). Roadmap groups from the planning session are shown in brackets.
+Work is organised by **milestone** (PRD §12). Milestones set the order, not dates; the builder is one developer working part-time with AI coding agents. **Every milestone ends deployed**: run the `deploy.yml` workflow and check `/readyz` and a chat smoke on the hosted instance.
+
+Each repo task group in brackets becomes `tasks/active/<NNN>-<slug>.md` when started (task 003 was the plan revision, so groups start at 004). TASK ids are stable references; tasks added in revision 1.1 are numbered from 036.
 
 ---
 
-## Phase 0 — Project Setup  [003-skeleton]
+## M1 — Skeleton, live on the VM  [004-skeleton]
 
 #### TASK-001: Monorepo tooling
-- **Phase:** 0 · **Depends on:** none
-- **Files:** `backend/pyproject.toml`, `backend/uv.lock`, `frontend/package.json`, `.pre-commit-config.yaml`, `Makefile`
-- **Description:** Initialise the backend with uv (ruff, mypy --strict, pytest, pytest-asyncio, coverage) and the frontend with Vite React-TS (eslint, prettier, vitest). Add `make lint`, `make test`, `make fmt`.
+- **Depends on:** none
+- **Files:** `backend/pyproject.toml`, `backend/uv.lock`, `frontend/package.json`, `frontend/package-lock.json`, `.pre-commit-config.yaml`, `Makefile`
+- **Description:** Backend with uv on Python 3.14 (ruff, mypy --strict, pytest, pytest-asyncio, coverage); frontend with Vite 8 + React 19 + TypeScript 5.9 (eslint, prettier, vitest). Pin exact versions in the lockfiles; docs name majors only. Add `make lint`, `make test`, `make fmt`.
 - **Acceptance criteria:**
   - [ ] `make lint` and `make test` pass on an empty project
   - [ ] pre-commit runs ruff, prettier, and a secrets scanner (gitleaks)
 
 #### TASK-002: Docker Compose stack
-- **Phase:** 0 · **Depends on:** TASK-001
+- **Depends on:** TASK-001
 - **Files:** `compose.yml`, `compose.prod.yml`, `backend/Dockerfile`, `frontend/Dockerfile`, `deploy/Caddyfile`, `.env.example`
-- **Description:** Compose services: caddy, api, worker, migrate, postgres, qdrant, and Langfuse v3 (web, worker, clickhouse, redis, minio) with healthchecks and named volumes. Multi-stage, non-root images.
+- **Description:** Services: caddy (2.11), api (`stop_grace_period: 120s`), worker, migrate, postgres (`pgvector/pgvector:pg18`, volume at `/var/lib/postgresql`), qdrant (1.x), with healthchecks and named volumes. Optional profile `langfuse` with self-hosted Langfuse v4 (web, worker, ClickHouse, Redis, MinIO, its own Postgres). Multi-stage, non-root images.
 - **Acceptance criteria:**
-  - [ ] `make up` brings every service to healthy in < 3 min on a clean machine
-  - [ ] Langfuse UI reachable on `http://localhost:3000`; API at `http://localhost:8000/api/v1/healthz`
+  - [ ] `make up` brings every default service to healthy in < 2 min on a clean machine
+  - [ ] API at `http://localhost:8000/api/v1/healthz`; traces reach the Langfuse Cloud dev project
 
 #### TASK-003: CI pipeline
-- **Phase:** 0 · **Depends on:** TASK-001 · *parallel with TASK-002*
+- **Depends on:** TASK-001 · *parallel with TASK-002*
 - **Files:** `.github/workflows/ci.yml`, `.github/dependabot.yml`
-- **Description:** Run lint, type-check, unit and integration tests (Postgres + Qdrant service containers), contract tests, eval-smoke (on `main` and labelled PRs), and image builds. Add pip-audit, npm audit and Trivy.
+- **Description:** CI is the staging environment. Run lint, type-check, unit and integration tests (Postgres + Qdrant service containers), contract tests, a full-stack Playwright smoke with `LLM_MODE=fake`, eval-smoke (AI changes, from M2), and image builds. On merge to `main`: push images to GHCR and sync prompts to Langfuse (ADR-0008). Add pip-audit, npm audit and Trivy.
 - **Acceptance criteria:**
   - [ ] Pipeline is green on the first PR; required checks enforced on `main`
 
-## Phase 1 — Core Infrastructure  [003-skeleton]
-
 #### TASK-004: Config, logging, errors
-- **Phase:** 1 · **Depends on:** TASK-001
+- **Depends on:** TASK-001
 - **Files:** `backend/app/core/{config,logging,errors}.py`, `backend/app/main.py`
-- **Description:** pydantic-settings config from env; structlog JSON logging with a request-id middleware; error envelope and exception handlers matching the `Error` schema.
+- **Description:** pydantic-settings config from env (refuses to start with `APP_ENV=production` + `LLM_MODE=fake`); structlog JSON logging with a request-id middleware; error envelope and exception handlers matching the `Error` schema.
 - **Acceptance criteria:**
   - [ ] Unknown routes return the error envelope with `request_id`
   - [ ] Logs carry no request bodies
 
 #### TASK-005: Database layer & migrations
-- **Phase:** 1 · **Depends on:** TASK-004
+- **Depends on:** TASK-004
 - **Files:** `backend/app/db/{session,models,base}.py`, `backend/alembic/`, `backend/app/db/repositories/`
-- **Description:** Async SQLAlchemy models for all tables in architecture §3.2, the initial Alembic migration, and LangGraph checkpointer/store setup in the migrate step. Repository functions all take `user_id`.
+- **Description:** Async SQLAlchemy models (psycopg 3, `postgresql+psycopg://`) for all tables in architecture §3.2 including `invites` and the run-lease columns; the initial Alembic migration; LangGraph checkpointer/store setup in the migrate step (psycopg async pool, `LANGGRAPH_STRICT_MSGPACK=true`). Repository functions all take `user_id`.
 - **Acceptance criteria:**
   - [ ] `alembic upgrade head` on an empty DB creates all tables and indexes
   - [ ] The migrate service is idempotent
 
-#### TASK-006: Auth
-- **Phase:** 1 · **Depends on:** TASK-005
-- **Files:** `backend/app/api/auth.py`, `backend/app/core/security.py`, `backend/app/api/me.py`, `backend/tests/api/test_auth.py`
-- **Description:** Register, login, refresh (rotation + family revocation), logout; argon2id hashing; JWT (HS256, 15 min); `/me` GET/PATCH, password change; auth rate limits.
+#### TASK-006: Auth, invites & admin CLI
+- **Depends on:** TASK-005
+- **Files:** `backend/app/api/auth.py`, `backend/app/core/security.py`, `backend/app/api/me.py`, `backend/app/cli.py`, `backend/tests/api/test_auth.py`
+- **Description:** Register (invite code required when `REGISTRATION_MODE=invite`, the default), login, refresh (rotation + family revocation), logout; argon2id hashing; JWT (HS256, 15 min); `/me` GET/PATCH, password change; auth and invite-attempt rate limits. Admin CLI: `invite create|list|revoke`, `reset-password`, `disable-user`/`enable-user`.
 - **Acceptance criteria:**
   - [ ] Refresh-token reuse revokes the whole family (tested)
   - [ ] Login does not reveal whether an email exists
+  - [ ] Unknown, used, revoked and expired invite codes all return the same `INVITE_INVALID` (tested)
   - [ ] Contract tests for the auth endpoints pass
-- > **ADR needed:** none (covered by architecture §5)
 
 #### TASK-007: Frontend shell
-- **Phase:** 1 · **Depends on:** TASK-001 · *parallel with TASK-004–006*
-- **Files:** `frontend/src/{main,App}.tsx`, `frontend/src/routes/`, `frontend/src/api/` (generated), `frontend/src/lib/auth.ts`, `frontend/src/styles/tokens.css`, `tailwind.config.ts`
-- **Description:** Router with the screens from functional spec §3; `npm run gen:api` (openapi-typescript); auth context with in-memory access token and silent refresh; design tokens from doc 07; light/dark/system theme.
+- **Depends on:** TASK-001 · *parallel with TASK-004–006*
+- **Files:** `frontend/src/{main,App}.tsx`, `frontend/src/routes/`, `frontend/src/api/` (generated), `frontend/src/lib/auth.ts`, `frontend/src/styles/tokens.css`, `frontend/src/styles/theme.css` (Tailwind 4 `@theme`)
+- **Description:** React Router 8 (SPA / declarative mode) with the screens from functional spec §3; `npm run gen:api` (openapi-typescript); auth context with in-memory access token and silent refresh; register page with the invite field prefilled from `?invite=`; design tokens from doc 07 (Tailwind 4 `@theme`); light/dark/system theme.
 - **Acceptance criteria:**
-  - [ ] Login/register work end-to-end against the API
+  - [ ] Invite → register → login work end-to-end against the API
   - [ ] Playwright `auth.spec.ts` passes
 
 #### TASK-008: Conversations CRUD
-- **Phase:** 1 · **Depends on:** TASK-006
+- **Depends on:** TASK-006
 - **Files:** `backend/app/api/conversations.py`, `frontend/src/components/sidebar/`
 - **Description:** List, create, get, rename and delete conversations with cursor pagination; sidebar with infinite scroll and rename/delete menu.
 - **Acceptance criteria:**
   - [ ] Cross-user access returns 404 (isolation test)
   - [ ] Sidebar e2e test passes
 
-## Phase 2 — Feature Implementation
-
-### 2a Core chat  [004-core-chat]
-
-#### TASK-009: Model factory, prompt loader, tracing
-- **Phase:** 2a · **Depends on:** TASK-004
-- **Files:** `backend/app/llm/{factory,prompts,tracing,pricing}.py`, `backend/prompts/*.md` (fallbacks)
-- **Description:** `get_chat_model(role)` with timeout, retries, fallback and the Langfuse callback; prompt loader that reads from Langfuse with a pinned-label fallback to repo files; HMAC user hashing; cost table.
+#### TASK-033: Deploy workflow
+- **Depends on:** TASK-002, TASK-003
+- **Files:** `.github/workflows/deploy.yml`, `deploy/README.md`, `memory/infra.md`
+- **Description:** Manually dispatched workflow: SSH to the prod VM, `docker compose pull && up -d` with GHCR images, then smoke `/readyz`. Caddy TLS; secrets in `.env` (0600) on the VM.
 - **Acceptance criteria:**
-  - [ ] Unit tests with a fake model; the loader falls back to the repo copy when Langfuse is down
-- > **ADR needed:** ADR-0005 (written)
+  - [ ] The M1 skeleton is live on the VM; a deploy during an open browser session does not log the user out
+
+#### TASK-034: Backups & uptime check
+- **Depends on:** TASK-033
+- **Files:** `deploy/backup.sh`, `deploy/uptime.md`
+- **Description:** Nightly `pg_dump` and Qdrant snapshot to off-site storage, with one tested restore; one external uptime check on `/readyz`. No SLO and no alert rules beyond uptime and spend (TASK-014).
+- **Acceptance criteria:**
+  - [ ] A restore into a fresh local stack succeeds once and is documented
+
+## M2 — Core chat + evals
+
+### Core chat  [005-core-chat]
+
+#### TASK-009: Model factory, fake model, prompt loader, tracing
+- **Depends on:** TASK-004
+- **Files:** `backend/app/llm/{factory,fake,prompts,tracing,pricing}.py`, `backend/prompts/*.md`, `scripts/sync_prompts.py`
+- **Description:** `get_model(role)` per doc 08 §3: reasoning effort per role (temperature only at effort `none`), Responses API with `store=false`, timeouts, retries, fallback and the Langfuse callback (SDK v5; enable per-node spans). `LLM_MODE=fake` returns a scripted model (text, tool calls, interrupts; per-token delay) keyed by fixture id. Prompts load from `backend/prompts/` on disk (ADR-0008); `sync_prompts.py` pushes changed prompts to Langfuse in CI. HMAC user hashing; `mask` redaction; pricing table including cached and reasoning tokens.
+- **Acceptance criteria:**
+  - [ ] Unit tests with the fake model; the factory never sends `temperature` with an effort other than `none`
+  - [ ] `mask` unit tests cover emails, phone numbers, card/IBAN-like numbers, JWTs and API keys
+  - [ ] Verify whether multi-turn tool calls with `store=false` need encrypted reasoning items; record the answer in `memory/ai.md`
+- > **ADR:** ADR-0005, ADR-0008
 
 #### TASK-010: Chat graph v1
-- **Phase:** 2a · **Depends on:** TASK-005, TASK-009
+- **Depends on:** TASK-005, TASK-009
 - **Files:** `backend/app/graph/{state,builder}.py`, `backend/app/graph/nodes/{load_context,agent,summarize}.py`
-- **Description:** The LangGraph graph from doc 08 without tools; `AsyncPostgresSaver`; trimming and summarisation.
+- **Description:** The LangGraph graph from doc 08 without tools; `AsyncPostgresSaver`; trimming and summarisation (summary lives in graph state only); cache-friendly prompt layout (doc 08 §4: fixed system prompt → summary → history → late context message → newest user message).
 - **Acceptance criteria:**
-  - [ ] Graph unit tests with `FakeMessagesListChatModel` cover a multi-turn thread and summarisation triggering
+  - [ ] Graph unit tests with the fake model cover a multi-turn thread and summarisation triggering
+  - [ ] A test asserts the message prefix is byte-identical across two consecutive turns (cache-friendliness)
 
-#### TASK-011: SSE streaming endpoint
-- **Phase:** 2a · **Depends on:** TASK-010, TASK-008
+#### TASK-011: SSE streaming endpoint & run lease
+- **Depends on:** TASK-010, TASK-008
 - **Files:** `backend/app/api/chat.py`, `backend/app/api/sse.py`, `backend/app/services/runs.py`
-- **Description:** `POST /conversations/{id}/messages` streams typed events; one active run per conversation; cancel; regenerate; messages read model persisted at run end; per-message usage.
+- **Description:** `POST /conversations/{id}/messages` streams typed events; one active run per conversation via the run lease (`active_run_id` + `run_heartbeat_at` every 10 s); cancel; regenerate; graceful drain on SIGTERM (503 `SERVICE_RESTARTING`, 90 s wait, leftovers saved as `failed`); messages read model persisted at run end; per-message usage.
 - **Acceptance criteria:**
   - [ ] Event order matches the spec (contract test parses the stream)
   - [ ] Cancel persists the partial answer as `cancelled`
   - [ ] Client disconnect does not kill the run
-- > **ADR needed:** ADR-0006 (written)
+  - [ ] Killing the API mid-run leaves the conversation usable after the reaper runs (integration test)
+- > **ADR:** ADR-0006
 
-#### TASK-012: Job queue & worker
-- **Phase:** 2a · **Depends on:** TASK-005 · *parallel with TASK-010*
-- **Files:** `backend/app/jobs/{queue,handlers}.py`, `backend/app/worker.py`
-- **Description:** Postgres SKIP LOCKED queue with retries, backoff, idempotency keys and graceful shutdown; `generate_title` handler.
+#### TASK-012: Job queue, worker & periodic tasks
+- **Depends on:** TASK-005 · *parallel with TASK-010*
+- **Files:** `backend/app/jobs/{queue,handlers,periodic}.py`, `backend/app/worker.py`
+- **Description:** Postgres SKIP LOCKED queue with retries, backoff, idempotency keys and graceful shutdown; `generate_title` handler; periodic `reap_stale_runs` (30 s) and `cleanup_invites` (daily).
 - **Acceptance criteria:**
   - [ ] Two workers never process the same job (concurrency test)
   - [ ] A title appears after the first exchange
-- > **ADR needed:** ADR-0007 (written)
+  - [ ] A lease older than 60 s is reaped into a `failed` message with `finish_reason=server_restart`
+- > **ADR:** ADR-0007
 
 #### TASK-013: Chat UI
-- **Phase:** 2a · **Depends on:** TASK-011, TASK-007
+- **Depends on:** TASK-011, TASK-007
 - **Files:** `frontend/src/api/stream.ts`, `frontend/src/features/chat/*`
-- **Description:** Stream client (fetch-event-source) typed from the generated `StreamEvent`; message list with sanitised markdown, Shiki code blocks and copy; composer with send/stop; regenerate; error states.
+- **Description:** Hand-written stream client (`fetch` + `ReadableStream` + line-based SSE parser + `AbortController`) typed from the generated `StreamEvent`; message list with sanitised markdown, Shiki code blocks and copy; composer with send/stop; regenerate; error states including "Interrupted" (`server_restart`) and `SERVICE_RESTARTING`.
 - **Acceptance criteria:**
-  - [ ] Playwright `chat.spec.ts` (against a stubbed LLM): send, stream, stop, regenerate
+  - [ ] `stream.ts` unit tests run against recorded stream fixtures (chunk boundaries inside frames, pings, errors)
+  - [ ] Playwright `chat.spec.ts` (fake LLM): send, stream, stop, regenerate
 
 #### TASK-014: Moderation, rate limits, budgets
-- **Phase:** 2a · **Depends on:** TASK-011
-- **Files:** `backend/app/llm/moderation.py`, `backend/app/core/ratelimit.py`, `backend/app/services/usage.py`, `backend/app/api/me.py`
-- **Description:** Input moderation before runs; per-user message rate limit; daily token budget; `/me/usage`; usage meter in the sidebar.
+- **Depends on:** TASK-011
+- **Files:** `backend/app/llm/moderation.py`, `backend/app/core/{ratelimit,budgets}.py`, `backend/app/services/usage.py`, `backend/app/api/me.py`
+- **Description:** Input moderation before runs (fail-open when the API is down: logged + trace tag); per-user message rate limit; per-user daily spend budget (USD, default $0.50) and global daily cap (default $5) from the pricing table; background jobs count toward the user's spend; `/me/usage`; usage meter in the sidebar; spend alert at 80% of the global cap.
 - **Acceptance criteria:**
-  - [ ] Exceeding the budget returns 429 `BUDGET_EXCEEDED` with `Retry-After`
+  - [ ] Exceeding either budget returns 429 `BUDGET_EXCEEDED` with `Retry-After` and `details.scope`
 
-### 2b Eval harness  [005-eval-harness]
+### Eval harness  [006-eval-harness]
 
-#### TASK-015: Eval runner
-- **Phase:** 2b · **Depends on:** TASK-010
-- **Files:** `backend/evals/{run,judges,metrics}.py`, `evals/datasets/*.jsonl`
-- **Description:** Run the graph against JSONL datasets (synced to Langfuse datasets), score with metrics and judges from doc 09, write `evals/results/latest.json`, and log runs to Langfuse. `--suite smoke|full`.
+#### TASK-015: Eval runner & two-tier gate
+- **Depends on:** TASK-010
+- **Files:** `backend/evals/{run,judges,metrics,canaries}.py`, `evals/datasets/*.jsonl`, `evals/eval-baseline.json`
+- **Description:** Run the graph against JSONL datasets (synced to Langfuse datasets), score with metrics and judges from doc 09, write `evals/results/latest.json`, and log runs to Langfuse. `--suite smoke|full`. AI agents draft dataset records; the developer reviews them. Record the first measured values as regression gates (ADR-0009); judged metrics stay advisory.
 - **Acceptance criteria:**
-  - [ ] `make eval-smoke` runs in < 2 min and gates on the baseline
-  - [ ] Chat datasets are seeded
+  - [ ] `make eval-smoke` runs in < 2 min and gates on `eval-baseline.json`
+  - [ ] Chat datasets are seeded and reviewed; first measured baselines recorded
+
+#### TASK-036: Chat-model bake-off
+- **Depends on:** TASK-015, TASK-014
+- **Files:** `evals/results/bakeoff-<date>.md`, `memory/ai.md`, `.env.example`
+- **Description:** Run the chat, tool-routing (as far as available), latency and cost suites on `gpt-6.1-terra` (effort `low`) and pinned `gpt-5.4-mini-2026-03-17`; re-check model names and prices first. Pick the model that meets G3 (TTFT), G4 (cost) and the quality targets; record the result. Re-run the tool-routing part in M4.
+- **Acceptance criteria:**
+  - [ ] Decision recorded in `memory/ai.md` with the measured TTFT p95, cost per turn and scores
 
 #### TASK-016: Feedback
-- **Phase:** 2b · **Depends on:** TASK-011
+- **Depends on:** TASK-011
 - **Files:** `backend/app/api/feedback.py`, `frontend/src/features/chat/Feedback.tsx`
 - **Description:** `PUT /messages/{id}/feedback` stores the rating and sends a Langfuse score on the message's trace.
 - **Acceptance criteria:**
   - [ ] The score is visible on the Langfuse trace
 
-### 2c Files & RAG  [006-rag]
+## M3 — RAG  [007-rag]
 
 #### TASK-017: Upload API & storage
-- **Phase:** 2c · **Depends on:** TASK-012
+- **Depends on:** TASK-012
 - **Files:** `backend/app/api/files.py`, `backend/app/services/files.py`
 - **Description:** Multipart upload with size/type/magic-byte checks, SHA-256 dedupe, per-user limit; store on the uploads volume; enqueue `ingest_file`.
 - **Acceptance criteria:**
   - [ ] All validation errors from functional spec FS-004 are covered by tests
 
 #### TASK-018: Ingestion pipeline
-- **Phase:** 2c · **Depends on:** TASK-017
+- **Depends on:** TASK-017
 - **Files:** `backend/app/rag/{parsers,chunker,embedder,index}.py`
 - **Description:** Parse PDF (pypdf), DOCX (python-docx), TXT/MD; token-aware chunking (800/120); batched embeddings; idempotent Qdrant upsert with tenant payload; status updates.
 - **Acceptance criteria:**
   - [ ] Re-running a job produces no duplicates
   - [ ] A failed parse sets status `failed` with a readable reason
-- > **ADR needed:** ADR-0003 (written)
+- > **ADR:** ADR-0003
 
 #### TASK-019: Retrieval tool & citations
-- **Phase:** 2c · **Depends on:** TASK-018, TASK-010
+- **Depends on:** TASK-018, TASK-010
 - **Files:** `backend/app/rag/retriever.py`, `backend/app/graph/tools/search_my_files.py`, `backend/app/graph/nodes/tools.py`
-- **Description:** `search_my_files` with a mandatory `user_id` filter; returns numbered passages wrapped as untrusted data; emits citation events.
+- **Description:** `search_my_files` using Qdrant `query_points` with a mandatory `user_id` filter; returns numbered passages wrapped as untrusted data; emits citation events; marks the turn as having read untrusted content (used by the `remember_fact` policy in M5).
 - **Acceptance criteria:**
   - [ ] Isolation test: user B never retrieves user A's chunks
-  - [ ] RAG eval meets the baseline
+  - [ ] RAG suites seeded and reviewed; first measured baselines recorded
+
+#### TASK-037: Faithfulness judge calibration
+- **Depends on:** TASK-019, TASK-015
+- **Files:** `evals/datasets/judge.calibration.jsonl`, `backend/evals/judges.py`
+- **Description:** Hand-label 30 RAG answers for faithfulness; compute Cohen's κ for `eval.judge.faithfulness` on the pinned judge model. If κ ≥ 0.7, promote `rag.faithfulness` from advisory to a regression gate.
+- **Acceptance criteria:**
+  - [ ] κ recorded in `memory/ai.md`; gate status of `rag.faithfulness` matches it
 
 #### TASK-020: File deletion
-- **Phase:** 2c · **Depends on:** TASK-018
+- **Depends on:** TASK-018
 - **Files:** `backend/app/api/files.py`, `backend/app/jobs/handlers.py`
 - **Description:** Delete Qdrant points by `file_id`, then the disk file, then the row; cancel in-flight ingestion.
 - **Acceptance criteria:**
   - [ ] A deleted file is never returned by search (tested)
 
 #### TASK-021: Files UI
-- **Phase:** 2c · **Depends on:** TASK-017, TASK-013 · *parallel with TASK-018*
+- **Depends on:** TASK-017, TASK-013 · *parallel with TASK-018*
 - **Files:** `frontend/src/features/files/*`, composer attach button, citation chips
 - **Description:** Upload with progress, status polling, files page, citation chips with snippet popovers.
 - **Acceptance criteria:**
-  - [ ] Playwright `rag.spec.ts`: upload → ready → cited answer
+  - [ ] Playwright `rag.spec.ts` (fake LLM): upload → ready → cited answer
 
-### 2d Tools & HITL  [007-tools-hitl]
+## M4 — Tools + HITL  [008-tools-hitl]
 
 #### TASK-022: Calculator & web search tools
-- **Phase:** 2d · **Depends on:** TASK-019
+- **Depends on:** TASK-019
 - **Files:** `backend/app/graph/tools/{calculator,web_search}.py`
-- **Description:** A safe AST-based calculator (no eval); Tavily search with a 10 s timeout, a cap of 5 results and domain metadata; results wrapped as untrusted.
+- **Description:** A safe AST-based calculator (no eval); Tavily search with a 10 s timeout, a cap of 5 results and domain metadata; results wrapped as untrusted (and mark the turn as having read untrusted content).
 - **Acceptance criteria:**
   - [ ] Calculator fuzz tests show no code execution
-  - [ ] Tool-selection eval meets the baseline
+  - [ ] Tool-routing suite seeded and reviewed; first measured baselines recorded
 
 #### TASK-023: Interrupt / resume flow
-- **Phase:** 2d · **Depends on:** TASK-022, TASK-011
-- **Files:** `backend/app/graph/nodes/approval.py`, `backend/app/api/chat.py` (resume), `frontend/src/features/chat/ApprovalCard.tsx`
-- **Description:** `interrupt()` before `web_search`; `pending_interrupt` persisted on the conversation; resume with approve/edit/reject; 24 h expiry; card restored on reload.
+- **Depends on:** TASK-022, TASK-011
+- **Files:** `backend/app/graph/nodes/approval.py`, `backend/app/graph/policy.py` (`TOOL_POLICY`), `backend/app/api/chat.py` (resume), `frontend/src/features/chat/ApprovalCard.tsx`
+- **Description:** `interrupt()` before every `web_search` (per-call approval in v1); `TOOL_POLICY` supports conditional rules (used by `remember_fact` in M5); `pending_interrupt` persisted on the conversation (no run lease while waiting); resume with approve/edit/reject; 24 h expiry; card restored on reload.
 - **Acceptance criteria:**
-  - [ ] Playwright `tools.spec.ts`: approve, edit and reject paths, plus reload mid-approval
+  - [ ] Playwright `tools.spec.ts` (fake LLM): approve, edit and reject paths, plus reload mid-approval
+  - [ ] `tools.approval_enforced = 1` (absolute gate)
 
 #### TASK-024: Tool-call UI
-- **Phase:** 2d · **Depends on:** TASK-013
+- **Depends on:** TASK-013
 - **Files:** `frontend/src/features/chat/ToolCard.tsx`
 - **Description:** Render `tool_start`/`tool_end` with name, args and status; stored `tool_calls` shown in history.
 - **Acceptance criteria:**
   - [ ] Component tests for every status
 
-### 2e Long-term memory  [008-long-term-memory]
+## M5 — Long-term memory  [009-long-term-memory]
 
 #### TASK-025: Memory store & extraction job
-- **Phase:** 2e · **Depends on:** TASK-012, TASK-010
+- **Depends on:** TASK-012, TASK-010
 - **Files:** `backend/app/memory/{store,extract}.py`, `backend/app/jobs/handlers.py`
-- **Description:** `AsyncPostgresStore` with namespace `("memories", user_id)` and embedding index; `extract_memories` job after each turn (gpt-4.1-mini, structured output: create/update/delete ops); deny-list of sensitive categories.
+- **Description:** `AsyncPostgresStore` with namespace `("memories", user_id)` and embedding index; `extract_memories` job after each turn (background model, effort `none`, strict structured output: create/update/delete ops); deny-list of sensitive categories.
 - **Acceptance criteria:**
-  - [ ] Memory extraction eval meets the baseline
+  - [ ] `memory.sensitive_refusal = 1` (absolute gate); extraction suite baselines recorded
   - [ ] Nothing is stored when memory is disabled
 
 #### TASK-026: Memory in context & remember_fact tool
-- **Phase:** 2e · **Depends on:** TASK-025
-- **Files:** `backend/app/graph/nodes/load_context.py`, `backend/app/graph/tools/remember_fact.py`
-- **Description:** Inject the top-k relevant memories into the system prompt as untrusted user-profile data; tool for explicit "remember / forget" requests; `memory_updated` event.
+- **Depends on:** TASK-025, TASK-023
+- **Files:** `backend/app/graph/nodes/load_context.py`, `backend/app/graph/tools/remember_fact.py`, `backend/app/graph/policy.py`
+- **Description:** Inject the top-k relevant memories in the late context message as untrusted user-profile data; tool for explicit "remember / forget" requests; **taint rule**: if the turn already read untrusted content, `remember_fact` goes through the approval interrupt; `memory_updated` event.
 - **Acceptance criteria:**
   - [ ] "Forget X" removes X (eval case)
+  - [ ] A `remember_fact` call after a web or file result always interrupts (unit + red-team case rt-05)
   - [ ] Isolation test passes
 
 #### TASK-027: Memories API & UI
-- **Phase:** 2e · **Depends on:** TASK-025, TASK-007
+- **Depends on:** TASK-025, TASK-007
 - **Files:** `backend/app/api/memories.py`, `frontend/src/features/settings/Memory.tsx`
 - **Description:** CRUD endpoints plus clear-all; settings page with toggle, inline edit and delete; toast after extraction.
 - **Acceptance criteria:**
   - [ ] Playwright `memory.spec.ts` passes
 
-## Phase 3 — Quality & Hardening  [009-hardening]
+## M6 — Hardening  [010-hardening]
 
-#### TASK-028: Account export & deletion
-- **Phase:** 3 · **Depends on:** TASK-020, TASK-025
+#### TASK-028: Account deletion & purge
+- **Depends on:** TASK-020, TASK-025
 - **Files:** `backend/app/api/me.py`, `backend/app/jobs/handlers.py` (`purge_user`)
-- **Description:** JSON export; deletion revokes sessions and enqueues a purge across Postgres, checkpoints, store, Qdrant and disk.
+- **Description:** Deletion revokes sessions and enqueues a purge across Postgres, checkpoints, store, Qdrant and disk. (Data export is deferred to after v1.)
 - **Acceptance criteria:**
-  - [ ] Purge test verifies zero rows/points/files remain for the user
+  - [ ] Cross-store purge test verifies zero rows, checkpoints, store items, points and files remain for the user
 
 #### TASK-029: Red-team & safety evals
-- **Phase:** 3 · **Depends on:** TASK-015, TASK-023, TASK-026
-- **Files:** `evals/datasets/safety.redteam.jsonl`, `backend/evals/judges.py`
-- **Description:** Implement the doc 09 §8 red-team set (injection via documents, web results and memories; exfiltration; cross-tenant probing) and fix any failures.
+- **Depends on:** TASK-015, TASK-023, TASK-026
+- **Files:** `evals/datasets/safety.redteam.jsonl`, `backend/evals/canaries.py`
+- **Description:** Implement the doc 09 §8 red-team set (40 cases: injection via documents, web results and memories; exfiltration; cross-tenant probing) scored by deterministic canaries, and fix any failures.
 - **Acceptance criteria:**
-  - [ ] Injection resistance ≥ 0.95
+  - [ ] Injection resistance ≥ 0.95 (absolute gate)
   - [ ] Cross-user leakage = 0
 
 #### TASK-030: Security review
-- **Phase:** 3 · **Depends on:** TASK-028
+- **Depends on:** TASK-028
 - **Files:** `deploy/Caddyfile`, `backend/app/core/*`
-- **Description:** Walk the doc 10 threat table; verify CSP and headers, upload limits, dependency audit and secrets handling; fix findings.
+- **Description:** Walk the doc 10 threat table; verify CSP and headers, upload limits, invite handling, dependency audit, trace redaction and secrets handling; fix findings.
 - **Acceptance criteria:**
   - [ ] Every LLM-Txx threat has a mitigation and a test reference
 
 #### TASK-031: Load & resilience test
-- **Phase:** 3 · **Depends on:** TASK-023
+- **Depends on:** TASK-023
 - **Files:** `loadtest/locustfile.py`
-- **Description:** 20 concurrent streams + 5 rps against a mock-LLM mode, then a short real-model run. Inject OpenAI failures to verify the fallback.
+- **Description:** 20 concurrent streams + 5 rps against `LLM_MODE=fake` (with realistic token delays). Inject model failures through the fake model to verify the fallback; restart the API mid-load to verify drain and reaping. No real-model load run.
 - **Acceptance criteria:**
-  - [ ] NFR latency targets met
-  - [ ] No errors under the target load
+  - [ ] Non-model latency overhead within NFR targets; no errors under the target load
+  - [ ] No conversation stays locked after a restart under load
 
 #### TASK-032: Coverage & observability polish
-- **Phase:** 3 · **Depends on:** all Phase 2
-- **Files:** `tests/coverage-baseline.json`, `backend/app/core/metrics.py`
-- **Description:** Close coverage gaps to 80%/70%; Prometheus metrics; Langfuse dashboards for cost, latency and feedback.
+- **Depends on:** all M2–M5 tasks
+- **Files:** `tests/coverage-baseline.json`
+- **Description:** Close coverage gaps to the 80% / 70% targets (ADR-0009); Langfuse dashboards for cost, latency and feedback. (Prometheus metrics deferred.)
 - **Acceptance criteria:**
-  - [ ] Baselines recorded in `tests/coverage-baseline.json`
+  - [ ] Every package meets its coverage target and the baseline file records it
 
-## Phase 4 — Deployment & Launch
-
-#### TASK-033: Staging & prod deploy
-- **Phase:** 4 · **Depends on:** TASK-003, TASK-030
-- **Files:** `.github/workflows/deploy.yml`, `deploy/README.md`, `memory/infra.md`
-- **Description:** GHCR images; SSH deploy to staging on merge; manual promotion to prod; Caddy TLS; Langfuse admin protected.
+#### TASK-035: Release checklist
+- **Depends on:** all
+- **Files:** `docs/02_outputs/release_checklist.md`, `README.md`
+- **Description:** Final full eval run, cost review against G4, privacy section in the README (data stored, Langfuse Cloud EU, OpenAI `store=false`, retention, deletion), admin CLI documented, fresh-clone timing (G8).
 - **Acceptance criteria:**
-  - [ ] Staging deploys automatically; prod promotion is documented and has been tested once
-
-#### TASK-034: Backups & monitoring
-- **Phase:** 4 · **Depends on:** TASK-033
-- **Files:** `deploy/backup.sh`, `deploy/uptime.md`
-- **Description:** Nightly `pg_dump` and Qdrant snapshot to off-site storage, with a tested restore; uptime checks and alerts from architecture §7.
-- **Acceptance criteria:**
-  - [ ] A restore drill succeeds on staging
-
-#### TASK-035: Launch checklist
-- **Phase:** 4 · **Depends on:** all
-- **Files:** `docs/02_outputs/launch_checklist.md`, `README.md`
-- **Description:** Final eval run on full datasets, cost review, privacy notice, admin CLI documented.
-- **Acceptance criteria:**
-  - [ ] `make eval` (full) passes on prod config
-  - [ ] Checklist signed off
+  - [ ] `make eval` (full) passes on the prod config
+  - [ ] A fresh clone reaches a working stack in ≤ 15 min following the README
 
 ---
 
@@ -302,15 +322,14 @@ Each TASK below becomes `tasks/active/<NNN>-<slug>.md` when started (repo task n
 
 ```mermaid
 flowchart LR
-  P0[Phase 0<br/>001-003] --> P1[Phase 1<br/>004-008]
-  P1 --> A[2a Core chat<br/>009-014]
-  A --> B[2b Evals<br/>015-016]
-  A --> C[2c RAG<br/>017-021]
-  C --> D[2d Tools/HITL<br/>022-024]
-  A --> E[2e Memory<br/>025-027]
-  B & C & D & E --> P3[Phase 3<br/>028-032]
-  P3 --> P4[Phase 4<br/>033-035]
+  M1[M1 Skeleton, live<br/>004] --> CC[M2 Core chat<br/>005]
+  CC --> EV[M2 Eval harness<br/>006]
+  EV --> R[M3 RAG<br/>007]
+  R --> T[M4 Tools/HITL<br/>008]
+  T --> MEM[M5 Memory<br/>009]
+  MEM --> H[M6 Hardening<br/>010]
 ```
 
-- **Sequential:** Phase 0 → 1 → 2a. The eval harness (2b) should land before RAG/tools/memory so each feature ships with its evals.
-- **Parallel:** 2c (RAG) and 2e (memory) can proceed in parallel after 2a; 2d depends on 2c's tool node. Frontend tasks run alongside their backend counterparts once the API spec is stable.
+- **Sequential:** milestones run in order; each ends deployed. The eval harness lands in M2 so every later feature ships with its suite and gate (G9).
+- **Parallel inside a milestone:** frontend tasks run alongside their backend counterparts once the API spec is stable; TASK-010 and TASK-012 can run in parallel.
+- **Order changes from v1.0:** deploy and backups moved from the last phase into M1; memory now follows tools because the `remember_fact` approval rule builds on the interrupt flow.

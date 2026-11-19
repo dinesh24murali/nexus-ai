@@ -3,6 +3,7 @@
 > Fill this out before using any prompt in `docs/01_prompts/`.
 > Your answers replace the `[[PLACEHOLDER]]` tokens in each prompt.
 > Answers marked `(default)` were chosen as sensible defaults on 2026-11-19 and can be revised.
+> Answers marked `(revised 2026-11-19)` were changed by the plan review in task 003; remaining `(default)` answers were reviewed and accepted.
 
 ---
 
@@ -15,10 +16,10 @@
 `A production-grade, self-hostable ChatGPT-style assistant with streaming chat, document Q&A, tool use with human approval, and long-term memory.`
 
 **1.3 Team / company name:**
-`Nexus AI Team` (default)
+`Nexus AI Team` — one developer working part-time with AI coding agents (revised 2026-11-19)
 
 **1.4 Target launch date (or "no fixed date"):**
-No fixed date (default)
+No fixed date; milestones set order, not dates (revised 2026-11-19)
 
 
 ---
@@ -28,7 +29,7 @@ No fixed date (default)
 **2.1 Who are the primary users?**
 (e.g. "Small business owners who need to track invoices")
 
-Individual knowledge workers (developers, analysts, students) who want a private assistant that can answer questions about their own documents and remember their preferences, and engineers who self-host it as a reference AI application. (default)
+Individual knowledge workers (developers, analysts, students) who want a private assistant that can answer questions about their own documents and remember their preferences, and engineers who self-host it as a reference AI application. The project is a **reference build** the developer runs; the hosted instance is **invite-only**. (revised 2026-11-19)
 
 
 **2.2 What problem does this solve?**
@@ -39,11 +40,12 @@ Hosted assistants are opaque: users cannot see or control what is remembered, ca
 **2.3 What does success look like in 6 months?**
 (Key metrics, user counts, revenue, etc.)
 
-- 100 weekly active users on the hosted instance (default)
-- ≥ 70% of rated answers thumbs-up
 - RAG faithfulness ≥ 0.85 and zero cross-user data leaks in evals and production
 - p95 time-to-first-token < 2 s; average cost < $0.01 per message
-- 99.5% monthly availability
+- Fresh clone → working local stack in ≤ 15 min following the README
+- Every AI feature ships with its eval suite and gate
+- ≥ 70% of rated answers thumbs-up (advisory)
+- Dropped: 100 weekly active users; 99.5% availability (revised 2026-11-19)
 
 
 ---
@@ -65,7 +67,7 @@ Image generation and image/voice input, code execution sandbox, shared/team work
 **3.3 Are there any existing systems this must integrate with?**
 (APIs, databases, legacy services)
 
-OpenAI API (chat, embeddings, moderation), Tavily search API (web search tool), Langfuse (self-hosted) for tracing, prompts, datasets and scores.
+OpenAI API (chat, embeddings, moderation; Responses API), Tavily search API (web search tool), Langfuse Cloud (EU) for tracing, datasets, scores and a prompt mirror. (revised 2026-11-19)
 
 
 ---
@@ -73,26 +75,26 @@ OpenAI API (chat, embeddings, moderation), Tavily search API (web search tool), 
 ## 4. Tech Stack
 
 **4.1 Backend language:**
-`Python 3.12`
+`Python 3.14` (revised 2026-11-19)
 
 **4.2 Backend framework:**
 `FastAPI` (with LangGraph for AI orchestration)
 
 **4.3 Frontend framework:**
-`React 18 + Vite + TypeScript`
+`React 19 + Vite + TypeScript 5.9` (revised 2026-11-19)
 
 **4.4 Database:**
-`PostgreSQL 16` (plus Qdrant as vector DB — see §11)
+`PostgreSQL 18` (plus Qdrant as vector DB — see §11) (revised 2026-11-19)
 
 **4.5 Cache / queue (if any):**
 (e.g. Redis, RabbitMQ, none)
 
-None for the app — background jobs use a Postgres-backed queue (`SELECT … FOR UPDATE SKIP LOCKED`). (Langfuse brings its own Redis internally.) (default)
+None for the app — background jobs use a Postgres-backed queue (`SELECT … FOR UPDATE SKIP LOCKED`). (default)
 
 **4.6 Any preferred UI component library?**
 (e.g. shadcn/ui, Tailwind, Material UI, none)
 
-Tailwind CSS + shadcn/ui (default)
+Tailwind CSS 4 + shadcn/ui (revised 2026-11-19)
 
 ---
 
@@ -137,7 +139,7 @@ None in v1 (default)
 **6.3 Authorization model:**
 (e.g. RBAC with roles: admin/user, simple owner-based, none)
 
-Owner-based: every resource belongs to one user; one `user` role in v1. Admin operations via CLI only. (default)
+Owner-based: every resource belongs to one user; one `user` role in v1. Registration is invite-only (CLI-issued invite codes). Admin operations via CLI only. (revised 2026-11-19)
 
 ---
 
@@ -159,7 +161,7 @@ GitHub Actions (default)
 **7.4 Environments needed:**
 (e.g. dev, staging, prod)
 
-dev (local compose), staging, prod (default)
+dev (local compose) and prod (one VM); CI acts as staging; manual prod deploys (revised 2026-11-19)
 
 ---
 
@@ -167,7 +169,7 @@ dev (local compose), staging, prod (default)
 
 **8.1 Expected users at launch:**
 
-~100 registered, ~20 concurrent (default)
+Invite-only, ~10–20 users; load-tested at 20 concurrent streams with the fake LLM (revised 2026-11-19)
 
 
 **8.2 Expected peak requests/second:**
@@ -183,12 +185,12 @@ PII — emails, conversation content, uploaded documents, extracted memories
 **8.4 Compliance requirements:**
 (e.g. GDPR, HIPAA, SOC2, none)
 
-No formal certification; GDPR-aligned practices: account deletion erases all user data, data export, minimal retention (default)
+No formal certification; account deletion erases all user data, minimal retention; data export deferred to after v1 (revised 2026-11-19)
 
 **8.5 Uptime target:**
 (e.g. 99.9%, best-effort)
 
-99.5% monthly (default)
+Best-effort, no SLO; one uptime check on `/readyz` (revised 2026-11-19)
 
 ---
 
@@ -197,7 +199,7 @@ No formal certification; GDPR-aligned practices: account deletion erases all use
 **9.1 Minimum unit test coverage target:**
 (e.g. 80%, none for now)
 
-Backend 80%, frontend 70% (default)
+Targets: backend 80%, frontend 70%, reached by M6; gates = measured coverage that only ratchets up (revised 2026-11-19)
 
 **9.2 E2e test tool preference:**
 (e.g. Playwright, Cypress, none)
@@ -219,11 +221,12 @@ Yes — schemathesis against `docs/02_outputs/04_api_spec.yaml`
 **11.2 Models and their roles:**
 (e.g. "gpt-4.1 for chat, gpt-4.1-mini for titles/memory extraction, text-embedding-3-small for embeddings")
 
-- Chat/agent: `gpt-4.1` (fallback `gpt-4.1-mini`)
-- Titles, memory extraction, summarization, LLM-as-judge: `gpt-4.1-mini`
+- Chat/agent: `gpt-6.1-terra` (effort `low`), M2 bake-off vs pinned `gpt-5.4-mini-2026-03-17`; fallback `gpt-6-luna`
+- Titles, memory extraction, summarization: `gpt-6-luna` (effort `none`)
+- LLM-as-judge: pinned `gpt-5.5-2026-04-23`
 - Embeddings: `text-embedding-3-small` (1536 dims)
 - Moderation: `omni-moderation-latest`
-- All model names are env-configurable (default)
+- All model names and reasoning efforts are env-configurable (revised 2026-11-19)
 
 
 **11.3 Orchestration framework:**
@@ -256,28 +259,28 @@ TTFT < 2 s p95 without tools; full answer < 20 s p95 (excluding time waiting for
 **11.8 Cost budget:**
 (e.g. < $0.01 per message on average, per-user daily token cap of 200k)
 
-< $0.01 per message average; 200k tokens per user per day; 30 messages per user per minute (default)
+< $0.01 per message average; $0.50 per user per day; $5 global per day; 30 messages per user per minute (revised 2026-11-19)
 
 
 **11.9 Quality targets / eval expectations:**
 (e.g. RAG faithfulness ≥ 0.85, tool-selection accuracy ≥ 0.9, "no regression vs. previous release")
 
-RAG faithfulness ≥ 0.85, context recall ≥ 0.80, answer relevance ≥ 0.80, tool-selection accuracy ≥ 0.90, memory extraction precision ≥ 0.80, prompt-injection resistance ≥ 0.95, cross-user leakage = 0 (default)
+Targets: RAG faithfulness ≥ 0.85, context recall ≥ 0.80, answer relevance ≥ 0.80, tool-selection accuracy ≥ 0.90, memory extraction precision ≥ 0.80, prompt-injection resistance ≥ 0.95, cross-user leakage = 0. Gates: measured baselines that only ratchet up, plus absolute safety gates (revised 2026-11-19)
 
 
 **11.10 Safety & guardrails:**
 (e.g. input moderation, prompt-injection defences, PII redaction, topics to refuse, age restrictions)
 
-OpenAI moderation on input; prompt-injection defences for documents, web results and memories; PII redaction in traces; output length caps; tool argument validation; HITL approval for web search (default)
+OpenAI moderation on input (fail-open on outage); prompt-injection defences for documents, web results and memories; PII redaction in traces; output length caps; tool argument validation; HITL approval for every web search and for `remember_fact` after untrusted content (revised 2026-11-19)
 
 
 **11.11 LLM observability tool:**
-`Langfuse` (self-hosted v3)
+`Langfuse` Cloud, EU region (self-hosted v4 optional) (revised 2026-11-19)
 
 **11.12 Data retention for prompts/completions/traces:**
 (e.g. traces kept 30 days, user can delete conversations and memories, no training on user data)
 
-Conversations/files/memories kept until the user deletes them; account deletion erases everything (Postgres, Qdrant, files, memories) within 24 h; Langfuse traces kept 30 days; OpenAI API data is not used for training (default)
+Conversations/files/memories kept until the user deletes them; account deletion erases everything (Postgres, Qdrant, files, memories) within 24 h; Langfuse traces (Cloud, EU) kept 30 days; OpenAI Responses API with `store=false`, API data not used for training (revised 2026-11-19)
 
 
 ---
@@ -286,6 +289,6 @@ Conversations/files/memories kept until the user deletes them; account deletion 
 
 List any unknowns or decisions not yet made:
 
-1. Staging and production domains (TBD)
-2. OpenAI model lineup changes often — confirm chat/fast/embedding models before launch
-3. Whether v1 needs an admin UI (currently CLI only)
+1. Production domain (TBD)
+2. ~~OpenAI model lineup~~ — resolved: models chosen 2026-11-19, chat model settled by the M2 bake-off (revised 2026-11-19)
+3. ~~Admin UI~~ — resolved: CLI only in v1 (revised 2026-11-19)

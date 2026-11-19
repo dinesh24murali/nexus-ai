@@ -2,8 +2,8 @@
 
 ## Stack
 
-- **Framework:** `React 18 + Vite + TypeScript`
-- **UI library:** `Tailwind CSS + shadcn/ui`
+- **Framework:** `React 19 + Vite + TypeScript 5.9`
+- **UI library:** `Tailwind CSS 4 (CSS-first @theme) + shadcn/ui`
 - **API client:** generated from `docs/02_outputs/04_api_spec.yaml`
 
 > Replace these placeholders with your actual stack after cloning.
@@ -57,7 +57,7 @@
 ## Running Locally
 
 ```bash
-# Fill in with actual commands for React 18 + Vite + TypeScript
+# Fill in with actual commands for React 19 + Vite + TypeScript
 # Example for Next.js:
 # cd frontend && npm run dev
 ```

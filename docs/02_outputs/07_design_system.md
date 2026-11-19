@@ -6,6 +6,7 @@
 
 **Aesthetic:** minimal — calm, content-first, generous whitespace. Conversation text is the hero; chrome recedes.
 Contrast ratios below are computed (WCAG 2.1 relative luminance), not estimated.
+**Revised 2026-11-19 (task 003):** values unchanged; Tailwind config moved to Tailwind 4 `@theme` (§4b).
 
 ---
 
@@ -125,6 +126,8 @@ Spacing uses a 4px grid; radius is soft but not pill-shaped; shadows are subtle 
 
 ### 4a. CSS Custom Properties
 
+The canonical values. In code (Tailwind 4), the light values of namespaced tokens live in the `@theme` block in 4b; everything else below lives in `frontend/src/styles/tokens.css`.
+
 ```css
 :root {
   /* Brand */
@@ -199,6 +202,8 @@ Spacing uses a 4px grid; radius is soft but not pill-shaped; shadows are subtle 
   --color-border: #1E293B;
   --color-text: #F1F5F9;
   --color-text-muted: #94A3B8;
+  --color-fg: #F1F5F9;        /* Tailwind utility alias of --color-text (4b) */
+  --color-fg-muted: #94A3B8;  /* alias of --color-text-muted */
   --color-user-bubble: #1E293B;
   --color-code-bg: #020617;
   --color-success-bg: #052E16; --color-success-fg: #86EFAC;
@@ -211,57 +216,60 @@ Spacing uses a 4px grid; radius is soft but not pill-shaped; shadows are subtle 
 }
 ```
 
-### 4b. Tailwind `theme.extend` config
+### 4b. Tailwind 4 `@theme` (CSS-first config)
 
-```js
-// frontend/tailwind.config.ts → theme.extend
-{
-  colors: {
-    primary: { DEFAULT: "var(--color-primary)", hover: "var(--color-primary-hover)", foreground: "var(--color-on-primary)" },
-    secondary: { DEFAULT: "var(--color-secondary)", text: "var(--color-secondary-text)" },
-    accent: "var(--color-accent)",
-    neutral: {
-      50: "var(--color-neutral-50)", 100: "var(--color-neutral-100)", 200: "var(--color-neutral-200)",
-      300: "var(--color-neutral-300)", 400: "var(--color-neutral-400)", 500: "var(--color-neutral-500)",
-      600: "var(--color-neutral-600)", 700: "var(--color-neutral-700)", 800: "var(--color-neutral-800)",
-      900: "var(--color-neutral-900)", 950: "var(--color-neutral-950)"
-    },
-    bg: "var(--color-bg)",
-    surface: "var(--color-surface)",
-    sidebar: "var(--color-sidebar)",
-    border: "var(--color-border)",
-    fg: { DEFAULT: "var(--color-text)", muted: "var(--color-text-muted)" },
-    "user-bubble": "var(--color-user-bubble)",
-    "code-bg": "var(--color-code-bg)",
-    success: { bg: "var(--color-success-bg)", fg: "var(--color-success-fg)" },
-    warning: { bg: "var(--color-warning-bg)", fg: "var(--color-warning-fg)" },
-    error: { bg: "var(--color-error-bg)", fg: "var(--color-error-fg)" },
-    info: { bg: "var(--color-info-bg)", fg: "var(--color-info-fg)" }
-  },
-  fontFamily: {
-    heading: "var(--font-heading)",
-    body: "var(--font-body)",
-    mono: "var(--font-mono)"
-  },
-  fontSize: {
-    h1: ["2.25rem", { lineHeight: "1.2", letterSpacing: "-0.02em", fontWeight: "700" }],
-    h2: ["1.75rem", { lineHeight: "1.25", letterSpacing: "-0.015em", fontWeight: "600" }],
-    h3: ["1.375rem", { lineHeight: "1.3", letterSpacing: "-0.01em", fontWeight: "600" }],
-    h4: ["1.125rem", { lineHeight: "1.4", letterSpacing: "-0.005em", fontWeight: "600" }],
-    h5: ["1rem", { lineHeight: "1.5", fontWeight: "600" }],
-    h6: ["0.875rem", { lineHeight: "1.5", letterSpacing: "0.01em", fontWeight: "600" }],
-    "body-lg": ["1.0625rem", { lineHeight: "1.7" }],
-    body: ["1rem", { lineHeight: "1.6" }],
-    "body-sm": ["0.875rem", { lineHeight: "1.5" }],
-    caption: ["0.75rem", { lineHeight: "1.4", letterSpacing: "0.01em" }],
-    label: ["0.875rem", { lineHeight: "1.4", letterSpacing: "0.005em", fontWeight: "500" }],
-    code: ["0.875rem", { lineHeight: "1.6" }]
-  },
-  borderRadius: { sm: "var(--radius-sm)", md: "var(--radius-md)", lg: "var(--radius-lg)", xl: "var(--radius-xl)" },
-  boxShadow: { sm: "var(--shadow-sm)", md: "var(--shadow-md)", focus: "var(--focus-ring)" },
-  maxWidth: { chat: "var(--chat-max-width)" },
-  width: { sidebar: "var(--sidebar-width)" }
+Tailwind 4 has no `tailwind.config.ts`; the theme is declared in CSS. Tokens that belong to a Tailwind namespace (`--color-*`, `--font-*`, `--text-*`, `--radius-*`, `--shadow-*`, `--container-*`) are declared **once**, in `@theme`, with their light values — Tailwind emits them as `:root` custom properties and generates utilities (`bg-primary`, `text-fg-muted`, `font-mono`, `text-h1`, `rounded-lg`, `shadow-focus`, `max-w-chat`). The `[data-theme="dark"]` overrides and the non-utility tokens (`--space-*`, `--focus-ring`, `--sidebar-width`) stay in plain CSS in `tokens.css`, exactly as in 4a. Spacing utilities use Tailwind's default `--spacing: 0.25rem`, which is the same 4px grid.
+
+```css
+/* frontend/src/styles/theme.css */
+@import "tailwindcss";
+@import "./tokens.css";   /* :root non-utility tokens + [data-theme="dark"] overrides (4a) */
+
+/* Dark mode follows the data-theme attribute (the app resolves "System" itself) */
+@custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
+
+@theme {
+  --color-*: initial;   /* drop Tailwind's default palette: only these tokens exist */
+
+  --color-primary: #0F766E;  --color-primary-hover: #115E59;  --color-on-primary: #FFFFFF;
+  --color-secondary: #D97706; --color-secondary-text: #B45309; --color-accent: #F59E0B;
+  --color-neutral-50: #F8FAFC;  --color-neutral-100: #F1F5F9; --color-neutral-200: #E2E8F0;
+  --color-neutral-300: #CBD5E1; --color-neutral-400: #94A3B8; --color-neutral-500: #64748B;
+  --color-neutral-600: #475569; --color-neutral-700: #334155; --color-neutral-800: #1E293B;
+  --color-neutral-900: #0F172A; --color-neutral-950: #020617;
+  --color-bg: #F8FAFC; --color-surface: #FFFFFF; --color-sidebar: #F1F5F9; --color-border: #E2E8F0;
+  --color-fg: #0F172A; --color-fg-muted: #64748B;          /* = --color-text / --color-text-muted */
+  --color-user-bubble: #F1F5F9; --color-code-bg: #0F172A;
+  --color-success-bg: #DCFCE7; --color-success-fg: #166534;
+  --color-warning-bg: #FEF3C7; --color-warning-fg: #92400E;
+  --color-error-bg: #FEE2E2;   --color-error-fg: #991B1B;
+  --color-info-bg: #DBEAFE;    --color-info-fg: #1E40AF;
+
+  --font-heading: "Inter Variable", "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+  --font-body: var(--font-heading);
+  --font-mono: "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  --text-h1: 2.25rem;    --text-h1--line-height: 1.2;  --text-h1--letter-spacing: -0.02em;  --text-h1--font-weight: 700;
+  --text-h2: 1.75rem;    --text-h2--line-height: 1.25; --text-h2--letter-spacing: -0.015em; --text-h2--font-weight: 600;
+  --text-h3: 1.375rem;   --text-h3--line-height: 1.3;  --text-h3--letter-spacing: -0.01em;  --text-h3--font-weight: 600;
+  --text-h4: 1.125rem;   --text-h4--line-height: 1.4;  --text-h4--letter-spacing: -0.005em; --text-h4--font-weight: 600;
+  --text-h5: 1rem;       --text-h5--line-height: 1.5;  --text-h5--font-weight: 600;
+  --text-h6: 0.875rem;   --text-h6--line-height: 1.5;  --text-h6--letter-spacing: 0.01em;   --text-h6--font-weight: 600;
+  --text-body-lg: 1.0625rem; --text-body-lg--line-height: 1.7;
+  --text-body: 1rem;         --text-body--line-height: 1.6;
+  --text-body-sm: 0.875rem;  --text-body-sm--line-height: 1.5;
+  --text-caption: 0.75rem;   --text-caption--line-height: 1.4; --text-caption--letter-spacing: 0.01em;
+  --text-label: 0.875rem;    --text-label--line-height: 1.4;   --text-label--letter-spacing: 0.005em; --text-label--font-weight: 500;
+  --text-code: 0.875rem;     --text-code--line-height: 1.6;
+
+  --radius-sm: 0.375rem; --radius-md: 0.5rem; --radius-lg: 0.75rem; --radius-xl: 1rem;
+  --shadow-sm: 0 1px 2px rgb(15 23 42 / 0.06);
+  --shadow-md: 0 4px 12px rgb(15 23 42 / 0.08);
+  --shadow-focus: var(--focus-ring);
+  --container-chat: 48rem;   /* max-w-chat */
 }
 ```
 
-> **Assumption:** shadcn/ui components are themed by mapping their CSS variables (`--primary`, `--background`, …) to these tokens in `globals.css`; no additional colors are introduced.
+In `tokens.css`, the dark block from 4a also sets `--color-fg` / `--color-fg-muted` alongside `--color-text` / `--color-text-muted`, so `text-fg` follows the theme. Sidebar width is used as `w-(--sidebar-width)`.
+
+> **Assumption:** shadcn/ui (Tailwind 4 + React 19 generation) components are themed by mapping their CSS variables (`--primary`, `--background`, …) to these tokens in `theme.css`; no additional colors are introduced.

@@ -2,9 +2,9 @@
 
 ## Stack
 
-- **Language:** `Python 3.12`
+- **Language:** `Python 3.14`
 - **Framework:** `FastAPI`
-- **Database:** `PostgreSQL 16`
+- **Database:** `PostgreSQL 18` via psycopg 3 (`postgresql+psycopg://`) — the only Postgres driver
 - **Auth:** `JWT (access token + rotating refresh cookie)`
 
 > Replace these placeholders with your actual stack after cloning.
@@ -56,7 +56,7 @@
 ## Running Locally
 
 ```bash
-# Fill in with actual commands for Python 3.12
+# Fill in with actual commands for Python 3.14
 # Example for Go:
 # cd backend && go run ./cmd/server
 ```

@@ -15,10 +15,12 @@ tests/
 
 ## Coverage Gate
 
-**Coverage must not drop below the thresholds in `tests/coverage-baseline.json`.**
+**Coverage must not drop below the gates in `tests/coverage-baseline.json`.**
+
+The file holds `targets` (backend 80%, frontend 70%) and per-package gates = measured coverage, which only ratchet up; every package reaches its target by milestone M6 (ADR-0009).
 
 - Before merging any task, run the test suite and verify coverage
-- If you add a new package, add its threshold to `coverage-baseline.json`
+- If you add a new package, record its measured coverage as its gate in `coverage-baseline.json`
 - If coverage genuinely cannot be maintained (e.g. generated code), document the exception in the JSON file
 
 ## Contract Testing

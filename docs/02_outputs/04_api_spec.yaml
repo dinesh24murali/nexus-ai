@@ -1,11 +1,13 @@
 openapi: "3.1.0"
 info:
   title: Nexus AI API
-  version: "1.0.0"
+  version: "1.1.0"
   description: |
     REST + Server-Sent Events API for Nexus AI, a self-hostable ChatGPT-style assistant.
 
     * All endpoints except `/auth/register`, `/auth/login`, `/auth/refresh`, `/healthz` and `/readyz` require a Bearer access token.
+    * Registration requires an invite code when the server runs with `REGISTRATION_MODE=invite` (the default).
+    * During a deploy, run-starting endpoints may return **503** `SERVICE_RESTARTING` (retryable).
     * Resources owned by another user return **404**, never 403.
     * Lists use cursor pagination: `?limit=&cursor=` → `{items, next_cursor}`.
     * Streaming endpoints return `text/event-stream`. Each SSE frame has `event: <type>` and `data: <JSON>`; the payload
@@ -13,17 +15,15 @@ info:
 servers:
   - url: http://localhost:8000/api/v1
     description: Local development
-  - url: https://staging.example.com/api/v1
-    description: Staging (TBD)
   - url: https://app.example.com/api/v1
-    description: Production (TBD)
+    description: Hosted instance (domain TBD)
 security:
   - BearerAuth: []
 tags:
   - name: auth
     description: Registration, login and token refresh
   - name: account
-    description: Current user profile, usage, export and deletion
+    description: Current user profile, usage and deletion
   - name: conversations
     description: Conversation threads
   - name: chat
@@ -58,6 +58,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/AuthResponse" }
         "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/ValidationError" }
         "429": { $ref: "#/components/responses/TooManyRequests" }
@@ -83,6 +84,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/AuthResponse" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "422": { $ref: "#/components/responses/ValidationError" }
         "429": { $ref: "#/components/responses/TooManyRequests" }
         "500": { $ref: "#/components/responses/InternalError" }
@@ -189,7 +191,7 @@ paths:
     get:
       tags: [account]
       operationId: getUsage
-      summary: Token usage for the current UTC day
+      summary: Spend, tokens and messages for the current UTC day
       responses:
         "200":
           description: Usage
@@ -197,21 +199,6 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Usage" }
         "401": { $ref: "#/components/responses/Unauthorized" }
-        "500": { $ref: "#/components/responses/InternalError" }
-
-  /me/export:
-    get:
-      tags: [account]
-      operationId: exportData
-      summary: Export all user data as JSON
-      responses:
-        "200":
-          description: Data export
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/DataExport" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "429": { $ref: "#/components/responses/TooManyRequests" }
         "500": { $ref: "#/components/responses/InternalError" }
 
   /conversations:
@@ -335,6 +322,7 @@ paths:
         "422": { $ref: "#/components/responses/ValidationError" }
         "429": { $ref: "#/components/responses/TooManyRequests" }
         "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
 
   /conversations/{conversationId}/regenerate:
     parameters:
@@ -350,6 +338,7 @@ paths:
         "409": { $ref: "#/components/responses/Conflict" }
         "429": { $ref: "#/components/responses/TooManyRequests" }
         "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
 
   /conversations/{conversationId}/runs/resume:
     parameters:
@@ -370,6 +359,7 @@ paths:
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/ValidationError" }
         "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
 
   /conversations/{conversationId}/runs/cancel:
     parameters:
@@ -657,6 +647,11 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
+    Forbidden:
+      description: "Not allowed: INVITE_INVALID (registration; same response for unknown, used, revoked or expired codes) or ACCOUNT_DISABLED (login, only after a correct password)"
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
     NotFound:
       description: Resource does not exist or belongs to another user
       content:
@@ -683,7 +678,7 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     TooManyRequests:
-      description: Rate limit or daily token budget exceeded (RATE_LIMITED, BUDGET_EXCEEDED)
+      description: "Rate limit or daily spend budget exceeded (RATE_LIMITED, BUDGET_EXCEEDED). For BUDGET_EXCEEDED, `details.scope` is `user` (your daily budget) or `global` (the instance's daily cap)."
       headers:
         Retry-After:
           description: Seconds until retry is allowed
@@ -693,6 +688,15 @@ components:
           schema: { $ref: "#/components/schemas/Error" }
     InternalError:
       description: Unexpected server error
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    ServiceUnavailable:
+      description: The server is restarting and not accepting new runs (SERVICE_RESTARTING); retry after the Retry-After delay
+      headers:
+        Retry-After:
+          description: Seconds until retry is likely to succeed
+          schema: { type: integer }
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -732,10 +736,11 @@ components:
       description: New account
       required: [email, password, display_name]
       properties:
+        invite_code: { type: string, minLength: 16, maxLength: 64, description: "Single-use invite code; required when the server runs with REGISTRATION_MODE=invite (the default)" }
         email: { type: string, format: email, maxLength: 254, description: Email address (case-insensitive) }
         password: { type: string, minLength: 10, maxLength: 128, description: Password }
         display_name: { type: string, minLength: 1, maxLength: 60, description: Name shown in the UI }
-      example: { email: marco@example.com, password: correct-horse-battery, display_name: Marco }
+      example: { invite_code: nx_4f9c2a7e1b8d3c6a5e0f, email: marco@example.com, password: correct-horse-battery, display_name: Marco }
 
     LoginRequest:
       type: object
@@ -801,34 +806,16 @@ components:
     Usage:
       type: object
       description: Usage for the current UTC day
-      required: [day, tokens_used, token_budget, messages, resets_at]
+      required: [day, spend_usd, budget_usd, tokens_used, messages, global_cap_reached, resets_at]
       properties:
         day: { type: string, format: date, description: UTC date }
-        tokens_used: { type: integer, description: Prompt + completion tokens used today }
-        token_budget: { type: integer, description: Daily token budget }
+        spend_usd: { type: number, description: "Estimated spend today in USD (chat runs plus background jobs such as titles and memory extraction)" }
+        budget_usd: { type: number, description: Your daily spend budget in USD }
+        tokens_used: { type: integer, description: "Input + output tokens used today (output includes reasoning tokens)" }
         messages: { type: integer, description: Messages sent today }
-        resets_at: { type: string, format: date-time, description: When the budget resets }
-      example: { day: "2026-11-19", tokens_used: 41230, token_budget: 200000, messages: 18, resets_at: "2026-11-20T00:00:00Z" }
-
-    DataExport:
-      type: object
-      description: Full export of a user's data
-      required: [user, conversations, memories, files, exported_at]
-      properties:
-        user: { $ref: "#/components/schemas/User" }
-        conversations:
-          type: array
-          description: Conversations with their messages
-          items:
-            type: object
-            description: Conversation with messages
-            properties:
-              conversation: { $ref: "#/components/schemas/Conversation" }
-              messages: { type: array, description: "All messages, oldest first", items: { $ref: "#/components/schemas/Message" } }
-        memories: { type: array, description: All memories, items: { $ref: "#/components/schemas/Memory" } }
-        files: { type: array, description: File metadata (not contents), items: { $ref: "#/components/schemas/FileObject" } }
-        exported_at: { type: string, format: date-time, description: Export time }
-      example: { user: { id: 7c1e2f0a-3b4d-4e5f-8a9b-0c1d2e3f4a5b, email: marco@example.com, display_name: Marco, memory_enabled: true, created_at: "2026-11-19T10:00:00Z" }, conversations: [], memories: [], files: [], exported_at: "2026-11-19T12:00:00Z" }
+        global_cap_reached: { type: boolean, description: "Whether the instance-wide daily cap has been reached (new runs are blocked for everyone)" }
+        resets_at: { type: string, format: date-time, description: When the budgets reset }
+      example: { day: "2026-11-19", spend_usd: 0.142, budget_usd: 0.5, tokens_used: 41230, messages: 18, global_cap_reached: false, resets_at: "2026-11-20T00:00:00Z" }
 
     Conversation:
       type: object
@@ -877,7 +864,7 @@ components:
       required: [interrupt_id, tool, args, created_at, expires_at]
       properties:
         interrupt_id: { type: string, description: Id to pass to /runs/resume }
-        tool: { type: string, enum: [web_search], description: Tool awaiting approval }
+        tool: { type: string, enum: [web_search, remember_fact], description: "Tool awaiting approval: web_search always; remember_fact only when the turn already read file passages or web results" }
         args: { type: object, description: Proposed tool arguments, additionalProperties: true }
         created_at: { type: string, format: date-time, description: When the run paused }
         expires_at: { type: string, format: date-time, description: When the approval expires (24 h) }
@@ -893,6 +880,7 @@ components:
         role: { type: string, enum: [user, assistant], description: Author role }
         content: { type: string, description: Markdown content }
         status: { type: string, enum: [complete, cancelled, failed], description: Final status }
+        finish_reason: { type: [string, "null"], enum: [stop, length, cancelled, tool_limit, error, server_restart, null], description: "Why the run ended (assistant messages only); server_restart means the run was interrupted by a deploy or crash and reaped" }
         tool_calls: { type: array, description: Tools used to produce this message, items: { $ref: "#/components/schemas/ToolCall" } }
         citations: { type: array, description: Sources cited, items: { $ref: "#/components/schemas/Citation" } }
         feedback: { type: [integer, "null"], enum: [-1, 1, null], description: "The user's rating, if any" }
@@ -915,9 +903,10 @@ components:
       properties:
         model: { type: string, description: Model that produced the answer }
         prompt_tokens: { type: integer, description: Input tokens (all LLM calls in the run) }
-        completion_tokens: { type: integer, description: Output tokens }
+        cached_tokens: { type: integer, description: Input tokens served from the provider's prompt cache (billed at the cached rate) }
+        completion_tokens: { type: integer, description: "Output tokens, including reasoning tokens" }
         cost_usd: { type: number, description: Estimated cost in USD }
-      example: { model: gpt-4.1, prompt_tokens: 1820, completion_tokens: 240, cost_usd: 0.0056 }
+      example: { model: gpt-6.1-terra, prompt_tokens: 9820, cached_tokens: 7680, completion_tokens: 410, cost_usd: 0.0045 }
 
     ToolCall:
       type: object
@@ -964,7 +953,8 @@ components:
           type: object
           description: Replacement args when decision is "edit"
           properties:
-            query: { type: string, minLength: 1, maxLength: 400, description: Edited search query }
+            query: { type: string, minLength: 1, maxLength: 400, description: Edited search query (web_search) }
+            content: { type: string, minLength: 1, maxLength: 500, description: Edited memory text (remember_fact) }
       example: { interrupt_id: int_9a8b7c, decision: edit, edited_args: { query: Go 1.24 release notes generics } }
 
     FeedbackRequest:
@@ -1156,7 +1146,7 @@ components:
       properties:
         type: { type: string, const: usage, description: Event type }
         usage: { $ref: "#/components/schemas/MessageUsage" }
-      example: { type: usage, usage: { model: gpt-4.1, prompt_tokens: 1820, completion_tokens: 240, cost_usd: 0.0056 } }
+      example: { type: usage, usage: { model: gpt-6.1-terra, prompt_tokens: 9820, cached_tokens: 7680, completion_tokens: 410, cost_usd: 0.0045 } }
 
     DoneEvent:
       type: object

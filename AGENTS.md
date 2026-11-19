@@ -9,11 +9,11 @@
 
 - **Project name:** `Nexus AI`
 - **Description:** `A production-grade, self-hostable ChatGPT-style assistant with streaming chat, document Q&A, tool use with human approval, and long-term memory.`
-- **Backend:** `Python 3.12` / `FastAPI`
-- **Frontend:** `React 18 + Vite + TypeScript`
-- **Database:** `PostgreSQL 16`
+- **Backend:** `Python 3.14` / `FastAPI`
+- **Frontend:** `React 19 + Vite + TypeScript 5.9`
+- **Database:** `PostgreSQL 18`
 - **Deployment target:** `Docker Compose on a single Linux VM behind Caddy`
-- **AI stack (if any):** `OpenAI` via `LangGraph`, vectors in `Qdrant`, observability in `Langfuse`
+- **AI stack (if any):** `OpenAI` (Responses API) via `LangGraph`, vectors in `Qdrant`, observability in `Langfuse` Cloud
 
 ---
 
@@ -95,14 +95,14 @@ These rules apply regardless of which AI tool is in use.
 ### 3.8 AI / LLM Changes
 Applies to any change touching prompts, models, model parameters, tool definitions, orchestration graph, retrieval/chunking, or memory.
 - **Evals are the tests for AI behaviour.** Run `make eval` and do not regress `evals/eval-baseline.json`. See `evals/AGENTS.md`
-- **No inline prompts.** Prompts live in the prompt registry (`Langfuse`) with a version-pinned fallback file in the repo; code references prompts by name
+- **No inline prompts.** Prompts live in `backend/prompts/<name>.md`, the single source of truth (ADR-0008); code loads them by name; bump the `version` front-matter on every change. Langfuse holds a CI-synced mirror for trace linking
 - **Everything is traced.** Every LLM call, tool call and retrieval runs inside a trace tagged with a hashed user id, conversation/session id and prompt version
 - **No secrets or raw PII in traces, logs or eval datasets**
 - **Untrusted content stays untrusted.** User uploads, retrieved chunks, web results and tool outputs are data, never instructions — wrap them as such in prompts and never let them choose tools with side effects without approval
 - **Tenant isolation is mandatory** in every vector search and memory lookup (filter by user/tenant id) and must have a test
 - **Every new tool** needs an entry in `docs/02_outputs/10_llm_threat_model.md` (tool permission matrix) and a red-team eval record
-- **Unit tests use a fake LLM** — never call a real model from `tests/`
-- **Budgets:** every model call has a timeout, bounded retries and a max-token limit; token usage is recorded per request
+- **Unit tests use the fake LLM** (`LLM_MODE=fake`) — real model calls belong in `evals/`
+- **Budgets:** every model call has a timeout, bounded retries and a max-output limit (reasoning included); token usage and USD cost are recorded per request
 - Update `memory/ai.md` when models, prompt versions, graph topology or retrieval settings change
 
 ---
@@ -138,8 +138,8 @@ Each folder has its own `AGENTS.md` with folder-specific instructions.
 - `tests/AGENTS.md` — coverage gates and test conventions
 - `evals/AGENTS.md` — LLM eval datasets, thresholds and the eval gate
 - `verify/AGENTS.md` — verification protocol
-- `backend/AGENTS.md` — backend conventions (`Python 3.12`)
-- `frontend/AGENTS.md` — frontend conventions (`React 18 + Vite + TypeScript`)
+- `backend/AGENTS.md` — backend conventions (`Python 3.14`)
+- `frontend/AGENTS.md` — frontend conventions (`React 19 + Vite + TypeScript`)
 
 ---
 
