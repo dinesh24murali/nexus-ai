@@ -1,0 +1,35 @@
+# Dev/CI: SITE_ADDRESS is unset -> plain HTTP on :80 (compose maps it to localhost:8080).
+# Prod: SITE_ADDRESS=<domain> -> automatic HTTPS (Let's Encrypt). See compose.prod.yml.
+{
+	admin off
+}
+
+{$SITE_ADDRESS::80} {
+	header {
+		Content-Security-Policy "default-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'"
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		-Server
+	}
+
+	# API: never compress or buffer (SSE streams must flush immediately).
+	handle /api/* {
+		reverse_proxy api:8000 {
+			flush_interval -1
+		}
+	}
+
+	# SPA: static assets, falling back to index.html for client-side routes.
+	handle {
+		encode zstd gzip
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+}
+
+# Container healthcheck target (not published).
+:8081 {
+	respond /healthz 200
+}
