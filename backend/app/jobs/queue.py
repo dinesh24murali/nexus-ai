@@ -106,6 +106,25 @@ async def claim(
         )
 
 
+async def cancel_queued(
+    session: AsyncSession, kind: str, user_id: uuid.UUID, payload_key: str, payload_value: str
+) -> int:
+    """Cancel the owner's jobs of `kind` that have not started (in the caller's transaction), e.g.
+    the ingestion of a file that is being deleted. A job already `running` is left alone: it ends
+    on its own, and its handler notices that what it worked on is gone."""
+    stmt = (
+        update(Job)
+        .where(
+            Job.kind == kind,
+            Job.user_id == user_id,
+            Job.status == "queued",
+            Job.payload[payload_key].as_string() == payload_value,
+        )
+        .values(status="cancelled")
+    )
+    return int((await session.execute(stmt)).rowcount)  # type: ignore[attr-defined]
+
+
 def _held_by(job_id: int, worker_id: str) -> tuple[Any, ...]:
     return (Job.id == job_id, Job.status == "running", Job.locked_by == worker_id)
 

@@ -5,6 +5,7 @@ import {
   type Dispatch,
   type FormEvent,
   type KeyboardEvent,
+  type ReactNode,
   type SetStateAction,
 } from 'react'
 import { Button } from '../../components/ui/Button'
@@ -21,6 +22,8 @@ type Props = {
   running: boolean
   stopping: boolean
   autoFocus?: boolean
+  /** Extra control at the start of the box (the paperclip). */
+  attach?: ReactNode
 }
 
 export function Composer({
@@ -31,6 +34,7 @@ export function Composer({
   running,
   stopping,
   autoFocus = true,
+  attach,
 }: Props) {
   const box = useRef<HTMLTextAreaElement>(null)
   const empty = text.trim() === ''
@@ -65,6 +69,7 @@ export function Composer({
       onSubmit={onSubmit}
       className="flex items-end gap-2 rounded-lg border border-border bg-surface p-2 focus-within:border-primary focus-within:shadow-focus"
     >
+      {attach}
       <label htmlFor="composer" className="sr-only">
         Message
       </label>

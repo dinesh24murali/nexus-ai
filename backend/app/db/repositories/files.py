@@ -9,6 +9,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import delete as sql_delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import File, User
@@ -23,8 +24,10 @@ __all__ = [
     "count",
     "create",
     "decode_cursor",
+    "delete",
     "get",
     "get_by_sha",
+    "get_for_update",
     "list_page",
     "lock_user",
     "mark_failed",
@@ -68,6 +71,20 @@ async def create(
 async def get(session: AsyncSession, user_id: uuid.UUID, file_id: uuid.UUID) -> File | None:
     stmt = select(File).where(File.user_id == user_id, File.id == file_id)
     return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def get_for_update(
+    session: AsyncSession, user_id: uuid.UUID, file_id: uuid.UUID
+) -> File | None:
+    """The caller's file, row-locked until the transaction ends. The worker's status writes are
+    `UPDATE`s of this row, so they wait for us and then find nothing (deletion vs. ingestion)."""
+    stmt = select(File).where(File.user_id == user_id, File.id == file_id).with_for_update()
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def delete(session: AsyncSession, user_id: uuid.UUID, file_id: uuid.UUID) -> bool:
+    stmt = sql_delete(File).where(File.user_id == user_id, File.id == file_id)
+    return bool((await session.execute(stmt)).rowcount)  # type: ignore[attr-defined]
 
 
 async def get_by_sha(session: AsyncSession, user_id: uuid.UUID, sha256: str) -> File | None:

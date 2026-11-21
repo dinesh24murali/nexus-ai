@@ -1,6 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query'
-import { LogOut } from 'lucide-react'
-import { Outlet, useNavigate } from 'react-router'
+import { FileText, LogOut } from 'lucide-react'
+import { NavLink, Outlet, useNavigate } from 'react-router'
 import { ConversationNav } from '../components/sidebar/ConversationNav'
 import { ThemeToggle } from '../components/ThemeToggle'
 import { Button } from '../components/ui/Button'
@@ -27,6 +27,15 @@ export function AppShell() {
       >
         <p className="px-2 py-1 text-h5 text-primary">Nexus AI</p>
         <ConversationNav />
+        <NavLink
+          to="/files"
+          className={({ isActive }) =>
+            `mt-3 flex items-center gap-2 rounded-md px-2 py-2 text-label hover:bg-neutral-200/60 dark:hover:bg-neutral-800 ${isActive ? 'bg-neutral-200/60 dark:bg-neutral-800' : 'text-fg-muted'}`
+          }
+        >
+          <FileText className="size-4" aria-hidden />
+          Files
+        </NavLink>
         <UsageMeter />
         <div className="mt-3 flex items-center justify-between gap-2 border-t border-border pt-3">
           <p className="truncate px-2 text-body-sm" title={user?.email}>

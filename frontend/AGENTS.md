@@ -24,7 +24,7 @@ frontend/
 │   ├── components/               ← app components (ThemeToggle, sidebar/: ConversationNav, ConversationList, ConversationItem)
 │   ├── features/                 ← feature folders (conversations/ = TanStack Query hooks; chat/ = ChatView, useChatRun,
 │   │                               MessageList, Composer, Feedback (thumbs), Markdown + CodeBlock + highlight (Shiki), notices, UsageMeter;
-│   │                               files/, settings/ to come)
+│   │                               Citations (chips + snippet popover); files/ = FilesPage, uploads, chips, paperclip; settings/ to come)
 │   ├── styles/tokens.css, theme.css   ← design tokens + Tailwind 4 @theme (docs/02_outputs/07)
 │   └── config.ts                 ← build-time VITE_* config
 ├── public/theme-init.js          ← sets data-theme before first paint (CSP forbids inline scripts)
@@ -50,6 +50,14 @@ frontend/
 - The draft text lives in the page (`Composer` is controlled) so a send refused after the home-page hand-off can put it back
 - Ratings: `Feedback.tsx` (thumbs under a complete or stopped answer, not a failed or empty one) + `feedback.ts` (`useRate`: the rating shows at once, goes back with a message if the server refuses). The API cannot withdraw a rating, so pressing the chosen thumb again sends nothing. Anything that renders `MessageList` needs the query and auth providers
 - Tests: `renderApp(path, handler, {strict: true})` runs under StrictMode; `liveStream()` feeds a stream event by event; use `seen(text)` rather than `expect(await findByText(..)).toBeInTheDocument()` for text that moves from the live bubble to the stored message. `tests/e2e/chat.spec.ts` needs the stack in `LLM_MODE=fake` with `LLM_FAKE_TOKEN_DELAY_S=0.05` and fails loudly otherwise
+
+### Files (TASK-021)
+- `features/files/`: `api.ts` (`useFiles` polls every 2 s only while a file is `pending`/`processing`; `useUploadFile`, `useDeleteFile`), `uploads.ts` (`useAttachments`: at most 5 files at once, one chip per upload), `FilesPage` (`/files`: dropzone, table, `n/50`, inline delete confirm), `AttachButton` (`FilePicker`, the paperclip and the page's button), `UploadChips` (Uploading… → Processing… → Ready / Failed), `messages.ts` (texts for the file error codes). The composer takes the paperclip through its optional `attach` prop; chips are rendered by the page above it
+- **No byte progress**: `fetch` cannot report upload bytes and every call must go through `manager.fetch` (token refresh), so the chip is a state, not a percentage
+- The openapi-fetch adapter sends a `multipart/form-data` body as an `ArrayBuffer` (`text()` would corrupt binary files). Build the body with `bodySerializer` returning a `FormData`
+- **Errors from `unwrap` / `unwrapEmpty` keep the API error code** (`problemFromBody`): openapi-fetch has already read the body, so `parseProblem(response)` on it would turn every code into `HTTP_ERROR`. Use `unwrapEmpty` for 204 calls
+- Citation chips (`features/chat/Citations.tsx`) render under stored assistant messages from `message.citations`, as plain text; web links only for `http(s)` URLs. Live `citation` events are not shown while streaming (the chips appear when the stored message replaces the live bubble)
+- Tests: in jsdom a `File` cannot be read by Node's fetch (it hangs), so tests build uploads with `File` from `node:buffer` (see `files.test.tsx`); the bytes on the wire are proven by `tests/e2e/rag.spec.ts`. `tests/e2e/rag.spec.ts` needs `LLM_MODE=fake` on api AND worker; the fake embeddings are a hashed bag of words, so keep the fixture file short (a one-word query must stay above the 0.25 score cut-off)
 
 ### Auth and sessions
 - All session logic is `src/lib/auth.ts` (`AuthManager`). Use `manager.fetch()` for every API call: it adds the bearer token, refreshes once on 401 and retries. Never put tokens in localStorage, sessionStorage, URLs or the DOM

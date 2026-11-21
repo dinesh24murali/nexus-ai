@@ -3,7 +3,7 @@
 import hashlib
 import io
 import zipfile
-from collections.abc import Callable, Generator
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -12,7 +12,6 @@ from uuid import uuid4
 import psycopg
 import pytest
 from app.core.config import Settings
-from app.main import create_app
 from fastapi.testclient import TestClient
 
 from tests.rag.builders import docx_bytes, pdf_bytes
@@ -36,23 +35,6 @@ def upload(
 ) -> Any:
     files = {field: (name or "", io.BytesIO(data), "application/octet-stream")}
     return client.post(f"{API}/files", headers=headers, files=files)
-
-
-@pytest.fixture
-def make_client(settings: Settings, db_url: str) -> Generator[Callable[..., TestClient]]:
-    """A client with settings overrides (small limits make the limit tests cheap)."""
-    clients: list[TestClient] = []
-
-    def make(**overrides: Any) -> TestClient:
-        app = create_app(settings.model_copy(update={"database_url": db_url, **overrides}))
-        c = TestClient(app, base_url="https://testserver", raise_server_exceptions=False)
-        c.__enter__()
-        clients.append(c)
-        return c
-
-    yield make
-    for c in clients:
-        c.__exit__(None, None, None)
 
 
 @pytest.fixture

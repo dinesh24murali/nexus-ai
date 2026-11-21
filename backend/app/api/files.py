@@ -1,9 +1,9 @@
-"""Files: upload, list, read. Deletion arrives with TASK-020. The spec is the contract."""
+"""Files: upload, list, read, delete. The spec is the contract."""
 
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from starlette.datastructures import UploadFile
 
@@ -90,3 +90,18 @@ async def get_file(file_id: str, current: CurrentUserDep, factory: FactoryDep) -
     if row is None:
         raise _not_found()
     return FileOut.from_model(row)
+
+
+@router.delete(
+    "/{file_id}",
+    status_code=204,
+    summary="Delete a file and remove it from search",
+    response_class=Response,
+)
+async def delete_file(file_id: str, current: CurrentUserDep, files: FilesDep) -> Response:
+    try:
+        fid = uuid.UUID(file_id)
+    except ValueError:
+        raise _not_found() from None
+    await files.delete(current.id, fid)
+    return Response(status_code=204)

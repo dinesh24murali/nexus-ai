@@ -37,7 +37,15 @@ export const problem = (
   headers: Record<string, string> = {},
 ) => json(status, { error: { code, message, request_id: 'req_t', ...extra } }, headers)
 
-export type Call = { path: string; method: string; body: unknown; headers: Headers }
+export type Call = {
+  path: string
+  method: string
+  /** The JSON body, parsed (undefined for anything that is not a string, e.g. an upload). */
+  body: unknown
+  /** The body exactly as handed to `fetch` (an ArrayBuffer for a multipart upload). */
+  rawBody: unknown
+  headers: Headers
+}
 export type Handler = (call: Call) => Response | Promise<Response>
 
 /** Render the whole app at `path`, with `fetch` replaced by `handler` and every call recorded. */
@@ -48,6 +56,7 @@ export function renderApp(path: string, handler: Handler, options: { strict?: bo
       path: input.toString(),
       method: init.method ?? 'GET',
       body: typeof init.body === 'string' ? JSON.parse(init.body) : undefined,
+      rawBody: init.body,
       headers: new Headers(init.headers),
     }
     calls.push(call)

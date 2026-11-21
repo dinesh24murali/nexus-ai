@@ -4,6 +4,9 @@ import { Alert } from '../components/ui/Alert'
 import { Composer } from '../features/chat/Composer'
 import type { HandoffState } from '../features/chat/ChatView'
 import { useCreateConversation } from '../features/conversations/api'
+import { FilePicker } from '../features/files/AttachButton'
+import { UploadChips } from '../features/files/UploadChips'
+import { useAttachments } from '../features/files/uploads'
 import { useAuth } from '../lib/auth-context'
 import { describeProblem } from '../lib/messages'
 
@@ -17,6 +20,7 @@ export function HomePage() {
   const create = useCreateConversation()
   const [error, setError] = useState<string | null>(null)
   const [text, setText] = useState('')
+  const attachments = useAttachments()
 
   async function start(text: string): Promise<boolean> {
     setError(null)
@@ -40,7 +44,9 @@ export function HomePage() {
           {error}
         </Alert>
       )}
+      <UploadChips attachments={attachments} />
       <Composer
+        attach={<FilePicker onPick={attachments.upload} />}
         text={text}
         setText={setText}
         onSend={start}

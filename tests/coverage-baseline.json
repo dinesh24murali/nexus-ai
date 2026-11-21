@@ -11,7 +11,8 @@
     "backend/app/services": 93,
     "backend/app/core": 96,
     "frontend/src/api": 97,
-    "frontend/src/features/chat": 88,
+    "frontend/src/features/chat": 89,
+    "frontend/src/features/files": 94,
     "backend/evals": 96,
     "backend/app/rag": 98
   },

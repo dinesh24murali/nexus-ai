@@ -5,9 +5,8 @@ import {
   useQueryClient,
   type InfiniteData,
 } from '@tanstack/react-query'
-import { unwrap, useApiClient } from '../../api/client'
+import { unwrap, unwrapEmpty, useApiClient } from '../../api/client'
 import type { components } from '../../api/schema'
-import { parseProblem } from '../../lib/auth'
 import { useAuth } from '../../lib/auth-context'
 
 export type Conversation = components['schemas']['Conversation']
@@ -105,14 +104,10 @@ export function useDeleteConversation() {
   const keys = useConversationKeys()
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: async (id: string) => {
-      const { error, response } = await api.DELETE('/conversations/{conversationId}', {
-        params: { path: { conversationId: id } },
-      })
-      if (!response.ok || error !== undefined) {
-        throw await parseProblem(response)
-      }
-    },
+    mutationFn: (id: string) =>
+      unwrapEmpty(
+        api.DELETE('/conversations/{conversationId}', { params: { path: { conversationId: id } } }),
+      ),
     onSuccess: async (_void, id) => {
       qc.removeQueries({ queryKey: keys.one(id) })
       await qc.invalidateQueries({ queryKey: keys.list })

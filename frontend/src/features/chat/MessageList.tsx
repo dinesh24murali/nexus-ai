@@ -2,6 +2,7 @@ import { AlertTriangle, RefreshCw } from 'lucide-react'
 import { Button } from '../../components/ui/Button'
 import { cn } from '../../lib/cn'
 import type { Message } from './api'
+import { Citations } from './Citations'
 import { Feedback } from './Feedback'
 import { Markdown } from './Markdown'
 import type { ChatRun } from './useChatRun'
@@ -45,6 +46,7 @@ function AssistantBubble({ message, isLast, canRetry, onRegenerate }: AssistantP
   return (
     <article aria-label="Nexus reply" className="text-body-lg">
       {message.content && <Markdown text={message.content} />}
+      {message.citations && <Citations citations={message.citations} />}
       {message.status === 'cancelled' && <Label tone="muted">Stopped</Label>}
       {failed && (
         <Label tone="warning">

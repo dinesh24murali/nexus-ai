@@ -13,6 +13,7 @@ import os
 import re
 import uuid
 import zipfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import Protocol
 
@@ -28,6 +29,7 @@ from app.graph.nodes.load_context import RecentFiles
 from app.graph.state import RecentFile
 from app.jobs import queue
 from app.rag import formats
+from app.rag.index import QdrantIndex, lazy_index
 
 _log = structlog.get_logger("nexus.files")
 
@@ -95,8 +97,14 @@ def detect(path: Path) -> str | None:
 
 
 class FileService:
-    def __init__(self, factory: async_sessionmaker[AsyncSession], settings: Settings) -> None:
+    def __init__(
+        self,
+        factory: async_sessionmaker[AsyncSession],
+        settings: Settings,
+        index: Callable[[], QdrantIndex] | None = None,
+    ) -> None:
         self._factory = factory
+        self._index = index or lazy_index(settings)
         self._root = settings.uploads_dir
         self._max_bytes = settings.max_upload_bytes
         self._max_files = settings.max_files_per_user
@@ -144,6 +152,37 @@ class FileService:
                 raise
         finally:
             await asyncio.to_thread(part.unlink, missing_ok=True)
+
+    async def delete(self, user_id: uuid.UUID, file_id: uuid.UUID) -> None:
+        """Remove a file everywhere (TASK-020): search index, queued ingestion, row, disk.
+
+        The row is locked first, so a worker that is ingesting the file right now cannot mark it
+        ready behind our back: its status write waits, then finds no row, and it removes whatever
+        it indexed (see `ingest_file`). The vectors go before the row, inside the same
+        transaction: if the vector store fails everything rolls back and the user can retry; the
+        file is never left "deleted" but still searchable. The disk file goes after the commit
+        (removing it first could leave a row pointing at nothing); if that fails the file is an
+        orphan on disk that no query can reach, so it is logged, not raised.
+        """
+        index = self._index()
+        async with self._factory() as session, session.begin():
+            row = await repo.get_for_update(session, user_id, file_id)
+            if row is None:
+                raise ApiError(404, "NOT_FOUND", "File not found.")
+            try:
+                await index.ensure_collection()
+                await index.delete_file(user_id, file_id)
+            except Exception:
+                _log.error("file_delete_index_failed", file_id=str(file_id), exc_info=True)
+                raise
+            await queue.cancel_queued(session, INGEST_JOB, user_id, "file_id", str(file_id))
+            await repo.delete(session, user_id, file_id)
+            storage_path = row.storage_path
+        try:
+            await asyncio.to_thread((self._root / storage_path).unlink, missing_ok=True)
+        except OSError:
+            _log.warning("file_delete_disk_failed", file_id=str(file_id), exc_info=True)
+        _log.info("file_deleted", file_id=str(file_id))
 
     async def _write(self, content: Readable, part: Path) -> tuple[int, str]:
         digest = hashlib.sha256()

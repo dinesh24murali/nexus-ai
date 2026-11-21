@@ -7,11 +7,13 @@ build `documents_v2` and switch the alias in one atomic step. Every point carrie
 """
 
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from functools import cache
 
 from qdrant_client import AsyncQdrantClient, models
 
+from app.core.config import Settings
 from app.rag.chunker import Chunk
 
 VECTOR_SIZE = 1536  # text-embedding-3-small; changing the model means a new collection version
@@ -171,3 +173,18 @@ class QdrantIndex:
             for point in response.points
             if point.payload
         ]
+
+
+def lazy_index(settings: Settings) -> Callable[[], QdrantIndex]:
+    """A getter that builds the index client on first use and then reuses it (nothing connects
+    until a request needs it)."""
+
+    @cache
+    def get() -> QdrantIndex:
+        client = AsyncQdrantClient(
+            url=settings.qdrant_url,
+            api_key=settings.qdrant_api_key.get_secret_value() or None,
+        )
+        return QdrantIndex(client, alias=settings.qdrant_collection)
+
+    return get

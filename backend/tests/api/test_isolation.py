@@ -142,3 +142,20 @@ def test_a_message_cursor_cannot_be_replayed_against_another_users_conversation(
     leaked = client.get(f"{API}/conversations/{b}/messages?cursor={cursor}", headers=bob).json()
 
     assert leaked == {"items": [], "next_cursor": None}
+
+
+def test_files_are_invisible_and_undeletable_for_other_users(
+    client: TestClient, two_users: tuple[dict[str, str], dict[str, str]]
+) -> None:
+    from .test_files import upload
+
+    alice, bob = two_users
+    fid = upload(client, alice).json()["id"]
+
+    assert client.get(f"{API}/files", headers=bob).json()["items"] == []
+    assert client.get(f"{API}/files/{fid}", headers=bob).status_code == 404
+    assert client.delete(f"{API}/files/{fid}", headers=bob).status_code == 404
+
+    # Alice's file survived Bob's attempt, and she can still read and delete it.
+    assert client.get(f"{API}/files/{fid}", headers=alice).status_code == 200
+    assert client.delete(f"{API}/files/{fid}", headers=alice).status_code == 204

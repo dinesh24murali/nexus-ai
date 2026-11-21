@@ -47,23 +47,35 @@ export class ApiProblem extends Error {
 
 /** Turn any failed response into an ApiProblem, tolerating non-JSON bodies (proxy errors). */
 export async function parseProblem(res: Response): Promise<ApiProblem> {
+  let body: unknown
+  try {
+    body = await res.json()
+  } catch {
+    // not JSON (or already read): handled as "not our error envelope" below
+  }
+  return problemFromBody(res, body)
+}
+
+/**
+ * Same as `parseProblem` for a body that was already read (openapi-fetch reads the error body
+ * itself, so `res.json()` would fail a second time and every code would become HTTP_ERROR).
+ */
+export function problemFromBody(res: Response, body: unknown): ApiProblem {
   const retryAfter = Number(res.headers.get('retry-after'))
   const retryAfterS = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : undefined
-  try {
-    const body = (await res.json()) as {
+  const error = (
+    body as {
       error?: {
         code?: string
         message?: string
         details?: Record<string, unknown>
         request_id?: string
       }
-    }
-    if (body.error?.code) {
-      const { code, message, details, request_id } = body.error
-      return new ApiProblem(res.status, code, message ?? code, details, request_id, retryAfterS)
-    }
-  } catch {
-    // fall through: not our error envelope
+    } | null
+  )?.error
+  if (error?.code) {
+    const { code, message, details, request_id } = error
+    return new ApiProblem(res.status, code, message ?? code, details, request_id, retryAfterS)
   }
   return new ApiProblem(
     res.status,

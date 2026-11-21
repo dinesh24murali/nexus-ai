@@ -4,6 +4,9 @@ import { Alert } from '../../components/ui/Alert'
 import { Button } from '../../components/ui/Button'
 import { describeProblem } from '../../lib/messages'
 import type { Conversation } from '../conversations/api'
+import { FilePicker } from '../files/AttachButton'
+import { UploadChips } from '../files/UploadChips'
+import { useAttachments } from '../files/uploads'
 import { chronological, useMessages } from './api'
 import { Composer } from './Composer'
 import { MessageList } from './MessageList'
@@ -25,6 +28,7 @@ export function ChatView({ conversation }: { conversation: Conversation }) {
   const stickToBottom = useRef(true)
   const handedOff = useRef(false)
   const [text, setText] = useState('')
+  const attachments = useAttachments()
   const { send } = chat
 
   const messages = chronological(history.data)
@@ -111,7 +115,9 @@ export function ChatView({ conversation }: { conversation: Conversation }) {
             />
           </div>
         )}
+        <UploadChips attachments={attachments} />
         <Composer
+          attach={<FilePicker onPick={attachments.upload} />}
           text={text}
           setText={setText}
           onSend={sendAndFollow}
