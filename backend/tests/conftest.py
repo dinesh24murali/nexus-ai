@@ -1,14 +1,16 @@
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 from app.core.config import Settings
 
 
 @pytest.fixture
-def settings() -> Settings:
+def settings(tmp_path: Path) -> Settings:
     """Settings for tests: never reads .env, never needs real services or keys."""
     return Settings(
         _env_file=None,
+        uploads_dir=tmp_path / "uploads",
         app_env="test",
         llm_mode="fake",
         auth_secret="test-auth-secret-0123456789abcdef0123456789abcdef",
@@ -174,3 +176,28 @@ def live_server(settings: Settings, db_url: str) -> Iterator[Callable[..., str]]
 @pytest.fixture
 def live_server_url(live_server: Callable[..., str]) -> str:
     return live_server()
+
+
+# ───────────── a real Qdrant (tests marked `integration`) ─────────────
+import os  # noqa: E402
+import uuid  # noqa: E402
+
+from app.rag.index import QdrantIndex  # noqa: E402
+from qdrant_client import AsyncQdrantClient  # noqa: E402
+
+from tests.rag.qdrant_support import drop  # noqa: E402
+
+QDRANT_URL = os.environ.get("TEST_QDRANT_URL", "http://localhost:6333")
+
+
+@pytest.fixture
+async def qdrant_index() -> AsyncIterator[QdrantIndex]:
+    """An index on its own alias, so tests never see each other's points; removed afterwards."""
+    alias = f"test_documents_{uuid.uuid4().hex[:12]}"
+    client = AsyncQdrantClient(url=QDRANT_URL)
+    index = QdrantIndex(client, alias=alias)
+    try:
+        yield index
+    finally:
+        await drop(index)
+        await client.close()

@@ -28,6 +28,8 @@ RUN groupadd --system --gid 10001 nexus \
 WORKDIR /app
 COPY --from=builder --chown=nexus:nexus /app /app
 COPY --chown=nexus:nexus uvicorn_logging.json /app/uvicorn_logging.json
+# Uploaded files. A new named volume copies this directory's owner, so the non-root user can write.
+RUN mkdir -p /data/uploads && chown nexus:nexus /data/uploads
 ENV PATH="/app/.venv/bin:$PATH" PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 \
     TIKTOKEN_CACHE_DIR=/app/.tiktoken
 USER nexus

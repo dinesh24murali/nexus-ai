@@ -19,7 +19,7 @@ from langchain_core.runnables import Runnable
 from langchain_openai import ChatOpenAI
 
 from app.core.config import ReasoningEffort, Settings, get_settings
-from app.llm.fake import FakeChatModel, FakeModerationClient
+from app.llm.fake import FakeChatModel, FakeEmbeddingsClient, FakeModerationClient
 
 Role = Literal["chat", "summarize", "title", "memory_extract", "judge", "router", "long_form"]
 ROLES: tuple[str, ...] = get_args(Role)
@@ -96,6 +96,24 @@ def build_moderation_client(settings: Settings | None = None) -> openai.AsyncOpe
         raise LLMConfigError("OPENAI_API_KEY is not set (use LLM_MODE=fake to work offline)")
     return openai.AsyncOpenAI(
         api_key=key, timeout=MODERATION_TIMEOUT_S, max_retries=MODERATION_RETRIES
+    )
+
+
+EMBEDDING_TIMEOUT_S = 30.0  # doc 08 section 3
+EMBEDDING_RETRIES = 3
+
+
+def build_embeddings_client(settings: Settings | None = None) -> openai.AsyncOpenAI | Any:
+    """The client behind document embeddings: scripted in fake mode, otherwise the OpenAI SDK with
+    the timeout and retries the embedding role calls for (the SDK retries 429s and 5xx)."""
+    s = settings or get_settings()
+    if s.llm_mode == "fake":
+        return FakeEmbeddingsClient()
+    key = s.openai_api_key.get_secret_value()
+    if not key:
+        raise LLMConfigError("OPENAI_API_KEY is not set (use LLM_MODE=fake to work offline)")
+    return openai.AsyncOpenAI(
+        api_key=key, timeout=EMBEDDING_TIMEOUT_S, max_retries=EMBEDDING_RETRIES
     )
 
 

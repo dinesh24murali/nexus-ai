@@ -37,6 +37,8 @@ PRICES: dict[str, Price] = {
     "gpt-6.2-sol": _p("2", "0.10", "10"),
     "gpt-5.4-mini": _p("0.75", "0.075", "4.50"),
     "gpt-5.5": _p("5", "0.50", "30"),
+    # Embeddings bill input tokens only.
+    "text-embedding-3-small": _p("0.02", "0.02", "0"),
 }
 
 
@@ -72,6 +74,10 @@ def cost_usd(model: str, usage: Usage) -> Decimal:
         + max(usage.completion_tokens, 0) * price.output
     )
     return total / _MILLION
+
+
+def embedding_cost_usd(model: str, tokens: int) -> Decimal:
+    return max(tokens, 0) * price_for(model).input / _MILLION
 
 
 def usage_from_metadata(meta: Mapping[str, Any] | None) -> Usage:

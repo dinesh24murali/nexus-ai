@@ -14,7 +14,7 @@
 - 429 carries `Retry-After`; codes `RATE_LIMITED`, `BUDGET_EXCEEDED` with `details.scope = user | global` (USD budgets reset 00:00 UTC)
 - `POST /auth/register` takes `invite_code` (required when `REGISTRATION_MODE=invite`); bad codes → 403 `INVITE_INVALID` (one response for unknown/used/revoked/expired)
 - No data export endpoint in v1 (FR-005 deferred)
-- Upload: multipart field `file`; 413 `FILE_TOO_LARGE` (> 20 MB), 415 `FILE_TYPE_UNSUPPORTED`, 409 `FILE_DUPLICATE`
+- Upload: multipart field `file`; 413 `FILE_TOO_LARGE` (> 20 MB), 415 `FILE_TYPE_UNSUPPORTED`, 409 `FILE_DUPLICATE`, 409 `FILE_LIMIT_REACHED` (50 files)
 - Spec lints clean with Redocly (warnings only: no license, placeholder server URL, health probes without 4xx); spec version 1.1.0
 - **Implementation facts (TASK-004/006, 2026-11-21):**
   - Every response carries `X-Request-ID` (`req_<16 hex>`); a client-supplied one is honoured only if it matches that shape. Error bodies carry the same id
@@ -52,3 +52,11 @@
   - `PUT /messages/{messageId}/feedback` `{score: -1|1, comment?}` -> `{message_id, score, comment, created_at}`. One row per (message, user): a second PUT **replaces** the rating and the comment (no comment clears it) and moves `created_at` to the new time. There is no way to withdraw a rating (not in the spec); the UI therefore ignores a second press on the chosen thumb
   - Only the caller's own **assistant** messages can be rated: someone else's, a user message, an unknown id and a malformed id are all the same 404. `score` must be an integer: `"1"` and `true` are 422 (`true == 1` in Python, so `_not_a_bool` guards it); `comment` is optional, not nullable, <= 1000 chars, no NUL; a blank comment is stored as none
   - The rating is stored first, then mirrored to the answer's Langfuse trace as the score `user_feedback` (see `memory/ai.md`); a Langfuse outage or an answer without a trace (`messages.trace_id` is null) never fails the request. The comment is `mask`ed before it leaves the process
+- **Files (TASK-017, 2026-11-21):**
+  - `POST /files` -> 202 `FileObject` (`status=pending`), `GET /files` (newest first, keyset cursor `created_at|id`), `GET /files/{id}` (another user's, unknown and malformed ids are the same 404). `DELETE` arrives with TASK-020
+  - The handler reads the multipart body itself (`request.form()`), not through a `File(...)` parameter, so an honest oversize `Content-Length` (> limit + 1 MB) is refused before the body is received; Caddy also caps `/api` bodies at 22 MB. Without a Content-Length the size is counted while streaming to disk and stops at the limit
+  - Check order: extension -> stream to `<uploads>/<user_id>/<file_id>.part` (size + SHA-256) -> 422 if empty -> content sniff must match the extension (PDF `%PDF-`, DOCX = zip directory with `[Content_Types].xml` + `word/document.xml`, text = no NUL and < 2 % control bytes; a PDF or zip named `.txt` is refused) -> rename -> ONE transaction: user row `FOR UPDATE`, duplicate (409 with `details.file_id`), limit (409), insert, enqueue `ingest_file` (key `ingest:{file_id}:{sha256}`, 3 attempts). Anything after the rename that fails removes the file
+  - The user's file name is data: base name only, control characters removed, 255 chars; the disk name is the file id. `files.storage_path` is relative to `UPLOADS_DIR`
+  - `page_count` / `chunk_count` are null until the file is `ready` (PDFs only for pages). A `failed` file keeps its SHA-256 slot until it is deleted (deletion = TASK-020)
+  - `Idempotency-Key` on upload is accepted and ignored (the SHA-256 duplicate check stops a retry from creating a second file, but the retry gets 409, not the first response)
+  - Limits are settings: `MAX_UPLOAD_BYTES` (20 MiB), `MAX_FILES_PER_USER` (50), `UPLOADS_DIR` (`/data/uploads` volume in Compose, shared by api and worker)

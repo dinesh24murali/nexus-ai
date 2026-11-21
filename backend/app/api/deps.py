@@ -13,6 +13,7 @@ from app.core.security import InvalidTokenError, TokenExpiredError, decode_acces
 from app.db.models import User
 from app.db.repositories import users
 from app.services.feedback import FeedbackService
+from app.services.files import FileService
 from app.services.runs import RunService
 
 _bearer = HTTPBearer(auto_error=False, description="15-minute access token from /auth/login")
@@ -38,6 +39,11 @@ def get_feedback(request: Request) -> FeedbackService:
     return service
 
 
+def get_files(request: Request) -> FileService:
+    service: FileService = request.app.state.files
+    return service
+
+
 def get_client_ip(request: Request, settings: Annotated[Settings, Depends(get_settings)]) -> str:
     return client_ip(request, trusted_proxy=settings.trusted_proxy)
 
@@ -47,6 +53,7 @@ FactoryDep = Annotated[async_sessionmaker[AsyncSession], Depends(get_session_fac
 ClientIpDep = Annotated[str, Depends(get_client_ip)]
 RunsDep = Annotated[RunService, Depends(get_runs)]
 FeedbackDep = Annotated[FeedbackService, Depends(get_feedback)]
+FilesDep = Annotated[FileService, Depends(get_files)]
 
 
 @dataclass(frozen=True)

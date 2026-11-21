@@ -171,6 +171,7 @@ class Message(Base):
 class File(Base):
     __tablename__ = "files"
     __table_args__ = (
+        CheckConstraint("status IN ('pending', 'processing', 'ready', 'failed')", name="status"),
         Index("ix_files_user_created", "user_id", text("created_at DESC")),
         UniqueConstraint("user_id", "sha256", name="uq_files_user_sha256"),
     )
@@ -184,10 +185,10 @@ class File(Base):
     size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
     sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     storage_path: Mapped[str] = mapped_column(Text, nullable=False)
-    status: Mapped[str] = mapped_column(Text, server_default="uploaded", default="uploaded")
+    status: Mapped[str] = mapped_column(Text, server_default="pending", default="pending")
     error: Mapped[str | None] = mapped_column(Text)
-    page_count: Mapped[int] = mapped_column(Integer, server_default="0", default=0)
-    chunk_count: Mapped[int] = mapped_column(Integer, server_default="0", default=0)
+    page_count: Mapped[int | None] = mapped_column(Integer)  # PDFs only; null when unknown
+    chunk_count: Mapped[int | None] = mapped_column(Integer)  # null until the file is indexed
     created_at: Mapped[datetime] = _created_at()
     updated_at: Mapped[datetime] = _updated_at()
 

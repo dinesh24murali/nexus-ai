@@ -1,7 +1,7 @@
 openapi: "3.1.0"
 info:
   title: Nexus AI API
-  version: "1.3.3"
+  version: "1.3.4"
   description: |
     REST + Server-Sent Events API for Nexus AI, a self-hostable ChatGPT-style assistant.
 
@@ -430,6 +430,10 @@ paths:
       tags: [files]
       operationId: uploadFile
       summary: Upload a file; processing happens asynchronously
+      description: |
+        Multipart field `file`. The type is checked by extension and content (magic bytes). The same
+        content (SHA-256) cannot be uploaded twice by one user. `Idempotency-Key` is accepted but not
+        stored; the duplicate check already prevents a retry from creating a second file.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
@@ -738,17 +742,17 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     Conflict:
-      description: Conflicts with current state (e.g. EMAIL_TAKEN, RUN_IN_PROGRESS, FILE_DUPLICATE, NO_PENDING_INTERRUPT, DOCUMENT_NOT_READY, REGENERATE_NOT_SUPPORTED)
+      description: Conflicts with current state (e.g. EMAIL_TAKEN, RUN_IN_PROGRESS, FILE_DUPLICATE (details.file_id is the existing file), FILE_LIMIT_REACHED (50 files per user), NO_PENDING_INTERRUPT, DOCUMENT_NOT_READY, REGENERATE_NOT_SUPPORTED)
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     PayloadTooLarge:
-      description: File exceeds 20 MB
+      description: File exceeds 20 MB (FILE_TOO_LARGE)
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     UnsupportedMediaType:
-      description: File type not supported
+      description: File type not supported (FILE_TYPE_UNSUPPORTED); the extension must be pdf, docx, txt or md and the content must match it
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }

@@ -10,6 +10,8 @@ x-backend: &backend
     # Container-internal addresses override the localhost values in .env.
     DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-nexus}:${POSTGRES_PASSWORD:-nexus}@postgres:5432/${POSTGRES_DB:-nexus}
     QDRANT_URL: http://qdrant:6333
+    # Uploaded files; api and worker share the `uploads` volume.
+    UPLOADS_DIR: /data/uploads
     # Every request reaches the api through Caddy, which sets X-Forwarded-For (core/net.py).
     TRUSTED_PROXY: "true"
 
@@ -59,11 +61,13 @@ services:
     restart: "no"
     depends_on:
       postgres: { condition: service_healthy }
+      qdrant: { condition: service_healthy }  # it creates the document collection
 
   api:
     <<: *backend-app
     # `stop_grace_period` lets in-flight chat runs drain on deploy (ADR-0006: 90 s wait + margin).
     stop_grace_period: 120s
+    volumes: ["uploads:/data/uploads"]
     ports: ["127.0.0.1:${APP_PORT:-8000}:8000"]
     healthcheck:
       # Liveness only: dependency state is /readyz's job, and must not flap the container.
@@ -81,6 +85,7 @@ services:
     <<: *backend-app
     command: ["python", "-m", "app.worker"]
     stop_grace_period: 120s
+    volumes: ["uploads:/data/uploads"]
     healthcheck:
       # The worker touches this file every 10 s.
       test: ["CMD-SHELL", "test -n \"$$(find /tmp/worker-alive -mmin -1 2>/dev/null)\""]
@@ -112,5 +117,6 @@ services:
 volumes:
   pgdata:
   qdrant_data:
+  uploads:
   caddy_data:
   caddy_config:

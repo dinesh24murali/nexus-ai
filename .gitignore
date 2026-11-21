@@ -100,3 +100,6 @@ dump.rdb
 
 # ── Evals ──────────────────────────────────────────────────────────────────────
 evals/results/
+
+# Local uploads directory (backend run from the backend/ folder)
+backend/data/

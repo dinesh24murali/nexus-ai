@@ -11,12 +11,15 @@ tool call for a tool that requires approval (e.g. `web_search`).
 """
 
 import asyncio
+import hashlib
 import json
+import math
 import re
 import time
 from collections.abc import AsyncIterator, Iterator, Sequence
 from functools import cache
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from langchain_core.callbacks import AsyncCallbackManagerForLLMRun, CallbackManagerForLLMRun
@@ -276,3 +279,36 @@ class FakeModerationClient:
 
     def __init__(self) -> None:
         self.moderations = _FakeModerations()
+
+
+EMBEDDING_DIMENSIONS = 1536
+_EMBED_WORD = re.compile(r"\w+")
+
+
+def _fake_vector(text: str) -> list[float]:
+    """Hashed bag of words, unit length: texts sharing words are close, unrelated texts are not."""
+    vector = [0.0] * EMBEDDING_DIMENSIONS
+    for word in _EMBED_WORD.findall(text.lower()):
+        digest = hashlib.blake2b(word.encode(), digest_size=4).digest()
+        vector[int.from_bytes(digest, "big") % EMBEDDING_DIMENSIONS] += 1.0
+    norm = math.sqrt(sum(x * x for x in vector))
+    if norm == 0:
+        vector[0] = 1.0
+        return vector
+    return [x / norm for x in vector]
+
+
+class _FakeEmbeddings:
+    async def create(self, *, model: str, input: Sequence[str]) -> Any:
+        data = [
+            SimpleNamespace(index=i, embedding=_fake_vector(text)) for i, text in enumerate(input)
+        ]
+        tokens = sum(_approx_tokens(text) for text in input)
+        return SimpleNamespace(data=data, usage=SimpleNamespace(total_tokens=tokens))
+
+
+class FakeEmbeddingsClient:
+    """Same call shape as `openai.AsyncOpenAI().embeddings.create`, deterministic and offline."""
+
+    def __init__(self) -> None:
+        self.embeddings = _FakeEmbeddings()

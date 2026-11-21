@@ -4,6 +4,7 @@ Each kind has a hard timeout (enforced by the worker, after which the attempt fa
 limit. Handlers are idempotent: the queue can run a job twice after a crash.
 """
 
+import asyncio
 import re
 import uuid
 from collections.abc import Awaitable, Callable
@@ -13,16 +14,22 @@ from typing import Any, cast
 
 import structlog
 from langchain_core.runnables import Runnable, RunnableConfig
+from qdrant_client import AsyncQdrantClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import Settings
-from app.db.repositories import conversations, messages, usage
+from app.db.repositories import conversations, files, messages, usage
 from app.jobs.queue import ClaimedJob
-from app.llm.factory import Role, get_model
+from app.llm.factory import Role, build_embeddings_client, get_model
+from app.llm.pricing import embedding_cost_usd
 from app.llm.prompts import load_prompt
 from app.llm.redaction import hash_user_id
 from app.llm.tracing import RunTrace, Tracer
 from app.llm.usage import UsageCollector
+from app.rag.chunker import chunk_document
+from app.rag.embedder import Embedder
+from app.rag.index import QdrantIndex
+from app.rag.parsers import ParseError, parse
 
 _log = structlog.get_logger("nexus.jobs")
 
@@ -42,6 +49,24 @@ class JobContext:
     tracer: Tracer | None = None
     # Role -> model. Defaults to the factory (the only place model clients are built); tests inject.
     model_for: Callable[[Role], Runnable[Any, Any]] | None = None
+    # Built on first use from settings (clients come from the factory); tests inject their own.
+    embedder: Embedder | None = None
+    index: QdrantIndex | None = None
+
+    def get_embedder(self) -> Embedder:
+        if self.embedder is None:
+            client = build_embeddings_client(self.settings)
+            self.embedder = Embedder(client, self.settings.llm_embedding_model)
+        return self.embedder
+
+    def get_index(self) -> QdrantIndex:
+        if self.index is None:
+            client = AsyncQdrantClient(
+                url=self.settings.qdrant_url,
+                api_key=self.settings.qdrant_api_key.get_secret_value() or None,
+            )
+            self.index = QdrantIndex(client, alias=self.settings.qdrant_collection)
+        return self.index
 
     def model(self, role: Role) -> Runnable[Any, Any]:
         if self.model_for is not None:
@@ -115,7 +140,90 @@ async def generate_title(ctx: JobContext, job: ClaimedJob) -> None:
             await conversations.set_generated_title(session, user_id, conversation_id, title)
 
 
+INGEST_FAILED_REASON = "Processing failed. Please upload the file again."
+FILE_MISSING_REASON = "The stored file could not be found. Please upload it again."
+
+
+async def ingest_file(ctx: JobContext, job: ClaimedJob) -> None:
+    """Parse, chunk, embed and index one uploaded file (doc 08 section 6).
+
+    Idempotent: point ids derive from (file, chunk index), so a second run overwrites the first.
+    A file nobody can read (`ParseError`) fails for good with a reason the user sees; anything else
+    is retried by the queue, and on the last attempt the file is marked failed so it never stays
+    "processing". Logs carry ids and counts, never text.
+    """
+    if job.user_id is None:
+        raise ValueError("ingest_file needs a user")
+    user_id = job.user_id
+    file_id = uuid.UUID(str(job.payload["file_id"]))
+
+    async with ctx.factory() as session:
+        row = await files.get(session, user_id, file_id)
+    if row is None:
+        return  # deleted (or never this user's): nothing to do
+    async with ctx.factory() as session, session.begin():
+        if not await files.mark_processing(session, user_id, file_id):
+            return
+
+    index = ctx.get_index()
+    path = ctx.settings.uploads_dir / row.storage_path
+    try:
+        await index.ensure_collection()
+        document = await asyncio.to_thread(parse, path, row.mime_type)
+        chunks = await asyncio.to_thread(chunk_document, document)
+        embedded = await ctx.get_embedder().embed([c.text for c in chunks])
+        # The embeddings are paid for whatever happens next.
+        async with ctx.factory() as session, session.begin():
+            await usage.add(
+                session,
+                user_id,
+                datetime.now(UTC).date(),
+                prompt_tokens=embedded.tokens,
+                completion_tokens=0,
+                cost_usd=embedding_cost_usd(ctx.settings.llm_embedding_model, embedded.tokens),
+            )
+        await index.upsert(
+            user_id=user_id,
+            file_id=file_id,
+            filename=row.filename,
+            chunks=chunks,
+            vectors=embedded.vectors,
+        )
+    except ParseError as exc:
+        await _fail_file(ctx, user_id, file_id, exc.reason)
+        _log.info("ingest_unreadable", file_id=str(file_id))
+        return
+    except FileNotFoundError:
+        await _fail_file(ctx, user_id, file_id, FILE_MISSING_REASON)
+        _log.warning("ingest_file_missing_on_disk", file_id=str(file_id))
+        return
+    except Exception:
+        if job.attempts >= job.max_attempts:
+            await _fail_file(ctx, user_id, file_id, INGEST_FAILED_REASON)
+        raise
+
+    async with ctx.factory() as session, session.begin():
+        still_there = await files.mark_ready(
+            session, user_id, file_id, chunk_count=len(chunks), page_count=document.page_count
+        )
+    if not still_there:
+        await index.delete_file(user_id, file_id)  # deleted while we worked: leave nothing behind
+        return
+    _log.info("ingest_done", file_id=str(file_id), chunks=len(chunks), tokens=embedded.tokens)
+
+
+async def _fail_file(ctx: JobContext, user_id: uuid.UUID, file_id: uuid.UUID, reason: str) -> None:
+    """Mark the file failed and remove whatever a partial run indexed."""
+    try:
+        await ctx.get_index().delete_file(user_id, file_id)
+    except Exception:
+        _log.warning("ingest_cleanup_failed", file_id=str(file_id), exc_info=True)
+    async with ctx.factory() as session, session.begin():
+        await files.mark_failed(session, user_id, file_id, reason)
+
+
 JOBS: dict[str, JobSpec] = {
     # "1 retry" (doc 08 section 9) = 2 attempts.
     "generate_title": JobSpec(generate_title, timeout_s=120, max_attempts=2),
+    "ingest_file": JobSpec(ingest_file, timeout_s=300, max_attempts=3),
 }

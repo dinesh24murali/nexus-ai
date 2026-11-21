@@ -64,9 +64,16 @@ class Settings(BaseSettings):
     global_daily_budget_usd: Decimal = Field(default=Decimal("5.00"), ge=0)
     chat_rate_limit_per_min: int = Field(default=30, ge=1)
 
-    # Vector DB
+    # Uploaded files (docs/02_outputs/02 FS-004). The API and the worker share this directory (the
+    # `uploads` volume in Compose).
+    uploads_dir: Path = Path("data/uploads")
+    max_upload_bytes: int = Field(default=20 * 1024 * 1024, ge=1)
+    max_files_per_user: int = Field(default=50, ge=1)
+
+    # Vector DB. `qdrant_collection` is the alias; the versioned collection sits behind it.
     qdrant_url: str = "http://localhost:6333"
     qdrant_api_key: SecretStr = SecretStr("")
+    qdrant_collection: str = "documents"
 
     # LLM observability (Langfuse Cloud, EU). Tracing is best-effort and optional.
     langfuse_public_key: SecretStr = SecretStr("")

@@ -276,7 +276,12 @@ export interface paths {
         /** List uploaded files, newest first */
         get: operations["listFiles"];
         put?: never;
-        /** Upload a file; processing happens asynchronously */
+        /**
+         * Upload a file; processing happens asynchronously
+         * @description Multipart field `file`. The type is checked by extension and content (magic bytes). The same
+         *     content (SHA-256) cannot be uploaded twice by one user. `Idempotency-Key` is accepted but not
+         *     stored; the duplicate check already prevents a retry from creating a second file.
+         */
         post: operations["uploadFile"];
         delete?: never;
         options?: never;
@@ -1579,7 +1584,7 @@ export interface components {
                 "application/json": components["schemas"]["Error"];
             };
         };
-        /** @description Conflicts with current state (e.g. EMAIL_TAKEN, RUN_IN_PROGRESS, FILE_DUPLICATE, NO_PENDING_INTERRUPT, DOCUMENT_NOT_READY, REGENERATE_NOT_SUPPORTED) */
+        /** @description Conflicts with current state (e.g. EMAIL_TAKEN, RUN_IN_PROGRESS, FILE_DUPLICATE (details.file_id is the existing file), FILE_LIMIT_REACHED (50 files per user), NO_PENDING_INTERRUPT, DOCUMENT_NOT_READY, REGENERATE_NOT_SUPPORTED) */
         Conflict: {
             headers: {
                 [name: string]: unknown;
@@ -1588,7 +1593,7 @@ export interface components {
                 "application/json": components["schemas"]["Error"];
             };
         };
-        /** @description File exceeds 20 MB */
+        /** @description File exceeds 20 MB (FILE_TOO_LARGE) */
         PayloadTooLarge: {
             headers: {
                 [name: string]: unknown;
@@ -1597,7 +1602,7 @@ export interface components {
                 "application/json": components["schemas"]["Error"];
             };
         };
-        /** @description File type not supported */
+        /** @description File type not supported (FILE_TYPE_UNSUPPORTED); the extension must be pdf, docx, txt or md and the content must match it */
         UnsupportedMediaType: {
             headers: {
                 [name: string]: unknown;

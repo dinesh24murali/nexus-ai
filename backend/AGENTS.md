@@ -17,8 +17,9 @@ backend/
 │   ├── main.py             ← create_app() factory (run: uvicorn app.main:create_app --factory)
 │   ├── api/                ← routers (thin), deps.py (auth + session factory), schemas.py,
 │   │                         chat.py (send/regenerate/cancel/history) + sse.py (typed events, framing),
-│   │                         feedback.py (PUT /messages/{id}/feedback)
-│   ├── services/           ← use cases and transaction boundaries (auth.py; runs.py = run lease,
+│   │                         feedback.py (PUT /messages/{id}/feedback), files.py (upload, list, get)
+│   ├── services/           ← use cases and transaction boundaries (auth.py; files.py = upload checks, storage,
+│   │                         duplicate/limit, enqueue `ingest_file`; runs.py = run lease,
 │   │                         streaming, cancel, regenerate, drain, pre-run limits; usage.py = spend reads,
 │   │                         budget check, /me/usage, spend alert; feedback.py = rate an answer + Langfuse score)
 │   ├── jobs/               ← queue.py (Postgres SKIP LOCKED), handlers.py (registry: kind -> handler,
@@ -31,7 +32,9 @@ backend/
 │   │                         moderation.py (input moderation, fail-open),
 │   │                         usage.py (per-run token + cost collector)
 │   ├── graph/              ← state.py, prompting.py (cache-friendly request layout), builder.py, nodes/
-│   └── (rag/ memory/ ...  arrive with M3+; layout in docs/02_outputs/03_tech_architecture.md §2)
+│   ├── rag/                ← formats.py, parsers.py (PDF/DOCX/TXT/MD), chunker.py (800/120 tokens), embedder.py,
+│   │                         index.py (Qdrant: alias `documents`, tenant payload); ingestion job is in jobs/handlers.py
+│   └── (memory/ ...        arrives with M5; layout in docs/02_outputs/03_tech_architecture.md §2)
 ├── evals/                  ← the eval suite (`python -m evals.run`; see evals/AGENTS.md); not imported by app/
 ├── prompts/                ← canonical prompt files `<name>.md` (front-matter name + version; ADR-0008)
 ├── alembic/                ← async env, forward-only migrations in versions/

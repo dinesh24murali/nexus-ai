@@ -157,6 +157,40 @@ class ConversationPage(BaseModel):
     next_cursor: str | None
 
 
+# ───────────────────────────────── files ─────────────────────────────────
+
+
+class FileOut(BaseModel):
+    id: uuid.UUID
+    filename: str
+    mime_type: str
+    size_bytes: int
+    status: Literal["pending", "processing", "ready", "failed"]
+    error: str | None
+    page_count: int | None
+    chunk_count: int | None
+    created_at: datetime
+
+    @classmethod
+    def from_model(cls, f: Any) -> FileOut:
+        return cls(
+            id=f.id,
+            filename=f.filename,
+            mime_type=f.mime_type,
+            size_bytes=f.size_bytes,
+            status=f.status,
+            error=f.error,
+            page_count=f.page_count,
+            chunk_count=f.chunk_count,
+            created_at=f.created_at,
+        )
+
+
+class FilePage(BaseModel):
+    items: list[FileOut]
+    next_cursor: str | None
+
+
 # ───────────────────────────────── chat ─────────────────────────────────
 
 

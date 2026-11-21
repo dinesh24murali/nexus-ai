@@ -8,7 +8,7 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
-from app.api import auth, chat, conversations, feedback, health, me
+from app.api import auth, chat, conversations, feedback, files, health, me
 from app.core.config import Settings, get_settings
 from app.core.errors import register_exception_handlers
 from app.core.health import default_checks
@@ -18,6 +18,7 @@ from app.core.shutdown import chain_sigterm
 from app.db.session import create_engine, create_session_factory
 from app.llm.tracing import Tracer
 from app.services.feedback import FeedbackService
+from app.services.files import FileService
 from app.services.runs import DRAIN_TIMEOUT_S, RunService, graph_factory_for
 
 _log = structlog.get_logger("nexus.app")
@@ -56,6 +57,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         app.state.runs = runs
         app.state.feedback = FeedbackService(app.state.session_factory, tracer)
+        app.state.files = FileService(app.state.session_factory, settings)
         restore_sigterm = chain_sigterm(runs.begin_drain)  # refuse new runs from the first moment
         try:
             yield
@@ -89,5 +91,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     api.include_router(conversations.router)
     api.include_router(chat.router)
     api.include_router(feedback.router)
+    api.include_router(files.router)
     app.include_router(api)
     return app
