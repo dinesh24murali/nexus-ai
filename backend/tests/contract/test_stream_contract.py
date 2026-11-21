@@ -170,3 +170,64 @@ def test_a_budget_refusal_is_a_documented_429_with_retry_after_and_scope(
     ERROR_VALIDATOR.validate(r.json())
     assert r.json()["error"]["details"]["scope"] in {"user", "global"}
     assert int(r.headers["retry-after"]) > 0
+
+
+# ---------------------------------------------------------------- tool approval (resume)
+
+RESUME = "/conversations/{conversationId}/runs/resume"
+
+
+def test_a_paused_stream_ends_with_a_documented_interrupt_and_its_resume_stream_completes(
+    http: tuple[str, httpx.Client, str],
+) -> None:
+    base, client, cid = http
+
+    first = client.post(
+        f"{base}/conversations/{cid}/messages", json={"content": "[[fixture:web_search]] news"}
+    )
+
+    frames = parse(first.text)
+    for _event, _seq, data in frames:
+        VALIDATOR.validate(data)
+    kinds = [event for event, _, _ in frames]
+    assert kinds[0] == "run_started" and kinds[-1] == "interrupt"
+    assert set(kinds[1:-1]) <= BODY_EVENTS  # nothing after the interrupt, no usage or done
+    interrupt = frames[-1][2]["interrupt"]
+
+    second = client.post(
+        f"{base}/conversations/{cid}/runs/resume",
+        json={"interrupt_id": interrupt["interrupt_id"], "decision": "approve"},
+    )
+
+    assert SPEC["paths"][RESUME]["post"]["responses"]["200"] == {
+        "$ref": "#/components/responses/EventStream"
+    }
+    assert second.status_code == 200
+    assert second.headers["content-type"].startswith("text/event-stream")
+    resumed = parse(second.text)
+    for event, _seq, data in resumed:
+        VALIDATOR.validate(data)
+        assert data["type"] == event
+    kinds = [event for event, _, _ in resumed]
+    assert kinds[0] == "run_started" and resumed[0][2]["user_message_id"] is None
+    assert kinds[-2:] == ["usage", "done"]
+    assert set(kinds[1:-2]) <= BODY_EVENTS and "citation" in kinds
+
+
+def test_the_resume_refusals_are_documented_errors(http: tuple[str, httpx.Client, str]) -> None:
+    base, client, cid = http
+    documented = SPEC["paths"][RESUME]["post"]["responses"]
+
+    nothing_pending = client.post(
+        f"{base}/conversations/{cid}/runs/resume",
+        json={"interrupt_id": "int_x", "decision": "approve"},
+    )
+    malformed = client.post(
+        f"{base}/conversations/{cid}/runs/resume", json={"interrupt_id": "int_x"}
+    )
+
+    for response, status in ((nothing_pending, 409), (malformed, 422)):
+        assert response.status_code == status and str(status) in documented
+        ERROR_VALIDATOR.validate(response.json())
+    assert nothing_pending.json()["error"]["code"] == "NO_PENDING_INTERRUPT"
+    assert "429" in documented  # a resume starts a run, so it can be rate limited like a send

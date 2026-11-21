@@ -11,7 +11,7 @@ type Props = {
 export function RunNotice({ notice, onReload, onDismiss }: Props) {
   const view = describeNotice(notice)
   return (
-    <Alert variant={notice.kind === 'restarting' || notice.kind === 'busy' ? 'info' : 'error'}>
+    <Alert variant={['restarting', 'busy', 'no_approval'].includes(notice.kind) ? 'info' : 'error'}>
       <p>{view.message}</p>
       <div className="mt-2 flex gap-2">
         {view.action === 'reload' && (

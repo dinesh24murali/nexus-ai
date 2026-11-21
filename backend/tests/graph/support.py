@@ -32,3 +32,10 @@ def thread(thread_id: str = "conv-1", **configurable: Any) -> RunnableConfig:
 def filler(tokens: int) -> str:
     """Text of roughly `tokens` o200k tokens (a short common word repeated)."""
     return " ".join(["word"] * tokens)
+
+
+class ToolFake(RecordingFake):
+    """The recording fake that accepts `bind_tools` (the tool-capable graph binds its tools)."""
+
+    def bind_tools(self, tools: Sequence[Any], **kwargs: Any) -> ToolFake:
+        return self

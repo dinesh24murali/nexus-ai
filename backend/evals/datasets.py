@@ -110,6 +110,49 @@ class RagCase(_Record):
         return self
 
 
+ToolName = Literal["search_my_files", "web_search", "calculator"]
+
+
+class SetupDoc(BaseModel):
+    """A file the case's user has uploaded: the search tool finds exactly this text."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1)
+    text: str = Field(min_length=1)
+
+
+class ToolsSetup(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    docs: list[SetupDoc] = Field(default_factory=list)
+
+
+class ToolsCase(_Record):
+    """A tool-routing case (doc 09 sections 3 and 9). `expected_tool` is the FIRST tool call
+    (null: no tool at all); `expected_args_contains` maps an argument of that call to substrings
+    it must contain (case-insensitive); `expected_sequence` lists every call in order once every
+    approval is granted; `expect_interrupt` is true exactly when a web search is expected."""
+
+    input: str = Field(min_length=1)
+    setup: ToolsSetup = Field(default_factory=ToolsSetup)
+    expected_tool: ToolName | None
+    expected_args_contains: dict[str, list[str]] = Field(default_factory=dict)
+    expect_interrupt: bool
+    expected_sequence: list[ToolName] | None = Field(default=None, min_length=2)
+
+    @model_validator(mode="after")
+    def _consistent(self) -> ToolsCase:
+        wanted = self.expected_sequence or ([self.expected_tool] if self.expected_tool else [])
+        if self.expect_interrupt != ("web_search" in wanted):
+            raise ValueError("`expect_interrupt` must be true exactly when web_search is expected")
+        if self.expected_args_contains and self.expected_tool is None:
+            raise ValueError("`expected_args_contains` needs an expected_tool")
+        if self.expected_sequence and self.expected_sequence[0] != self.expected_tool:
+            raise ValueError("`expected_sequence` must start with the expected_tool")
+        return self
+
+
 class CalibrationCase(_Record):
     """One hand-labelled RAG answer for judge calibration (TASK-037). `label` is the human's
     verdict: `faithful` only if every claim in the answer is supported by the passages."""
@@ -130,6 +173,7 @@ MODELS: dict[str, type[_Record]] = {
     "perf.latency": PerfCase,
     "safety.redteam": RedTeamCase,
     "rag.golden": RagCase,
+    "tools.routing": ToolsCase,
 }
 
 

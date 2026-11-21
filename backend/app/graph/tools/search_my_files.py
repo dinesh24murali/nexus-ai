@@ -7,13 +7,14 @@ the `user_id` the graph was started with, never an argument (LLM-T05).
 
 import html
 import uuid
-from dataclasses import dataclass, field
-from typing import Any, Literal
+from dataclasses import dataclass
+from typing import Any
 
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.graph.state import Citation
+from app.graph.tools.outcome import ToolOutcome, invalid_arguments
 from app.rag.retriever import Passage, Searcher
 
 TOOL_NAME = "search_my_files"
@@ -58,15 +59,6 @@ def tool_spec() -> StructuredTool:
     )
 
 
-@dataclass(frozen=True)
-class ToolOutcome:
-    content: str  # the ToolMessage text the model reads
-    status: Literal["completed", "failed", "timed_out"]
-    summary: str  # short text for the client's tool_end event
-    citations: list[Citation] = field(default_factory=list)
-    embedding_tokens: int = 0  # billed for the query, recorded as spend by the run
-
-
 def _snippet(text: str) -> str:
     flat = " ".join(text.split())
     return flat if len(flat) <= SNIPPET_CHARS else flat[: SNIPPET_CHARS - 1].rstrip() + "…"
@@ -79,24 +71,15 @@ def _block(index: int, passage: Passage) -> str:
     return f"<document {attrs}>\n{html.escape(passage.text, quote=False)}\n</document>"
 
 
-def _invalid(error: ValidationError) -> ToolOutcome:
-    # Name the fields and the rules, never the submitted values.
-    problems = "; ".join(
-        f"{'.'.join(str(p) for p in e['loc']) or 'arguments'}: {e['msg']}" for e in error.errors()
-    )
-    return ToolOutcome(
-        content=f"Invalid arguments: {problems}. Fix them and try once more.",
-        status="failed",
-        summary="invalid arguments",
-    )
-
-
 @dataclass(frozen=True)
 class Searched:
     """The result of the search phase: passages not yet numbered."""
 
     passages: list[Passage]
     embedding_tokens: int
+
+    def render(self, *, first_index: int) -> ToolOutcome:
+        return render(self, first_index=first_index)
 
 
 async def search_phase(
@@ -108,7 +91,7 @@ async def search_phase(
     try:
         parsed = SearchMyFilesArgs.model_validate(args)
     except ValidationError as error:
-        return _invalid(error)
+        return invalid_arguments(error)
     found = await retriever.search(user_id, parsed.query, parsed.file_ids)
     return Searched(passages=found.passages, embedding_tokens=found.embedding_tokens)
 

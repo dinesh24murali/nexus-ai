@@ -4,7 +4,7 @@
 checkpoints stay readable.
 """
 
-from typing import Annotated, Literal, NotRequired, TypedDict
+from typing import Annotated, Any, Literal, NotRequired, TypedDict
 
 from langchain_core.messages import AnyMessage
 from langgraph.graph.message import add_messages
@@ -41,6 +41,14 @@ class ChatState(TypedDict):
     citations: NotRequired[list[Citation]]
     # Individual tool calls made in the current turn, capped at MAX_TOOL_CALLS.
     tool_calls_this_turn: NotRequired[int]
+    # The user's decisions on the tool calls that needed approval, by tool call id:
+    # {"decision": "approve" | "edit" | "reject", "args": {...}}. Written by the `approval` node,
+    # consumed (and cleared) by the `tools` node, reset by `load_context`.
+    approvals: NotRequired[dict[str, dict[str, Any]]]
+    # The turn's tool calls so far, in the API's `ToolCall` shape (id, name, args, status, summary).
+    # A run that resumes after an approval stores the whole turn, and the events of the run before
+    # it are gone, so the state keeps them. Reset by `load_context`.
+    tool_log: NotRequired[list[dict[str, Any]]]
 
 
 class RecentFile(TypedDict):

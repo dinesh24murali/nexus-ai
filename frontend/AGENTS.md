@@ -23,7 +23,8 @@ frontend/
 │   ├── components/ui/            ← shadcn-style primitives (Button, Field, Alert) on our tokens
 │   ├── components/               ← app components (ThemeToggle, sidebar/: ConversationNav, ConversationList, ConversationItem)
 │   ├── features/                 ← feature folders (conversations/ = TanStack Query hooks; chat/ = ChatView, useChatRun,
-│   │                               MessageList, Composer, Feedback (thumbs), Markdown + CodeBlock + highlight (Shiki), notices, UsageMeter;
+│   │                               MessageList, Composer, Feedback (thumbs), Markdown + CodeBlock + highlight (Shiki), notices, UsageMeter,
+│   │                               ApprovalCard (web-search approve / edit / reject);
 │   │                               Citations (chips + snippet popover); files/ = FilesPage, uploads, chips, paperclip; settings/ to come)
 │   ├── styles/tokens.css, theme.css   ← design tokens + Tailwind 4 @theme (docs/02_outputs/07)
 │   └── config.ts                 ← build-time VITE_* config
@@ -50,6 +51,11 @@ frontend/
 - The draft text lives in the page (`Composer` is controlled) so a send refused after the home-page hand-off can put it back
 - Ratings: `Feedback.tsx` (thumbs under a complete or stopped answer, not a failed or empty one) + `feedback.ts` (`useRate`: the rating shows at once, goes back with a message if the server refuses). The API cannot withdraw a rating, so pressing the chosen thumb again sends nothing. Anything that renders `MessageList` needs the query and auth providers
 - Tests: `renderApp(path, handler, {strict: true})` runs under StrictMode; `liveStream()` feeds a stream event by event; use `seen(text)` rather than `expect(await findByText(..)).toBeInTheDocument()` for text that moves from the live bubble to the stored message. `tests/e2e/chat.spec.ts` needs the stack in `LLM_MODE=fake` with `LLM_FAKE_TOKEN_DELAY_S=0.05` and fails loudly otherwise
+
+### Tool approval (TASK-023)
+- The approval is read from the conversation (`pending_interrupt`), not kept in run state: a run that ends with an `interrupt` event re-reads the conversation, which is also how a reload restores the card. The card shows only while no run is active; `useChatRun.decide` posts to `/runs/resume` and the resumed run streams like any other
+- A run that is refused before it starts (409 `NO_PENDING_INTERRUPT`) re-reads the conversation as well, so a stale card disappears
+- `ApprovalCard` renders the query as text and limits an edit to 400 characters, the API's limit; an expired approval shows "expired" and no buttons
 
 ### Files (TASK-021)
 - `features/files/`: `api.ts` (`useFiles` polls every 2 s only while a file is `pending`/`processing`; `useUploadFile`, `useDeleteFile`), `uploads.ts` (`useAttachments`: at most 5 files at once, one chip per upload), `FilesPage` (`/files`: dropzone, table, `n/50`, inline delete confirm), `AttachButton` (`FilePicker`, the paperclip and the page's button), `UploadChips` (Uploading… → Processing… → Ready / Failed), `messages.ts` (texts for the file error codes). The composer takes the paperclip through its optional `attach` prop; chips are rendered by the page above it

@@ -8,6 +8,7 @@ export type Notice =
   | { kind: 'rate_limit'; retryAfterS: number | undefined }
   | { kind: 'restarting' }
   | { kind: 'busy' }
+  | { kind: 'no_approval' }
   | { kind: 'run_error'; message: string; retryable: boolean }
   | { kind: 'connection_lost' }
   | { kind: 'failed' }
@@ -32,6 +33,8 @@ export function noticeFromError(error: unknown): Notice {
         return { kind: 'restarting' }
       case 'RUN_IN_PROGRESS':
         return { kind: 'busy' }
+      case 'NO_PENDING_INTERRUPT':
+        return { kind: 'no_approval' }
       default:
         return { kind: 'failed' }
     }
@@ -86,6 +89,11 @@ export function describeNotice(notice: Notice): NoticeView {
     case 'busy':
       return {
         message: 'This conversation is already answering. Wait for it to finish, then try again.',
+        action: null,
+      }
+    case 'no_approval':
+      return {
+        message: 'This approval is no longer waiting for an answer. Send a message to continue.',
         action: null,
       }
     case 'run_error':

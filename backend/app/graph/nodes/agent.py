@@ -1,12 +1,15 @@
 """The chat model call. With tools bound it may ask for them; once the turn has used its cap of
-tool calls it answers on the model without tools (doc 08 section 2.2)."""
+tool calls (or every tool is switched off) it answers on the model without tools (doc 08
+section 2.2)."""
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import Runnable, RunnableConfig
 
+from app.graph.calls import disabled_tools
 from app.graph.nodes.types import ChatNode
 from app.graph.prompting import build_request
 from app.graph.state import MAX_TOOL_CALLS, ChatState
@@ -17,7 +20,7 @@ DEFAULT_DISPLAY_NAME = "the user"
 def make_agent_node(
     model: Runnable[Any, Any],
     *,
-    tools_model: Runnable[Any, Any] | None = None,
+    tools_for: Callable[[frozenset[str]], Runnable[Any, Any] | None] | None = None,
     max_tool_calls: int = MAX_TOOL_CALLS,
 ) -> ChatNode:
     async def agent(state: ChatState, config: RunnableConfig) -> dict[str, Any]:
@@ -32,7 +35,12 @@ def make_agent_node(
             recent_files=state.get("recent_files") or [],
         )
         out_of_calls = state.get("tool_calls_this_turn", 0) >= max_tool_calls
-        chosen = model if tools_model is None or out_of_calls else tools_model
+        # The model with the tools that are on for this run; none left (or none at all) means the
+        # plain model.
+        with_tools = (
+            None if tools_for is None or out_of_calls else tools_for(disabled_tools(config))
+        )
+        chosen = with_tools or model
         reply = await chosen.ainvoke(request, config)
         if not isinstance(reply, AIMessage):
             raise TypeError(f"chat model returned {type(reply).__name__}, expected AIMessage")

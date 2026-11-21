@@ -14,11 +14,20 @@ from evals.langfuse_log import EvalLogger
 from evals.run import RUNS_PER_CASE, default_output, parse_args, run_suite, write_report
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableLambda
+from langgraph.checkpoint.memory import InMemorySaver
 
 from evals import run as run_module
 from tests.evals.test_judges import judge_returning
 
 SYSTEM_PROMPT = load_prompt("nexus.system").body
+
+
+class _AnyStr:
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, str)
+
+
+ANY_STR = _AnyStr()
 
 
 @pytest.fixture
@@ -275,3 +284,58 @@ async def test_the_rag_metrics_are_all_listed_when_the_suite_runs_with_a_judge(
     # The fake model never searches, so nothing was returned for faithfulness to be judged against.
     assert report.run["skipped_metrics"] == ["rag.faithfulness"]
     assert "rag.answer_correctness.whole_doc" in report.metrics
+
+
+# -- tools.routing --------------------------------------------------------------------------------
+
+
+def tools_graph(retriever: Any, web: Any, recent: Any) -> Any:
+    return build_graph(
+        checkpointer=InMemorySaver(),
+        chat_model=FakeChatModel(),
+        summarize_model=FakeChatModel(role="summarize"),
+        retriever=retriever,
+        web_searcher=web,
+        calculator=True,
+        recent_files=recent,
+    )
+
+
+async def test_the_tools_step_runs_when_it_is_given_a_graph_and_measures_its_metrics(
+    fake_settings: Settings,
+) -> None:
+    report = await suite(fake_settings, tools_graph=tools_graph, only=["tools.routing"])
+
+    assert report.run["datasets"] == {"tools.routing": {"version": ANY_STR, "cases": 10}}
+    assert report.metrics["tools.approval_enforced"] == 1.0  # the scripted probes need no model
+    assert {
+        "tools.selection_accuracy",
+        "tools.arg_validity",
+        "tools.unnecessary_call_rate",
+        "tools.sequence_accuracy",
+    } <= set(report.metrics)
+    assert report.run["skipped_metrics"] == []
+
+
+async def test_without_a_tools_graph_the_tools_step_is_not_part_of_the_run(
+    fake_settings: Settings,
+) -> None:
+    report = await suite(fake_settings)
+
+    assert "tools.routing" not in report.run["datasets"]
+    assert not any(key.startswith("tools.") for key in report.metrics)
+
+
+async def test_the_full_suite_runs_every_tools_case_once_per_run(fake_settings: Settings) -> None:
+    report = await suite(
+        fake_settings, suite="full", runs=1, tools_graph=tools_graph, only=["tools.routing"]
+    )
+
+    assert report.run["datasets"]["tools.routing"]["cases"] == 30
+    assert report.run["case_runs"] == 30
+
+
+def test_the_tools_dataset_can_be_selected_on_the_command_line() -> None:
+    assert parse_args(["--suite", "smoke", "--dataset", "tools.routing"]).dataset == [
+        "tools.routing"
+    ]

@@ -6,6 +6,7 @@ import { useAuthManager } from '../../lib/auth-context'
 import { useConversationKeys } from '../conversations/api'
 import type { Conversation } from '../conversations/api'
 import { useChatKeys } from './api'
+import type { Decision, PendingInterrupt } from './ApprovalCard'
 import { noticeFromError, type Notice } from './notices'
 import { TITLE_REFRESH_DELAYS_MS, TOKEN_BATCH_MS } from './timing'
 
@@ -148,8 +149,17 @@ export function useChatRun(conversationId: string) {
                 queryClient.invalidateQueries({ queryKey: chatKeys.messages(conversationId) }),
                 queryClient.invalidateQueries({ queryKey: chatKeys.usage }),
                 queryClient.invalidateQueries({ queryKey: conversationKeys.list }),
+                // A run that stopped at an approval parked it on the conversation: this is how
+                // the card appears (and how a stale one goes away).
+                queryClient.invalidateQueries({ queryKey: conversationKeys.one(conversationId) }),
               ])
               refreshTitle()
+            } else {
+              // Refused before it started (say, the approval was answered elsewhere): re-read
+              // what the server holds so the screen does not keep a stale card.
+              await queryClient
+                .invalidateQueries({ queryKey: conversationKeys.one(conversationId) })
+                .catch(() => undefined)
             }
             live.current = null
             setState({ ...IDLE, notice })
@@ -182,6 +192,21 @@ export function useChatRun(conversationId: string) {
     [start, conversationId],
   )
 
+  /** Answer the pending approval; the resumed run streams like any other. */
+  const decide = useCallback(
+    (interrupt: PendingInterrupt, decision: Decision) =>
+      start(
+        `/conversations/${conversationId}/runs/resume`,
+        {
+          interrupt_id: interrupt.interrupt_id,
+          decision: decision.decision,
+          ...(decision.decision === 'edit' ? { edited_args: { query: decision.query } } : {}),
+        },
+        { pendingUser: null, replacesMessageId: null },
+      ),
+    [start, conversationId],
+  )
+
   const stop = useCallback(async () => {
     if (!live.current) return
     setState((s) => ({ ...s, stopping: true }))
@@ -205,5 +230,5 @@ export function useChatRun(conversationId: string) {
 
   const dismissNotice = useCallback(() => setState((s) => ({ ...s, notice: null })), [])
 
-  return { state, send, regenerate, stop, reload, dismissNotice }
+  return { state, send, regenerate, decide, stop, reload, dismissNotice }
 }

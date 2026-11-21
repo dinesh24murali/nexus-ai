@@ -28,6 +28,8 @@ def make_load_context(recent_files: RecentFiles | None = None) -> ChatNode:
             "recent_files": files,
             "citations": [],
             "tool_calls_this_turn": 0,
+            "approvals": {},
+            "tool_log": [],
         }
 
     return load_context

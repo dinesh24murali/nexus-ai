@@ -1,6 +1,7 @@
 """SSE framing and event payloads, validated against the OpenAPI spec (the contract)."""
 
 import json
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -81,11 +82,47 @@ def test_every_event_we_emit_matches_the_spec(stream_event_validator: Any) -> No
             )
         ),
         sse.ErrorEvent(code="LLM_UNAVAILABLE", message="try again", retryable=True),
+        sse.InterruptEvent(
+            interrupt=sse.PendingInterrupt(
+                interrupt_id="int_9a8b7c",
+                tool="web_search",
+                args={"query": "Go 1.24 release notes"},
+                created_at=datetime(2026, 11, 19, 10, 4, tzinfo=UTC),
+                expires_at=datetime(2026, 11, 20, 10, 4, tzinfo=UTC),
+            )
+        ),
     ]
     for event in events:
         data = payload(sse.frame(event, 1))
         stream_event_validator.validate(data)
         assert data["type"] == event.type
+
+
+def test_an_interrupt_ends_the_stream_like_done_and_error() -> None:
+    assert {"done", "error", "interrupt"} == sse.TERMINAL_TYPES
+
+
+def test_the_interrupt_payload_has_exactly_the_spec_fields() -> None:
+    event = sse.InterruptEvent(
+        interrupt=sse.PendingInterrupt(
+            interrupt_id="int_1",
+            tool="web_search",
+            args={"query": "q"},
+            created_at=datetime(2026, 11, 19, 10, 4, tzinfo=UTC),
+            expires_at=datetime(2026, 11, 20, 10, 4, tzinfo=UTC),
+        )
+    )
+
+    assert payload(sse.frame(event, 3)) == {
+        "type": "interrupt",
+        "interrupt": {
+            "interrupt_id": "int_1",
+            "tool": "web_search",
+            "args": {"query": "q"},
+            "created_at": "2026-11-19T10:04:00Z",
+            "expires_at": "2026-11-20T10:04:00Z",
+        },
+    }
 
 
 def test_the_validator_would_reject_a_wrong_payload(stream_event_validator: Any) -> None:

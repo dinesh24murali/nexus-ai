@@ -1,0 +1,9 @@
+{
+  "turns": [
+    {"text": "", "tool_calls": [
+      {"name": "calculator", "args": {"expression": "17.5 * 3"}},
+      {"name": "web_search", "args": {"query": "price of gold today"}}
+    ]},
+    {"text": "Done."}
+  ]
+}

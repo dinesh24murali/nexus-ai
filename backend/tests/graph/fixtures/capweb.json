@@ -1,0 +1,16 @@
+{
+  "turns": [
+    {"text": "", "tool_calls": [
+      {"name": "calculator", "args": {"expression": "1+1"}},
+      {"name": "calculator", "args": {"expression": "2+2"}},
+      {"name": "calculator", "args": {"expression": "3+3"}},
+      {"name": "calculator", "args": {"expression": "4+4"}},
+      {"name": "calculator", "args": {"expression": "5+5"}}
+    ]},
+    {"text": "", "tool_calls": [
+      {"name": "calculator", "args": {"expression": "6+6"}},
+      {"name": "web_search", "args": {"query": "never asked"}}
+    ]},
+    {"text": "Stopped at the cap."}
+  ]
+}

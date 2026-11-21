@@ -19,7 +19,13 @@ from langchain_core.runnables import Runnable
 from langchain_openai import ChatOpenAI
 
 from app.core.config import ReasoningEffort, Settings, get_settings
-from app.llm.fake import FakeChatModel, FakeEmbeddingsClient, FakeModerationClient
+from app.graph.tools.web_search import TavilySearcher, WebSearcher
+from app.llm.fake import (
+    FakeChatModel,
+    FakeEmbeddingsClient,
+    FakeModerationClient,
+    FakeWebSearcher,
+)
 
 Role = Literal["chat", "summarize", "title", "memory_extract", "judge", "router", "long_form"]
 ROLES: tuple[str, ...] = get_args(Role)
@@ -115,6 +121,16 @@ def build_embeddings_client(settings: Settings | None = None) -> openai.AsyncOpe
     return openai.AsyncOpenAI(
         api_key=key, timeout=EMBEDDING_TIMEOUT_S, max_retries=EMBEDDING_RETRIES
     )
+
+
+def build_web_searcher(settings: Settings | None = None) -> WebSearcher | None:
+    """The client behind `web_search`: an offline stand-in in fake mode, Tavily when a key is set,
+    otherwise None (the tool is then not offered at all)."""
+    s = settings or get_settings()
+    if s.llm_mode == "fake":
+        return FakeWebSearcher()
+    key = s.tavily_api_key.get_secret_value()
+    return TavilySearcher(key) if key else None
 
 
 def _client(

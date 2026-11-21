@@ -26,6 +26,14 @@ describe('noticeFromError', () => {
     expect(noticeFromError(problem(409, 'RUN_IN_PROGRESS'))).toEqual({ kind: 'busy' })
   })
 
+  it('maps an approval that is no longer waiting to its own notice', () => {
+    expect(noticeFromError(problem(409, 'NO_PENDING_INTERRUPT'))).toEqual({ kind: 'no_approval' })
+    expect(describeNotice({ kind: 'no_approval' })).toEqual({
+      message: 'This approval is no longer waiting for an answer. Send a message to continue.',
+      action: null,
+    })
+  })
+
   it('treats a budget with an unknown scope as the user budget', () => {
     expect(noticeFromError(problem(429, 'BUDGET_EXCEEDED', {}))).toMatchObject({
       kind: 'budget',

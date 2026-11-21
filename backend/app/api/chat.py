@@ -10,7 +10,7 @@ from fastapi.responses import StreamingResponse
 
 from app.api import sse
 from app.api.deps import CurrentUserDep, FactoryDep, RunsDep
-from app.api.schemas import MessageOut, MessagePage, SendMessageRequest
+from app.api.schemas import MessageOut, MessagePage, ResumeRunRequest, SendMessageRequest
 from app.core.errors import ApiError
 from app.db.repositories import conversations, feedback, messages
 from app.services.runs import Run
@@ -81,6 +81,24 @@ async def regenerate(
 ) -> StreamingResponse:
     cid = _parse_id(conversation_id)
     run = await runs.start_regenerate(current.id, current.user.display_name, cid)
+    return _stream(run)
+
+
+@router.post(
+    "/{conversation_id}/runs/resume",
+    summary="Answer a pending tool approval and stream the resumed run",
+    response_class=StreamingResponse,
+)
+async def resume_run(
+    conversation_id: str, body: ResumeRunRequest, current: CurrentUserDep, runs: RunsDep
+) -> StreamingResponse:
+    cid = _parse_id(conversation_id)
+    edited = (
+        body.edited_args.model_dump(mode="json", exclude_none=True) if body.edited_args else None
+    )
+    run = await runs.start_resume(
+        current.id, current.user.display_name, cid, body.interrupt_id, body.decision, edited
+    )
     return _stream(run)
 
 

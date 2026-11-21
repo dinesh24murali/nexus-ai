@@ -7,6 +7,7 @@ so one `data:` line is always enough.
 """
 
 import uuid
+from datetime import datetime
 from decimal import Decimal
 from typing import Any, Literal
 
@@ -66,6 +67,25 @@ class CitationEvent(_Event):
     citation: Citation
 
 
+class PendingInterrupt(BaseModel):
+    """A tool call waiting for the user's approval (the API's `PendingInterrupt` schema)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    interrupt_id: str
+    tool: Literal["web_search", "research_plan", "forget_memory"]
+    args: dict[str, Any]
+    created_at: datetime
+    expires_at: datetime
+
+
+class InterruptEvent(_Event):
+    """The run paused for approval; the stream ends after this event."""
+
+    type: Literal["interrupt"] = "interrupt"
+    interrupt: PendingInterrupt
+
+
 class Usage(BaseModel):
     model: str
     prompt_tokens: int
@@ -107,9 +127,10 @@ Event = (
     | UsageEvent
     | DoneEvent
     | ErrorEvent
+    | InterruptEvent
 )
 
-TERMINAL_TYPES = frozenset({"done", "error"})  # the stream ends after one of these
+TERMINAL_TYPES = frozenset({"done", "error", "interrupt"})  # the stream ends after one of these
 
 
 def frame(event: Event, seq: int) -> str:

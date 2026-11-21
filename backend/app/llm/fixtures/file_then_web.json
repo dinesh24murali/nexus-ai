@@ -1,0 +1,7 @@
+{
+  "turns": [
+    {"text": "", "tool_calls": [{"name": "search_my_files", "args": {"query": "churn"}}]},
+    {"text": "", "tool_calls": [{"name": "web_search", "args": {"query": "industry churn benchmark"}}]},
+    {"text": "Your churn is 3.1% [1]; the industry benchmark is on the web [2]."}
+  ]
+}

@@ -208,3 +208,43 @@ def test_a_requested_temperature_is_kept_at_effort_none() -> None:
         temperature=0.2,
     )
     assert payload(client)["temperature"] == 0.2
+
+
+# -- web search client ----------------------------------------------------------------------------
+
+
+def test_fake_mode_gives_an_offline_web_searcher() -> None:
+    from app.llm.factory import build_web_searcher
+    from app.llm.fake import FakeWebSearcher
+
+    searcher = build_web_searcher(Settings(_env_file=None, app_env="test", llm_mode="fake"))
+
+    assert isinstance(searcher, FakeWebSearcher)
+
+
+def test_without_a_tavily_key_there_is_no_web_search() -> None:
+    from app.llm.factory import build_web_searcher
+
+    assert build_web_searcher(real_settings()) is None  # the tool is simply not offered
+
+
+def test_with_a_tavily_key_the_searcher_is_tavily() -> None:
+    from app.graph.tools.web_search import TavilySearcher
+    from app.llm.factory import build_web_searcher
+
+    searcher = build_web_searcher(real_settings(tavily_api_key="tvly-test-0123456789abcdef"))
+
+    assert isinstance(searcher, TavilySearcher)
+    assert "tvly-test" not in repr(searcher)
+
+
+async def test_the_fake_searcher_answers_offline_and_deterministically() -> None:
+    from app.llm.fake import FakeWebSearcher
+
+    first = await FakeWebSearcher().search("Go release notes")
+    second = await FakeWebSearcher().search("Go release notes")
+
+    assert first == second
+    assert 1 <= len(first) <= 5
+    assert all(r.url.startswith("https://") for r in first)
+    assert "Go release notes" in first[0].title  # the query shows, so an edit is visible in e2e

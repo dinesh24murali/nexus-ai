@@ -29,6 +29,8 @@ from langchain_core.messages.tool import ToolCallChunk
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.graph.tools.web_search import WebResult
+
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 _MARKER = re.compile(r"\[\[fixture:([^\]]*)\]\]")
 _ID = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -305,6 +307,27 @@ class _FakeEmbeddings:
         ]
         tokens = sum(_approx_tokens(text) for text in input)
         return SimpleNamespace(data=data, usage=SimpleNamespace(total_tokens=tokens))
+
+
+class FakeWebSearcher:
+    """The offline stand-in for Tavily in `LLM_MODE=fake`: two fixed results that quote the query,
+    so an e2e test can see which query was run (approved or edited)."""
+
+    async def search(self, query: str) -> list[WebResult]:
+        return [
+            WebResult(
+                title=f"Results for: {query}",
+                url="https://news.example.com/latest",
+                domain="news.example.com",
+                content=f"Fake web result about {query}. The latest release focuses on tooling.",
+            ),
+            WebResult(
+                title="Official documentation",
+                url="https://docs.example.org/guide",
+                domain="docs.example.org",
+                content="Fake documentation page. It is deterministic and stays in the process.",
+            ),
+        ]
 
 
 class FakeEmbeddingsClient:

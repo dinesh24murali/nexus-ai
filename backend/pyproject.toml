@@ -61,7 +61,7 @@ select = ["E", "F", "I", "B", "UP", "S", "ASYNC", "SIM", "RUF", "TID"]
 "langchain_openai.OpenAIEmbeddings".msg = "Create embedding clients through app.llm.factory (ADR-0005)."
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101", "S105", "S106", "S107", "TID251"]
+"tests/**" = ["S101", "S105", "S106", "S107", "S311", "TID251"]
 "app/llm/factory.py" = ["TID251"]
 
 [tool.mypy]

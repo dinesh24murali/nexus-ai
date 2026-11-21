@@ -228,17 +228,17 @@ Each repo task group in brackets becomes `tasks/active/<NNN>-<slug>.md` when sta
 - **Files:** `backend/app/graph/tools/{calculator,web_search}.py`
 - **Description:** A safe AST-based calculator (no eval); Tavily search with a 10 s timeout, a cap of 5 results and domain metadata; results wrapped as untrusted. Add the tool-routing section to `nexus.system` (doc 08 §4).
 - **Acceptance criteria:**
-  - [ ] Calculator fuzz tests show no code execution
-  - [ ] Tool-routing suite seeded and reviewed; first measured baselines recorded
+  - [x] Calculator fuzz tests show no code execution
+  - [-] Tool-routing suite seeded and reviewed; first measured baselines recorded — **seeded and wired, not reviewed, not measured on a real model; skipped, deferred (`tasks/deferred.md` D11; D10 for the `nexus.system` v3 smoke run)**
 
 #### TASK-023: Interrupt / resume flow
 - **Depends on:** TASK-022, TASK-011
 - **Files:** `backend/app/graph/nodes/approval.py`, `backend/app/graph/policy.py` (`TOOL_POLICY`), `backend/app/api/chat.py` (resume), `frontend/src/features/chat/ApprovalCard.tsx`
 - **Description:** `interrupt()` before every `web_search` (per-call approval in v1); when a message mixes calls, interrupt first and run all of them together after the decision (doc 08 §2.2); `pending_interrupt` persisted on the conversation (no run lease while waiting); resume with approve/edit/reject; 24 h expiry; card restored on reload.
 - **Acceptance criteria:**
-  - [ ] Playwright `tools.spec.ts` (fake LLM): approve, edit and reject paths, plus reload mid-approval
-  - [ ] Unit test (fake LLM): one message with `[search_my_files, web_search]` → no call runs before the decision; on reject every `tool_call_id` still gets a ToolMessage
-  - [ ] `tools.approval_enforced = 1` (absolute gate)
+  - [x] Playwright `tools.spec.ts` (fake LLM): approve, edit and reject paths, plus reload mid-approval
+  - [x] Unit test (fake LLM): one message with `[search_my_files, web_search]` → no call runs before the decision; on reject every `tool_call_id` still gets a ToolMessage
+  - [x] `tools.approval_enforced = 1` (absolute gate)
 
 #### TASK-024: Tool-call UI
 - **Depends on:** TASK-013

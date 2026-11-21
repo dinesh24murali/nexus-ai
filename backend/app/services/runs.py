@@ -28,11 +28,17 @@ from typing import Any, Literal, cast
 
 import openai
 import structlog
-from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage
+from langchain_core.messages import (
+    AIMessage,
+    AIMessageChunk,
+    BaseMessage,
+    HumanMessage,
+    ToolMessage,
+)
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph.state import CompiledStateGraph
-from langgraph.types import StateSnapshot
+from langgraph.types import Command, StateSnapshot
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.api.sse import (
@@ -41,6 +47,8 @@ from app.api.sse import (
     DoneEvent,
     ErrorEvent,
     Event,
+    InterruptEvent,
+    PendingInterrupt,
     RunStartedEvent,
     TokenEvent,
     ToolEndEvent,
@@ -57,9 +65,10 @@ from app.db.repositories import usage as usage_repo
 from app.graph.builder import build_graph
 from app.graph.nodes.load_context import RecentFiles
 from app.graph.state import MAX_TOOL_CALLS
+from app.graph.tools.web_search import MAX_QUERY_CHARS
 from app.jobs import queue
 from app.jobs.handlers import JOBS
-from app.llm.factory import LLMConfigError, get_model
+from app.llm.factory import LLMConfigError, build_web_searcher, get_model
 from app.llm.moderation import Moderator, moderation_flagged
 from app.llm.prompts import load_prompt
 from app.llm.redaction import hash_user_id
@@ -84,6 +93,11 @@ _RATE_LIMITED_MESSAGE = "You're sending messages too quickly. Please wait a mome
 
 StopReason = Literal["cancel", "drain", "lost"]
 FinishReason = Literal["stop", "length", "cancelled", "tool_limit"]
+RunKind = Literal["send", "regenerate", "resume"]
+TraceName = Literal["chat.turn", "chat.regenerate", "chat.resume"]
+_DANGLING_CALL_TEXT = (
+    "This tool call did not run: the conversation moved on before it was completed."
+)
 
 
 @dataclass(eq=False)
@@ -96,6 +110,8 @@ class Run:
     replace_message_id: uuid.UUID | None
     override: str | None  # CHAT_MODEL_OVERRIDE at the time the run started
     default_model: str
+    kind: RunKind = "send"  # a regenerate or a resume is not "a message sent" in usage_daily
+    disabled: frozenset[str] = frozenset()  # TOOLS_DISABLED at the time the run started
     events: asyncio.Queue[Event | None] = field(default_factory=asyncio.Queue)  # None ends it
     done: asyncio.Event = field(default_factory=asyncio.Event)
     partial: list[str] = field(default_factory=list)  # answer text streamed so far
@@ -122,6 +138,13 @@ class _Result:
     finish_reason: FinishReason
 
 
+@dataclass(frozen=True)
+class _Paused:
+    """The graph stopped at an approval: the run ends here and the user decides later."""
+
+    interrupt: PendingInterrupt
+
+
 def graph_factory_for(
     settings: Settings,
     checkpointer: BaseCheckpointSaver[Any],
@@ -129,9 +152,11 @@ def graph_factory_for(
     retriever: Callable[[], Retriever] | None = None,
     recent_files: RecentFiles | None = None,
 ) -> GraphFactory:
-    """The production graph: factory-built models, the Postgres checkpointer and, when a
-    retriever is given, the file-search tool. The retriever is built on first use, so a missing
-    API key fails the run (like the chat model) and not the start of the API."""
+    """The production graph: factory-built models, the Postgres checkpointer, the file-search tool
+    (when a retriever is given), `web_search` (when Tavily is configured, or in fake mode) and the
+    calculator. The retriever is built on first use, so a missing API key fails the run (like the
+    chat model) and not the start of the API. Which tools a run may use is decided per run
+    (`TOOLS_DISABLED`), not here."""
 
     def build(model_override: str | None) -> Graph:
         chat = get_model("chat", settings=settings, model_override=model_override)
@@ -139,6 +164,8 @@ def graph_factory_for(
             checkpointer=checkpointer,
             chat_model=chat,
             retriever=retriever() if retriever else None,
+            web_searcher=build_web_searcher(settings),
+            calculator=True,
             recent_files=recent_files,
             settings=settings,
         )
@@ -152,6 +179,50 @@ def _already_running() -> ApiError:
 
 def _not_found() -> ApiError:
     return ApiError(404, "NOT_FOUND", "Conversation not found.")
+
+
+def _no_pending() -> ApiError:
+    return ApiError(
+        409,
+        "NO_PENDING_INTERRUPT",
+        "There is no pending approval to answer (it may have expired or been answered).",
+    )
+
+
+def _bad_edit(reason: str) -> ApiError:
+    return ApiError(
+        422,
+        "VALIDATION_FAILED",
+        "The request body is invalid.",
+        details={
+            "fields": [
+                {"loc": ["body", "edited_args", "query"], "msg": reason, "type": "value_error"}
+            ]
+        },
+    )
+
+
+def _approval_expired(pending: dict[str, Any], now: datetime) -> bool:
+    try:
+        expires = datetime.fromisoformat(str(pending["expires_at"]))
+    except KeyError, ValueError:
+        return True  # an approval we cannot date is not one we act on
+    return expires.tzinfo is None or expires <= now
+
+
+def _resume_value(
+    pending: dict[str, Any], decision: str, edited_args: dict[str, Any] | None
+) -> Any:
+    """The value `interrupt()` returns inside the graph, validated against the approval."""
+    if decision != "edit":
+        return {"decision": decision}
+    query = (edited_args or {}).get("query")
+    if pending.get("tool") != "web_search" or not isinstance(query, str):
+        raise _bad_edit("edited_args.query is required to edit a web search")
+    query = query.strip()
+    if not 1 <= len(query) <= MAX_QUERY_CHARS:
+        raise _bad_edit(f"edited_args.query must be 1 to {MAX_QUERY_CHARS} characters")
+    return {"decision": "edit", "args": {"query": query}}
 
 
 def _no_regenerate() -> ApiError:
@@ -237,9 +308,12 @@ class RunService:
             raise moderation_flagged()
         tags = ("moderation:skipped",) if verdict.skipped else ()
         override = await self._override()
+        disabled = await self._disabled_tools()
         run_id, user_message_id = uuid.uuid4(), uuid.uuid4()
         async with self._factory() as session, session.begin():
             await self._acquire(session, user_id, conversation_id, run_id)
+            # A new message abandons an approval nobody answered (functional spec FS-005).
+            await conversations.clear_pending_interrupt(session, conversation_id)
             await messages.add(
                 session,
                 id=user_message_id,
@@ -249,10 +323,56 @@ class RunService:
                 content=content,
             )
         run = self._register(
-            run_id, conversation_id, user_id, user_message_id, None, override, tags
+            run_id, conversation_id, user_id, user_message_id, None, override, tags, disabled
         )
+        # The lease is ours: settle a tool call the last run left unanswered before the model
+        # sees the thread again (an abandoned approval, a crash or a stop mid-tools).
+        await self._repair_thread(run)
         message = HumanMessage(content=content, id=str(user_message_id))
         return self._launch(run, {"messages": [message]}, display_name, override, None, "chat.turn")
+
+    async def start_resume(
+        self,
+        user_id: uuid.UUID,
+        display_name: str,
+        conversation_id: uuid.UUID,
+        interrupt_id: str,
+        decision: str,
+        edited_args: dict[str, Any] | None = None,
+    ) -> Run:
+        """Answer the conversation's pending approval and stream the rest of the run.
+
+        One transaction checks the approval (it is this one, it has not expired, the edit is
+        valid), takes the lease and clears the approval, so a double click resumes only once. The
+        approval is consumed before the graph runs: if the run then fails, the user asks again."""
+        self._accepting()
+        await self._admit(user_id)
+        override = await self._override()
+        disabled = await self._disabled_tools()
+        run_id = uuid.uuid4()
+        async with self._factory() as session, session.begin():
+            conversation = await conversations.get(session, user_id, conversation_id)
+            if conversation is None:
+                raise _not_found()
+            if conversation.active_run_id is not None:
+                raise _already_running()
+            pending = conversation.pending_interrupt
+            now = datetime.now(UTC)
+            if (
+                not pending
+                or pending.get("interrupt_id") != interrupt_id
+                or _approval_expired(pending, now)
+            ):
+                raise _no_pending()
+            value = _resume_value(pending, decision, edited_args)
+            if not await conversations.take_pending_interrupt(
+                session, user_id, conversation_id, run_id, interrupt_id
+            ):
+                raise _already_running()  # lost a race with another decision or a new message
+        run = self._register(
+            run_id, conversation_id, user_id, None, None, override, (), disabled, kind="resume"
+        )
+        return self._launch(run, Command(resume=value), display_name, override, None, "chat.resume")
 
     async def start_regenerate(
         self, user_id: uuid.UUID, display_name: str, conversation_id: uuid.UUID
@@ -260,6 +380,7 @@ class RunService:
         self._accepting()
         await self._admit(user_id)
         override = await self._override()
+        disabled = await self._disabled_tools()
         run_id = uuid.uuid4()
         async with self._factory() as session, session.begin():
             conversation = await conversations.get(session, user_id, conversation_id)
@@ -283,7 +404,9 @@ class RunService:
             await self._release_quietly(conversation_id, run_id)
             raise _no_regenerate()
 
-        run = self._register(run_id, conversation_id, user_id, None, replace_id, override)
+        run = self._register(
+            run_id, conversation_id, user_id, None, replace_id, override, (), disabled
+        )
         checkpoint_id = str(snapshot.config["configurable"]["checkpoint_id"])
         return self._launch(run, None, display_name, override, checkpoint_id, "chat.regenerate")
 
@@ -369,6 +492,13 @@ class RunService:
             return None
         return (await self._flags.get("CHAT_MODEL_OVERRIDE")) or None
 
+    async def _disabled_tools(self) -> frozenset[str]:
+        """`TOOLS_DISABLED` (kill switch, read per run): tools that are neither offered nor run."""
+        if self._flags is None:
+            return frozenset()
+        raw = (await self._flags.get("TOOLS_DISABLED")) or ""
+        return frozenset(name.strip() for name in str(raw).split(",") if name.strip())
+
     async def _acquire(
         self,
         session: AsyncSession,
@@ -418,6 +548,9 @@ class RunService:
         replace_message_id: uuid.UUID | None,
         override: str | None,
         trace_tags: tuple[str, ...] = (),
+        disabled: frozenset[str] = frozenset(),
+        *,
+        kind: RunKind | None = None,
     ) -> Run:
         run = Run(
             run_id=run_id,
@@ -428,6 +561,8 @@ class RunService:
             replace_message_id=replace_message_id,
             override=override,
             default_model=override or self._settings.llm_chat_model,
+            kind=kind or ("regenerate" if replace_message_id is not None else "send"),
+            disabled=disabled,
             trace_tags=trace_tags,
         )
         self._runs[conversation_id] = run
@@ -436,11 +571,11 @@ class RunService:
     def _launch(
         self,
         run: Run,
-        graph_input: dict[str, Any] | None,
+        graph_input: dict[str, Any] | Command[Any] | None,
         display_name: str,
         override: str | None,
         checkpoint_id: str | None,
-        trace_name: Literal["chat.turn", "chat.regenerate"],
+        trace_name: TraceName,
     ) -> Run:
         asyncio.create_task(  # noqa: RUF006 - tracked in self._runs until it ends
             self._execute(run, graph_input, display_name, override, checkpoint_id, trace_name)
@@ -458,11 +593,11 @@ class RunService:
     async def _execute(
         self,
         run: Run,
-        graph_input: dict[str, Any] | None,
+        graph_input: dict[str, Any] | Command[Any] | None,
         display_name: str,
         override: str | None,
         checkpoint_id: str | None,
-        trace_name: Literal["chat.turn", "chat.regenerate"],
+        trace_name: TraceName,
     ) -> None:
         beat: asyncio.Task[None] | None = None
         try:
@@ -517,12 +652,16 @@ class RunService:
                 error=_error_event(exc),
             )
         else:
-            await self._finish(
-                run, status="complete", finish_reason=result.finish_reason, text=result.text
-            )
+            if isinstance(result, _Paused):
+                await self._park(run, result)
+            else:
+                await self._finish(
+                    run, status="complete", finish_reason=result.finish_reason, text=result.text
+                )
 
     async def _after_stop(self, run: Run) -> None:
         if run.stop_reason == "cancel":
+            await self._repair_thread(run)  # stopped between the model and its tools?
             await self._finish(
                 run,
                 status="cancelled",
@@ -568,13 +707,14 @@ class RunService:
         run: Run,
         display_name: str,
         checkpoint_id: str | None,
-        trace_name: Literal["chat.turn", "chat.regenerate"],
+        trace_name: TraceName,
     ) -> RunnableConfig:
         configurable: dict[str, Any] = {
             "thread_id": str(run.conversation_id),
             "user_id": str(run.user_id),  # trusted per-run value; never taken from model output
             "user_display_name": display_name,
             "today": datetime.now(UTC).date().isoformat(),
+            "disabled_tools": sorted(run.disabled),  # TOOLS_DISABLED, a trusted per-run value
         }
         if checkpoint_id:
             configurable.update(checkpoint_id=checkpoint_id, checkpoint_ns="")
@@ -599,14 +739,23 @@ class RunService:
     async def _drive(
         self,
         run: Run,
-        graph_input: dict[str, Any] | None,
+        graph_input: dict[str, Any] | Command[Any] | None,
         display_name: str,
         override: str | None,
         checkpoint_id: str | None,
-        trace_name: Literal["chat.turn", "chat.regenerate"],
-    ) -> _Result:
+        trace_name: TraceName,
+    ) -> _Result | _Paused:
         graph = self._graph(override)
         config = self._config(run, display_name, checkpoint_id, trace_name)
+        thread: RunnableConfig = {"configurable": {"thread_id": str(run.conversation_id)}}
+        if run.kind == "resume":
+            # The turn started in an earlier run: its sources and tool calls are in the state.
+            before = await graph.aget_state(thread)
+            run.citations = [
+                Citation.model_validate(c).model_dump(mode="json")
+                for c in before.values.get("citations") or []
+            ]
+            run.tool_calls = [dict(c) for c in before.values.get("tool_log") or []]
         stream = graph.astream(graph_input, config, stream_mode=["messages", "custom"])
         async for item in stream:
             mode, payload = cast("tuple[str, Any]", item)
@@ -623,7 +772,9 @@ class RunService:
                 run.partial.append(delta)
                 run.events.put_nowait(TokenEvent(delta=delta))
 
-        state = await graph.aget_state({"configurable": {"thread_id": str(run.conversation_id)}})
+        state = await graph.aget_state(thread)
+        if state.interrupts:  # stopped at an approval: not an answer, the user decides first
+            return _Paused(PendingInterrupt.model_validate(state.interrupts[0].value))
         final = _last_answer(state.values.get("messages", []))
         if final is None:
             raise RuntimeError("the graph finished without an answer")
@@ -734,6 +885,54 @@ class RunService:
         )
         run.events.put_nowait(DoneEvent(message_id=run.assistant_message_id, finish_reason=reason))
 
+    async def _park(self, run: Run, paused: _Paused) -> None:
+        """The run stops at an approval: ONE transaction releases the lease, keeps the approval on
+        the conversation and records the spend so far. No assistant message exists yet; the run
+        that resumes writes it. The stream ends with the `interrupt` event."""
+        try:
+            async with self._factory() as session, session.begin():
+                parked = await conversations.park_run(
+                    session,
+                    run.conversation_id,
+                    run.run_id,
+                    paused.interrupt.model_dump(mode="json"),
+                )
+                if parked:
+                    if run.replace_message_id is not None:
+                        # A regenerate forked the thread, so the old answer is no longer part of
+                        # it; the resumed run has no old message to replace.
+                        await messages.delete_message(session, run.user_id, run.replace_message_id)
+                    await self._add_spend(session, run)
+                    run.persisted = True
+        except Exception:
+            _log.exception("run_park_failed", run_id=str(run.run_id))
+            run.events.put_nowait(
+                ErrorEvent(code="INTERNAL", message="Something went wrong.", retryable=False)
+            )
+            await self._release_quietly(run.conversation_id, run.run_id)
+            return
+        if not run.persisted:
+            _log.warning("run_lease_lost_at_park", run_id=str(run.run_id))
+            run.events.put_nowait(
+                ErrorEvent(code="INTERNAL", message="The run was interrupted.", retryable=True)
+            )
+            return
+        run.events.put_nowait(InterruptEvent(interrupt=paused.interrupt))
+
+    async def _add_spend(self, session: AsyncSession, run: Run) -> None:
+        total = run.collector.total
+        await usage_repo.add(
+            session,
+            run.user_id,
+            datetime.now(UTC).date(),
+            prompt_tokens=total.prompt_tokens,
+            completion_tokens=total.completion_tokens,
+            cost_usd=run.collector.cost_usd,
+            # A regenerate re-runs an existing message and a resume continues one: both cost money
+            # but are not a message sent.
+            requests=1 if run.kind == "send" else 0,
+        )
+
     async def _write_outcome(
         self,
         session: AsyncSession,
@@ -770,16 +969,7 @@ class RunService:
             tool_calls=run.tool_calls,
             citations=run.citations,
         )
-        await usage_repo.add(
-            session,
-            run.user_id,
-            datetime.now(UTC).date(),
-            prompt_tokens=total.prompt_tokens,
-            completion_tokens=total.completion_tokens,
-            cost_usd=used.cost_usd,
-            # A regenerate re-runs an existing message: it costs money but is not a message sent.
-            requests=0 if run.replace_message_id is not None else 1,
-        )
+        await self._add_spend(session, run)
         if status == "complete":
             # Idempotent per conversation: only the first completed turn creates the job.
             await queue.enqueue(
@@ -790,6 +980,34 @@ class RunService:
                 user_id=run.user_id,
                 max_attempts=JOBS["generate_title"].max_attempts,
             )
+
+    async def _repair_thread(self, run: Run) -> None:
+        """Answer a tool call the thread left open, so the next model call is valid.
+
+        When the newest message is an AI message with tool calls, the run that made it never got to
+        the tools (the user ignored an approval, the process died, a stop landed between the model
+        and its tools) and the provider would refuse the thread. Every open call gets an error
+        result. Best effort: a failure is logged, and the run itself then fails visibly."""
+        try:
+            graph = self._graph(run.override)
+            config: RunnableConfig = {"configurable": {"thread_id": str(run.conversation_id)}}
+            state = await graph.aget_state(config)
+            history = state.values.get("messages") or []
+            last = history[-1] if history else None
+            if not (isinstance(last, AIMessage) and last.tool_calls):
+                return
+            results = [
+                ToolMessage(
+                    _DANGLING_CALL_TEXT,
+                    tool_call_id=str(call["id"]),
+                    name=call["name"],
+                    status="error",
+                )
+                for call in last.tool_calls
+            ]
+            await graph.aupdate_state(config, {"messages": results}, as_node="agent")
+        except Exception:
+            _log.warning("thread_repair_failed", run_id=str(run.run_id), exc_info=True)
 
     async def _append_to_thread(self, run: Run, text: str) -> None:
         """Put the partial answer into the thread so the next turn's model sees what it said."""

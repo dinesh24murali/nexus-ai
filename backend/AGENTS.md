@@ -31,8 +31,9 @@ backend/
 │   │                         prompts.py + prompt_sync.py, tracing.py, redaction.py, pricing.py, tokens.py,
 │   │                         moderation.py (input moderation, fail-open),
 │   │                         usage.py (per-run token + cost collector)
-│   ├── graph/              ← state.py, prompting.py (cache-friendly request layout), builder.py, nodes/ (agent,
-│   │                         load_context, summarize, tools = the tool loop + cap), tools/ (search_my_files)
+│   ├── graph/              ← state.py, prompting.py (cache-friendly request layout), builder.py, policy.py (TOOL_POLICY),
+│   │                         calls.py, nodes/ (agent, load_context, summarize, approval = interrupt per call that needs
+│   │                         it, tools = the tool loop + cap), tools/ (search_my_files, web_search, calculator, outcome)
 │   ├── rag/                ← formats.py, parsers.py (PDF/DOCX/TXT/MD), chunker.py (800/120 tokens), embedder.py,
 │   │                         retriever.py (query -> tenant-filtered passages),
 │   │                         index.py (Qdrant: alias `documents`, tenant payload); ingestion job is in jobs/handlers.py
@@ -73,6 +74,13 @@ backend/
 - Everything a run or job persists for a user goes through owner-scoped repositories; the job's `user_id` column (not its payload) says whose job it is
 - Jobs are idempotent (the queue can run one twice after a crash) and are enqueued in the caller's transaction with an idempotency key. New job kinds register in `jobs/handlers.py::JOBS` with a hard timeout and attempt limit
 - Anything that waits for time (heartbeats, stale windows, drain) takes its duration as a parameter so tests run it scaled down; production constants live next to the code (`periodic.py`, `worker.py`, `runs.py`)
+
+### Tools and approvals
+- A tool needs an entry in `graph/policy.py::TOOL_POLICY` (`always` = every call waits for the user; a test fails without the entry), a `ToolOutcome`-returning runner in `graph/tools/`, and a row in `docs/02_outputs/10_llm_threat_model.md`
+- Two locks guard an approval tool: the `approval` node interrupts before any call of the message runs, and the `tools` node runs such a call only with a recorded decision. A decision that is not a clear `approve` or a valid `edit` is a rejection. Every `tool_call_id` ends with a ToolMessage
+- A paused run holds no lease: `conversations.pending_interrupt` keeps the approval (24 h) and the checkpoint keeps the thread. `RunService.start_resume` takes the lease and clears the approval in one UPDATE, so a double click resumes once; the resumed run is not a "message sent" in `usage_daily`. A new message abandons a pending approval, and `_repair_thread` answers any tool call the thread left open before the model sees it again
+- `TOOLS_DISABLED` reaches the graph as `config["configurable"]["disabled_tools"]` per run (the graph is built once), so it also stops an approval that was already waiting
+- Tool failures become results the model can read and never carry exception text, URLs or keys. Web results are escaped data (`<web_result>`); only `http(s)` pages are kept
 
 ### Limits and moderation
 - A chat send/regenerate passes, in order: drain check, `ratelimit.hit` (atomic), `usage.ensure_within_budgets`, `Moderator.check` (sends only), then the lease. Refusals (`RATE_LIMITED`, `BUDGET_EXCEEDED` with `details.scope`, `MODERATION_FLAGGED`) happen before anything is written. New run-starting endpoints must go through `RunService._admit`

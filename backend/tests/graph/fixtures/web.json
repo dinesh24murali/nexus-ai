@@ -1,0 +1,6 @@
+{
+  "turns": [
+    {"text": "", "tool_calls": [{"name": "web_search", "args": {"query": "Go release notes"}}]},
+    {"text": "The latest Go release focuses on tooling [1]."}
+  ]
+}

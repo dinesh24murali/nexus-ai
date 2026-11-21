@@ -4,6 +4,7 @@ import base64
 import binascii
 import uuid
 from datetime import datetime, timedelta
+from typing import Any
 
 from sqlalchemy import and_, delete, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -159,6 +160,65 @@ async def release_lease(
         .returning(Conversation.id)
     )
     return (await session.execute(stmt)).scalar_one_or_none() is not None
+
+
+async def park_run(
+    session: AsyncSession,
+    conversation_id: uuid.UUID,
+    run_id: uuid.UUID,
+    interrupt: dict[str, Any],
+) -> bool:
+    """End a run that stopped at an approval: release the lease and keep the approval on the
+    conversation, in one statement. False when the lease is not ours (the caller writes nothing)."""
+    stmt = (
+        update(Conversation)
+        .where(Conversation.id == conversation_id, Conversation.active_run_id == run_id)
+        .values(
+            active_run_id=None,
+            run_heartbeat_at=None,
+            pending_interrupt=interrupt,
+            updated_at=func.now(),
+        )
+        .returning(Conversation.id)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none() is not None
+
+
+async def take_pending_interrupt(
+    session: AsyncSession,
+    user_id: uuid.UUID,
+    conversation_id: uuid.UUID,
+    run_id: uuid.UUID,
+    interrupt_id: str,
+) -> bool:
+    """Resume: take the lease and clear the approval in ONE atomic UPDATE, so of any number of
+    parallel decisions exactly one matches (`active_run_id IS NULL` and this approval id)."""
+    stmt = (
+        update(Conversation)
+        .where(
+            Conversation.user_id == user_id,
+            Conversation.id == conversation_id,
+            Conversation.active_run_id.is_(None),
+            Conversation.pending_interrupt["interrupt_id"].astext == interrupt_id,
+        )
+        .values(
+            active_run_id=run_id,
+            run_heartbeat_at=func.now(),
+            pending_interrupt=None,
+            updated_at=Conversation.updated_at,
+        )
+        .returning(Conversation.id)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none() is not None
+
+
+async def clear_pending_interrupt(session: AsyncSession, conversation_id: uuid.UUID) -> None:
+    """The user moved on without deciding: drop the approval (the lease holder calls this)."""
+    await session.execute(
+        update(Conversation)
+        .where(Conversation.id == conversation_id)
+        .values(pending_interrupt=None, updated_at=Conversation.updated_at)
+    )
 
 
 async def stale_leases(

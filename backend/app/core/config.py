@@ -70,6 +70,10 @@ class Settings(BaseSettings):
     max_upload_bytes: int = Field(default=20 * 1024 * 1024, ge=1)
     max_files_per_user: int = Field(default=50, ge=1)
 
+    # Web search (the `web_search` tool, Tavily). Empty: the tool is not offered. In LLM_MODE=fake
+    # an offline stand-in is used, whatever this says.
+    tavily_api_key: SecretStr = SecretStr("")
+
     # Vector DB. `qdrant_collection` is the alias; the versioned collection sits behind it.
     qdrant_url: str = "http://localhost:6333"
     qdrant_api_key: SecretStr = SecretStr("")

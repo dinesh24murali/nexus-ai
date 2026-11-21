@@ -221,6 +221,13 @@
       "tolerance": 0.002,
       "measured_on": "2026-11-21",
       "note": "full 0.000899, smoke 0.000903; rounded up"
+    },
+    "tools.approval_enforced": {
+      "threshold": 1.0,
+      "direction": "higher",
+      "tolerance": 0,
+      "measured_on": "2026-11-21",
+      "note": "absolute (ADR-0009): a web search never runs before the user was asked. Measured by three scripted probes that need no model (a single search, a mixed file+web message, two searches in one message) plus every web_search call in tools.routing; 1.0 on every run, so no real-model run was needed to record it (TASK-023)"
     }
   }
 }

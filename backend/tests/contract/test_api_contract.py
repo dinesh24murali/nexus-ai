@@ -27,14 +27,12 @@ schema = (
     .include(
         path_regex=(
             r"^/(healthz|readyz|auth/.*|me(/password|/usage)?|conversations(/\{conversationId\})?"
-            r"|conversations/\{conversationId\}/(messages|regenerate|runs/cancel)"
+            r"|conversations/\{conversationId\}/(messages|regenerate|runs/(cancel|resume))"
             r"|messages/\{messageId\}/feedback)$"
         )
     )
     # Not implemented yet: account deletion is TASK-028 (M6).
     .exclude(path="/me", method="DELETE")
-    # Not implemented yet: resuming after a tool approval needs tools (M4). Matched by neither
-    # pattern above, listed here so the next reader sees it is a decision, not an oversight.
 )
 
 
@@ -103,6 +101,10 @@ def test_api_conforms_to_the_spec(case: Any, live_server_url: str) -> None:
         # express (like titles); the history cursor is opaque and server-issued (like the list's).
         "POST /conversations/{conversationId}/messages",
         "GET /conversations/{conversationId}/messages",
+        # interrupt_id / edited_args: NUL is schema-valid but Postgres cannot store it (a
+        # documented 422, tested in tests/api/test_chat_tools.py); an approval that does not exist
+        # is a documented 409, never a 5xx.
+        "POST /conversations/{conversationId}/runs/resume",
         # comment: NUL is schema-valid but Postgres cannot store it: a documented 422 (tested in
         # tests/api/test_feedback.py).
     ):

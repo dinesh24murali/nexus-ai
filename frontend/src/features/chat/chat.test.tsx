@@ -1,4 +1,5 @@
 import { screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it } from 'vitest'
 import {
   answerStream,
@@ -42,11 +43,19 @@ const msg = (role: Msg['role'], content: string, extra: Partial<Msg> = {}): Msg 
   ...extra,
 })
 
-const conversation = (title = 'Planning') => ({
+type Pending = {
+  interrupt_id: string
+  tool: 'web_search'
+  args: { query: string }
+  created_at: string
+  expires_at: string
+}
+
+const conversation = (title = 'Planning', pending: Pending | null = null) => ({
   id: CID,
   title,
   has_active_run: false,
-  pending_interrupt: null,
+  pending_interrupt: pending,
   created_at: '2026-11-21T10:00:00Z',
   updated_at: '2026-11-21T10:00:00Z',
 })
@@ -69,6 +78,10 @@ type Server = {
   onRegenerate?: (call: Call) => Response | Promise<Response>
   /** What PUT …/feedback answers; default: store the rating on the message. */
   onRate?: (call: Call) => Response | Promise<Response>
+  /** The approval the conversation is waiting on (GET …/{id} reports it). */
+  pending?: Pending | null
+  /** What POST …/runs/resume answers; default: a complete answer, the approval is cleared. */
+  onResume?: (call: Call) => Response | Promise<Response>
   spend: number
   calls: Call[]
   /** While set, reading the history waits for it (a slow server). */
@@ -82,7 +95,15 @@ function chatServer(seed: Partial<Server> = {}) {
     server.calls.push(call)
     const path = new URL(call.path, 'http://localhost').pathname.replace('/api/v1', '')
     if (path === '/me/usage') return json(200, usage(server.spend))
-    if (path === `/conversations/${CID}` && call.method === 'GET') return json(200, conversation())
+    if (path === `/conversations/${CID}` && call.method === 'GET') {
+      return json(200, conversation('Planning', server.pending ?? null))
+    }
+    if (path === `/conversations/${CID}/runs/resume`) {
+      if (server.onResume) return server.onResume(call)
+      server.pending = null
+      server.messages.push(msg('assistant', 'Found it on the web [1]'))
+      return answerStream('Found it on the web [1]')
+    }
     if (path === `/conversations/${CID}/messages` && call.method === 'GET') {
       const reply = () => json(200, { items: [...server.messages].reverse(), next_cursor: null })
       return server.gate ? server.gate.then(reply) : reply()
@@ -659,5 +680,196 @@ describe('usage meter', () => {
     const { container } = await open()
     await screen.findByRole('region', { name: 'Usage today' })
     expect(container.querySelector('[style]')).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------- tool approval (TASK-023)
+
+const PENDING: Pending = {
+  interrupt_id: 'int_9a8b7c',
+  tool: 'web_search',
+  args: { query: 'Go 1.24 release notes' },
+  created_at: '2026-11-21T10:00:00Z',
+  expires_at: '2099-01-01T00:00:00Z',
+}
+
+const interruptEvent = (interrupt: Pending = PENDING) => ({ type: 'interrupt', interrupt })
+
+/** A send that stops at an approval: the question is stored, the answer is not. */
+const pausingSend =
+  (server: () => Server) =>
+  (call: Call): Response => {
+    const text = (call.body as { content: string }).content
+    server().messages.push(msg('user', text))
+    server().pending = PENDING
+    return sseResponse([{ ...runStarted(), user_message_id: null }, interruptEvent()])
+  }
+
+const card = () => screen.getByRole('group', { name: 'Search the web?' })
+
+describe('tool approval', () => {
+  it('stops at the approval card when the run is interrupted, and nothing is shown as an answer', async () => {
+    const holder: { server?: Server } = {}
+    const { server, box } = await open({ onSend: pausingSend(() => holder.server!) })
+    holder.server = server
+    const user = userEvent.setup()
+
+    await user.type(box(), 'What is new in Go?{Enter}')
+
+    await waitFor(() => expect(card()).toBeInTheDocument())
+    expect(within(card()).getByText('Go 1.24 release notes')).toBeInTheDocument()
+    expect(screen.getByText('What is new in Go?')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Stop' })).not.toBeInTheDocument() // not running
+    expect(box()).toBeEnabled()
+  })
+
+  it('brings the card back after a reload', async () => {
+    await open({ messages: [msg('user', 'What is new in Go?')], pending: PENDING })
+
+    await waitFor(() => expect(card()).toBeInTheDocument())
+    expect(within(card()).getByText('Go 1.24 release notes')).toBeInTheDocument()
+  })
+
+  it('shows an approval that ran out as expired', async () => {
+    await open({
+      messages: [msg('user', 'What is new in Go?')],
+      pending: { ...PENDING, expires_at: '2020-01-01T00:00:00Z' },
+    })
+
+    await waitFor(() => expect(card()).toBeInTheDocument())
+    expect(within(card()).getByText(/expired/i)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument()
+  })
+
+  it('approves: posts the decision, streams the answer and removes the card', async () => {
+    const { server } = await open({
+      messages: [msg('user', 'What is new in Go?')],
+      pending: PENDING,
+    })
+    const user = userEvent.setup()
+    await waitFor(() => expect(card()).toBeInTheDocument())
+
+    await user.click(screen.getByRole('button', { name: 'Approve' }))
+
+    await seen('Found it on the web [1]')
+    expect(posts(server, '/runs/resume')[0]?.body).toEqual({
+      interrupt_id: 'int_9a8b7c',
+      decision: 'approve',
+    })
+    await waitFor(() =>
+      expect(screen.queryByRole('group', { name: 'Search the web?' })).not.toBeInTheDocument(),
+    )
+  })
+
+  it('hides the card while the resumed run streams', async () => {
+    const live = liveStream()
+    const { server } = await open({
+      messages: [msg('user', 'What is new in Go?')],
+      pending: PENDING,
+      onResume: () => live.response,
+    })
+    const user = userEvent.setup()
+    await waitFor(() => expect(card()).toBeInTheDocument())
+
+    await user.click(screen.getByRole('button', { name: 'Approve' }))
+    live.push({ ...runStarted(), user_message_id: null })
+    live.push(token('Searching… '))
+    await seen('Searching…')
+
+    expect(screen.queryByRole('group', { name: 'Search the web?' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeInTheDocument()
+    server.pending = null
+    server.messages.push(msg('assistant', 'Searching… done'))
+    live.push(usageEvent())
+    live.push(done())
+    live.end()
+    await seen('Searching… done')
+  })
+
+  it('edits: posts the edited query', async () => {
+    const { server } = await open({
+      messages: [msg('user', 'What is new in Go?')],
+      pending: PENDING,
+    })
+    const user = userEvent.setup()
+    await waitFor(() => expect(card()).toBeInTheDocument())
+
+    await user.click(screen.getByRole('button', { name: 'Edit' }))
+    const queryBox = screen.getByRole('textbox', { name: 'Search query' })
+    await user.clear(queryBox)
+    await user.type(queryBox, 'Go 1.24 generics')
+    await user.click(screen.getByRole('button', { name: 'Search with this query' }))
+
+    await seen('Found it on the web [1]')
+    expect(posts(server, '/runs/resume')[0]?.body).toEqual({
+      interrupt_id: 'int_9a8b7c',
+      decision: 'edit',
+      edited_args: { query: 'Go 1.24 generics' },
+    })
+  })
+
+  it('rejects: posts the decision and the model answers without the search', async () => {
+    const { server } = await open({
+      messages: [msg('user', 'What is new in Go?')],
+      pending: PENDING,
+      onResume: () => {
+        const text = 'I did not search, but from memory: Go 1.23 added iterators.'
+        server.pending = null
+        server.messages.push(msg('assistant', text))
+        return answerStream(text)
+      },
+    })
+    const user = userEvent.setup()
+    await waitFor(() => expect(card()).toBeInTheDocument())
+
+    await user.click(screen.getByRole('button', { name: 'Reject' }))
+
+    await seen(/I did not search/)
+    expect(posts(server, '/runs/resume')[0]?.body).toEqual({
+      interrupt_id: 'int_9a8b7c',
+      decision: 'reject',
+    })
+  })
+
+  it('explains an approval that is no longer waiting, and drops the stale card', async () => {
+    const { server } = await open({
+      messages: [msg('user', 'What is new in Go?')],
+      pending: PENDING,
+      onResume: () => {
+        server.pending = null // another tab answered it
+        return problem(409, 'NO_PENDING_INTERRUPT')
+      },
+    })
+    const user = userEvent.setup()
+    await waitFor(() => expect(card()).toBeInTheDocument())
+
+    await user.click(screen.getByRole('button', { name: 'Approve' }))
+
+    await seen(/no longer waiting/i)
+    await waitFor(() =>
+      expect(screen.queryByRole('group', { name: 'Search the web?' })).not.toBeInTheDocument(),
+    )
+  })
+
+  it('goes away when a new message is sent instead', async () => {
+    const { server, box } = await open({
+      messages: [msg('user', 'What is new in Go?')],
+      pending: PENDING,
+      onSend: (call) => {
+        server.pending = null // the server abandons the approval
+        const text = (call.body as { content: string }).content
+        server.messages.push(msg('user', text), msg('assistant', `Echo: ${text}`))
+        return answerStream(`Echo: ${text}`)
+      },
+    })
+    const user = userEvent.setup()
+    await waitFor(() => expect(card()).toBeInTheDocument())
+
+    await user.type(box(), 'never mind{Enter}')
+
+    await seen('Echo: never mind')
+    await waitFor(() =>
+      expect(screen.queryByRole('group', { name: 'Search the web?' })).not.toBeInTheDocument(),
+    )
   })
 })

@@ -7,6 +7,7 @@ import type { Conversation } from '../conversations/api'
 import { FilePicker } from '../files/AttachButton'
 import { UploadChips } from '../files/UploadChips'
 import { useAttachments } from '../files/uploads'
+import { ApprovalCard } from './ApprovalCard'
 import { chronological, useMessages } from './api'
 import { Composer } from './Composer'
 import { MessageList } from './MessageList'
@@ -35,6 +36,9 @@ export function ChatView({ conversation }: { conversation: Conversation }) {
   const latest = messages.at(-1)
   const lastAssistantId = latest?.role === 'assistant' ? latest.id : null
   const { running, streamingText, pendingUser } = chat.state
+  // The run that paused is over, so the card shows only while nothing else is running (the
+  // resumed run answers it; it is gone from the conversation once the server accepted it).
+  const approval = running ? null : (conversation.pending_interrupt ?? null)
 
   // Send the message typed on the home page, once. The state is cleared right away so a reload
   // does not send it again; the ref covers StrictMode running this effect twice in development.
@@ -53,7 +57,7 @@ export function ChatView({ conversation }: { conversation: Conversation }) {
   useLayoutEffect(() => {
     const el = scroller.current
     if (el && stickToBottom.current) el.scrollTop = el.scrollHeight
-  }, [messages.length, streamingText, pendingUser, running])
+  }, [messages.length, streamingText, pendingUser, running, approval?.interrupt_id])
 
   function onScroll() {
     const el = scroller.current
@@ -100,6 +104,17 @@ export function ChatView({ conversation }: { conversation: Conversation }) {
               loadingEarlier={history.isFetchingNextPage}
               onLoadEarlier={() => void history.fetchNextPage()}
               onRegenerate={() => void chat.regenerate(lastAssistantId)}
+            />
+          )}
+          {approval && (
+            <ApprovalCard
+              key={approval.interrupt_id}
+              interrupt={approval}
+              busy={running}
+              onDecide={(decision) => {
+                stickToBottom.current = true
+                void chat.decide(approval, decision)
+              }}
             />
           )}
         </div>

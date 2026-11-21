@@ -1,7 +1,7 @@
 openapi: "3.1.0"
 info:
   title: Nexus AI API
-  version: "1.3.4"
+  version: "1.3.5"
   description: |
     REST + Server-Sent Events API for Nexus AI, a self-hostable ChatGPT-style assistant.
 
@@ -359,6 +359,10 @@ paths:
       tags: [chat]
       operationId: resumeRun
       summary: Answer a pending tool approval and stream the resumed run
+      description: |
+        Decides the conversation's pending approval (`Conversation.pending_interrupt`, also sent as the `interrupt` event): `approve` runs the proposed call, `edit` runs it with `edited_args` (for `web_search` the replacement `query`, required), `reject` does not run it and the assistant answers without it.
+        The run that paused holds no lease while it waits; the resumed run takes one like a send does and counts toward the rate limit and the budgets (429, before anything is changed).
+        Approvals expire after 24 hours; a new message sent while one is pending abandons it. 409 `NO_PENDING_INTERRUPT`: nothing is pending, `interrupt_id` is not the pending one, it expired, or it was already answered; 409 `RUN_IN_PROGRESS`: the conversation is running. 422: bad body, or `edit` without a valid `edited_args.query`; the approval then stays pending.
       requestBody:
         required: true
         content:
@@ -370,6 +374,7 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
         "422": { $ref: "#/components/responses/ValidationError" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
         "500": { $ref: "#/components/responses/InternalError" }
         "503": { $ref: "#/components/responses/ServiceUnavailable" }
 

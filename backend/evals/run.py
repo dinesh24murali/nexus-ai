@@ -32,6 +32,7 @@ from app.graph.builder import build_graph
 from app.llm.factory import LLMConfigError, get_model
 from app.llm.prompts import all_prompts, load_prompt
 from app.llm.tracing import Tracer
+from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph.state import CompiledStateGraph
 
 from evals.canaries import check_canaries
@@ -45,12 +46,15 @@ from evals.datasets import (
     RagCase,
     RedTeamCase,
     SummaryCase,
+    ToolsCase,
     load_dataset,
 )
 from evals.judges import Judges
 from evals.langfuse_log import EvalLogger
 from evals.metrics import Scores, format_compliance
 from evals.runner import EVAL_USER_ID, ChatRun, RagTarget, run_chat, run_summary
+
+GraphFactory = Callable[[Any, Any, Any], CompiledStateGraph[Any, Any, Any, Any]]
 
 SuiteName = Literal["smoke", "full"]
 RUNS_PER_CASE: dict[str, int] = {"smoke": 1, "full": 3}  # doc 09 section 1: n=1 smoke, n=3 full
@@ -76,8 +80,20 @@ METRIC_KEYS = (
     "rag.answer_correctness",
     "rag.answer_correctness.whole_doc",
     "rag.unanswerable_accuracy",
+    "tools.selection_accuracy",
+    "tools.arg_validity",
+    "tools.unnecessary_call_rate",
+    "tools.sequence_accuracy",
+    "tools.approval_enforced",
 )
-SUITE_DATASETS = ("chat.golden", "summary.golden", "perf.latency", "safety.redteam", "rag.golden")
+SUITE_DATASETS = (
+    "chat.golden",
+    "summary.golden",
+    "perf.latency",
+    "safety.redteam",
+    "rag.golden",
+    "tools.routing",
+)
 # The metrics each dataset can produce: a metric is "not measured" only if a dataset that should
 # have produced it ran. (`rag.golden` runs only when a RAG environment is given.)
 METRICS_OF: dict[str, tuple[str, ...]] = {
@@ -95,6 +111,7 @@ METRICS_OF: dict[str, tuple[str, ...]] = {
         "safety.canary_pass_rate",
     ),
     "rag.golden": tuple(k for k in METRIC_KEYS if k.startswith("rag.")),
+    "tools.routing": tuple(k for k in METRIC_KEYS if k.startswith("tools.")),
 }
 
 
@@ -329,7 +346,7 @@ def _metrics(scores: Scores, ran: Sequence[str]) -> tuple[dict[str, float], list
         "ops.cost_per_turn_usd": scores.mean("ops.cost_per_turn_usd"),
         "ops.cached_input_ratio": scores.mean("ops.cached_input_ratio"),
     }
-    values.update({k: scores.mean(k) for k in METRIC_KEYS if k.startswith("rag.")})
+    values.update({k: scores.mean(k) for k in METRIC_KEYS if k.startswith(("rag.", "tools."))})
     metrics = {k: round(v, 6) for k, v in values.items() if v is not None}
     expected = {key for name in ran for key in METRICS_OF[name]}
     skipped = [k for k in METRIC_KEYS if k in expected and k not in metrics]
@@ -364,13 +381,16 @@ async def run_suite(
     datasets_dir: Path | None = None,
     concurrency: int = CONCURRENCY,
     rag: RagTarget | None = None,
+    tools_graph: GraphFactory | None = None,
 ) -> Report:
     n = runs if runs is not None else RUNS_PER_CASE[suite]
     smoke_only = suite == "smoke"
     selected = [
         name
         for name in SUITE_DATASETS
-        if (only is None or name in only) and (name != "rag.golden" or rag is not None)
+        if (only is None or name in only)
+        and (name != "rag.golden" or rag is not None)
+        and (name != "tools.routing" or tools_graph is not None)
     ]
     chat = load_dataset("chat.golden", ChatCase, smoke_only=smoke_only, directory=datasets_dir)
     perf = load_dataset("perf.latency", PerfCase, smoke_only=smoke_only, directory=datasets_dir)
@@ -387,6 +407,11 @@ async def run_suite(
     if rag is not None:
         loaded["rag.golden"] = load_dataset(
             "rag.golden", RagCase, smoke_only=smoke_only, directory=datasets_dir
+        )
+
+    if tools_graph is not None:
+        loaded["tools.routing"] = load_dataset(
+            "tools.routing", ToolsCase, smoke_only=smoke_only, directory=datasets_dir
         )
 
     started = time.perf_counter()
@@ -420,6 +445,13 @@ async def run_suite(
         rag_cases = loaded["rag.golden"]
         steps["rag.golden"] = lambda: run_rag_golden(
             state, rag_cases, graph=rag.graph, user_id=rag.user_id
+        )
+    if tools_graph is not None:
+        from evals.tools import run_tools_routing  # here: evals.tools imports this module
+
+        tools_cases = loaded["tools.routing"]
+        steps["tools.routing"] = lambda: run_tools_routing(
+            state, tools_cases, graph_factory=tools_graph
         )
     # rag.golden before perf.latency: latency runs last, with nothing else using the API.
     order = [n for n in selected if n != "perf.latency"] + [
@@ -521,6 +553,17 @@ async def main_async(args: argparse.Namespace) -> int:
             user_id=rag_env.user_id,
         )
 
+    def tools_graph(retriever: Any, web: Any, recent_files: Any) -> Any:
+        # Stand-in tools (no network, no Qdrant); the model, the prompt and the graph are real.
+        return build_graph(
+            checkpointer=InMemorySaver(),
+            settings=settings,
+            retriever=retriever,
+            web_searcher=web,
+            calculator=True,
+            recent_files=recent_files,
+        )
+
     tracer = None if fake or args.no_langfuse else Tracer(settings)
     run_name = f"{args.suite}-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}"
     logger = EvalLogger(
@@ -537,6 +580,7 @@ async def main_async(args: argparse.Namespace) -> int:
             runs=args.runs,
             only=args.dataset or None,
             rag=rag,
+            tools_graph=tools_graph,
         )
     except DatasetError as exc:
         print(f"error: {exc}", file=sys.stderr)

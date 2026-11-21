@@ -211,6 +211,25 @@ class SendMessageRequest(BaseModel):
     content: MessageContent
 
 
+EditedQuery = Annotated[str, Field(min_length=1, max_length=400), AfterValidator(_no_nul)]
+
+
+class EditedArgs(NoNullFieldsModel):
+    """Replacement arguments for an approval decided with `edit` (the spec's `edited_args`)."""
+
+    query: EditedQuery | None = None  # web_search
+    queries: Annotated[list[EditedQuery], Field(min_length=1, max_length=6)] | None = None
+    memory_id: uuid.UUID | None = None  # forget_memory
+
+
+class ResumeRunRequest(NoNullFieldsModel):
+    """The decision on a pending tool approval (`POST /conversations/{id}/runs/resume`)."""
+
+    interrupt_id: Annotated[str, AfterValidator(_no_nul)]
+    decision: Literal["approve", "edit", "reject"]
+    edited_args: EditedArgs | None = None
+
+
 Comment = Annotated[str, Field(max_length=1000), AfterValidator(_no_nul)]
 
 

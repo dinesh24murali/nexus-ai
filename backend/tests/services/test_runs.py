@@ -1,8 +1,7 @@
 """RunService against a real Postgres, the real checkpointer and the scripted fake model."""
 
 import asyncio
-from collections.abc import AsyncIterator, Callable
-from dataclasses import dataclass
+from collections.abc import Callable
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
@@ -21,112 +20,17 @@ from app.api.sse import (
     ToolStartEvent,
     UsageEvent,
 )
-from app.core.config import Settings
 from app.core.errors import ApiError
 from app.db.repositories.messages import assistant_message_id
-from app.graph.builder import build_graph
 from app.llm.fake import FakeChatModel
-from app.services.runs import Run, RunService
-from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from tests.db_support import libpq
-from tests.services.support import ExplodingFake, NumberedFake, collect, types
+from tests.services.support import Env, ExplodingFake, NumberedFake, collect, types
 
 pytestmark = pytest.mark.integration
 
 Factory = async_sessionmaker[AsyncSession]
 LONG = "[[fixture:long]]"
-
-
-@dataclass
-class Env:
-    service: RunService
-    saver: AsyncPostgresSaver
-    db: psycopg.Connection[Any]
-    user: UUID
-    cid: UUID
-    overrides: list[str | None]
-
-    def messages(self) -> list[tuple[str, str, str, str | None]]:
-        rows = self.db.execute(
-            "SELECT role, content, status, finish_reason FROM messages"
-            " WHERE conversation_id = %s ORDER BY created_at, id",
-            (self.cid,),
-        ).fetchall()
-        return [(r[0], r[1], r[2], r[3]) for r in rows]
-
-    def lease(self) -> tuple[Any, Any]:
-        row = self.db.execute(
-            "SELECT active_run_id, run_heartbeat_at FROM conversations WHERE id = %s", (self.cid,)
-        ).fetchone()
-        assert row
-        return row[0], row[1]
-
-    async def thread(self) -> list[tuple[str, str]]:
-        graph = build_graph(
-            checkpointer=self.saver, chat_model=FakeChatModel(), summarize_model=FakeChatModel()
-        )
-        state = await graph.aget_state({"configurable": {"thread_id": str(self.cid)}})
-        return [(m.type, m.text) for m in state.values.get("messages", [])]
-
-    async def send(self, text: str, *, user: UUID | None = None) -> Run:
-        return await self.service.start_send(user or self.user, "Marco", self.cid, text)
-
-
-@pytest.fixture
-async def make_env(
-    session_factory: Factory,
-    settings: Settings,
-    db_url: str,
-    db: psycopg.Connection[Any],
-    make_user: Any,
-) -> AsyncIterator[Callable[..., Any]]:
-    stack: list[Any] = []
-
-    async def make(
-        *,
-        chat: Any = None,
-        token_delay_s: float = 0.0,
-        heartbeat_s: float = 0.05,
-        flags: Any = None,
-        tracer: Any = None,
-        retriever: Any = None,
-    ) -> Env:
-        user = UUID(make_user())
-        row = db.execute(
-            "INSERT INTO conversations (user_id) VALUES (%s) RETURNING id", (user,)
-        ).fetchone()
-        assert row
-        ctx = AsyncPostgresSaver.from_conn_string(libpq(db_url))
-        saver = await ctx.__aenter__()
-        stack.append(ctx)
-        overrides: list[str | None] = []
-
-        def graph_factory(model_override: str | None) -> Any:
-            overrides.append(model_override)
-            return build_graph(
-                checkpointer=saver,
-                chat_model=chat or FakeChatModel(role="chat", token_delay_s=token_delay_s),
-                summarize_model=FakeChatModel(role="summarize"),
-                retriever=retriever,
-            )
-
-        service = RunService(
-            factory=session_factory,
-            settings=settings,
-            graph_factory=graph_factory,
-            flags=flags,
-            tracer=tracer,
-            heartbeat_s=heartbeat_s,
-        )
-        return Env(service, saver, db, user, UUID(str(row[0])), overrides)
-
-    try:
-        yield make
-    finally:
-        for ctx in stack:
-            await ctx.__aexit__(None, None, None)
 
 
 async def test_a_turn_streams_persists_and_enqueues_the_title(

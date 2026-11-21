@@ -218,7 +218,12 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Answer a pending tool approval and stream the resumed run */
+        /**
+         * Answer a pending tool approval and stream the resumed run
+         * @description Decides the conversation's pending approval (`Conversation.pending_interrupt`, also sent as the `interrupt` event): `approve` runs the proposed call, `edit` runs it with `edited_args` (for `web_search` the replacement `query`, required), `reject` does not run it and the assistant answers without it.
+         *     The run that paused holds no lease while it waits; the resumed run takes one like a send does and counts toward the rate limit and the budgets (429, before anything is changed).
+         *     Approvals expire after 24 hours; a new message sent while one is pending abandons it. 409 `NO_PENDING_INTERRUPT`: nothing is pending, `interrupt_id` is not the pending one, it expired, or it was already answered; 409 `RUN_IN_PROGRESS`: the conversation is running. 422: bad body, or `edit` without a valid `edited_args.query`; the approval then stays pending.
+         */
         post: operations["resumeRun"];
         delete?: never;
         options?: never;
@@ -2152,6 +2157,7 @@ export interface operations {
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
             422: components["responses"]["ValidationError"];
+            429: components["responses"]["TooManyRequests"];
             500: components["responses"]["InternalError"];
             503: components["responses"]["ServiceUnavailable"];
         };
