@@ -112,6 +112,16 @@ async def latest(
     return (await session.execute(stmt)).scalar_one_or_none()
 
 
+async def get_assistant(
+    session: AsyncSession, user_id: uuid.UUID, message_id: uuid.UUID
+) -> Message | None:
+    """One of the user's own assistant messages (the only kind that can be rated)."""
+    stmt = select(Message).where(
+        Message.user_id == user_id, Message.id == message_id, Message.role == "assistant"
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
 async def delete_message(session: AsyncSession, user_id: uuid.UUID, message_id: uuid.UUID) -> bool:
     result = await session.execute(
         delete(Message).where(Message.user_id == user_id, Message.id == message_id)

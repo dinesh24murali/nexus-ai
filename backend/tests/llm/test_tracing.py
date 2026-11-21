@@ -187,3 +187,64 @@ def test_extra_tags_are_added_to_the_run_config(tracer: Tracer) -> None:
 
     assert "moderation:skipped" in config["tags"]
     assert "feature:chat" in config["tags"]
+
+
+# ---------------------------------------------------------------------------------- feedback ---
+
+
+async def test_the_trace_id_is_derived_from_the_assistant_message_id(
+    tracer: Tracer, exporter: InMemorySpanExporter
+) -> None:
+    spans = await run_traced(tracer, exporter, "hello", assistant_message_id="msg-42")
+    expected = tracer.trace_id_for("msg-42")
+    assert expected is not None and len(expected) == 32
+    assert {f"{s.context.trace_id:032x}" for s in spans if s.context} == {expected}
+    assert tracer.trace_id_for("msg-42") == expected
+    assert tracer.trace_id_for("msg-43") != expected
+
+
+async def test_a_run_without_a_message_id_gets_a_random_trace(
+    tracer: Tracer, exporter: InMemorySpanExporter
+) -> None:
+    spans = await run_traced(tracer, exporter, "hello", assistant_message_id=None)
+    assert len({s.context.trace_id for s in spans if s.context}) == 1
+
+
+def test_without_keys_there_is_no_trace_id_and_no_score() -> None:
+    off = Tracer(settings())
+    assert off.trace_id_for("msg-1") is None
+    assert off.score_feedback("a" * 32, message_id="msg-1", score=1, comment=None) is False
+
+
+def test_feedback_becomes_a_score_on_the_trace_with_a_masked_comment(
+    tracer: Tracer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[dict[str, Any]] = []
+    assert tracer.client is not None
+    monkeypatch.setattr(tracer.client, "create_score", lambda **kw: calls.append(kw))
+    trace_id = tracer.trace_id_for("msg-7")
+    assert trace_id is not None
+
+    assert tracer.score_feedback(
+        trace_id, message_id="msg-7", score=-1, comment="wrong, mail me at jo@example.com"
+    )
+    assert tracer.score_feedback(trace_id, message_id="msg-7", score=1, comment=None)
+
+    first, second = calls
+    assert first["name"] == "user_feedback" and first["value"] == -1.0
+    assert first["trace_id"] == trace_id
+    assert "jo@example.com" not in first["comment"] and "wrong" in first["comment"]
+    # The same score id for both ratings: Langfuse overwrites instead of adding a second score.
+    assert first["score_id"] == second["score_id"] == "feedback-msg-7"
+    assert second["value"] == 1.0 and second["comment"] is None
+
+
+def test_a_langfuse_failure_while_scoring_is_swallowed(
+    tracer: Tracer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom(**_: Any) -> None:
+        raise RuntimeError("network down")
+
+    assert tracer.client is not None
+    monkeypatch.setattr(tracer.client, "create_score", boom)
+    assert tracer.score_feedback("a" * 32, message_id="m", score=1, comment=None) is False

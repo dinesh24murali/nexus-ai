@@ -478,6 +478,9 @@ class RecordingTracer:
         self.traces.append(trace)
         return {}
 
+    def trace_id_for(self, message_id: str) -> str:
+        return f"trace-of-{message_id}"
+
 
 async def test_a_skipped_moderation_check_is_tagged_on_the_runs_trace(
     make_env: Callable[..., Any],
@@ -489,3 +492,29 @@ async def test_a_skipped_moderation_check_is_tagged_on_the_runs_trace(
     await collect(await env.send("a normal message"))
 
     assert [t.tags for t in tracer.traces] == [("moderation:skipped",), ()]
+
+
+async def test_the_answer_is_stored_with_the_id_of_the_trace_it_was_exported_under(
+    make_env: Callable[..., Any],
+) -> None:
+    env = await make_env(tracer=RecordingTracer())
+
+    run = await env.send("hello")
+    await collect(run)
+
+    row = env.db.execute(
+        "SELECT trace_id FROM messages WHERE id = %s", (run.assistant_message_id,)
+    ).fetchone()
+    assert row == (f"trace-of-{run.assistant_message_id}",)
+
+
+async def test_without_tracing_no_trace_id_is_stored(make_env: Callable[..., Any]) -> None:
+    env = await make_env()
+
+    run = await env.send("hello")
+    await collect(run)
+
+    row = env.db.execute(
+        "SELECT trace_id FROM messages WHERE id = %s", (run.assistant_message_id,)
+    ).fetchone()
+    assert row == (None,)

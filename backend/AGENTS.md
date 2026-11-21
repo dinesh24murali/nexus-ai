@@ -16,10 +16,11 @@ backend/
 ├── app/
 │   ├── main.py             ← create_app() factory (run: uvicorn app.main:create_app --factory)
 │   ├── api/                ← routers (thin), deps.py (auth + session factory), schemas.py,
-│   │                         chat.py (send/regenerate/cancel/history) + sse.py (typed events, framing)
+│   │                         chat.py (send/regenerate/cancel/history) + sse.py (typed events, framing),
+│   │                         feedback.py (PUT /messages/{id}/feedback)
 │   ├── services/           ← use cases and transaction boundaries (auth.py; runs.py = run lease,
 │   │                         streaming, cancel, regenerate, drain, pre-run limits; usage.py = spend reads,
-│   │                         budget check, /me/usage, spend alert)
+│   │                         budget check, /me/usage, spend alert; feedback.py = rate an answer + Langfuse score)
 │   ├── jobs/               ← queue.py (Postgres SKIP LOCKED), handlers.py (registry: kind -> handler,
 │   │                         timeout, attempts), periodic.py (reaper, stale-job requeue, cleanups)
 │   ├── db/                 ← base, models, session, repositories/ (every query is owner-scoped)
@@ -31,6 +32,7 @@ backend/
 │   │                         usage.py (per-run token + cost collector)
 │   ├── graph/              ← state.py, prompting.py (cache-friendly request layout), builder.py, nodes/
 │   └── (rag/ memory/ ...  arrive with M3+; layout in docs/02_outputs/03_tech_architecture.md §2)
+├── evals/                  ← the eval suite (`python -m evals.run`; see evals/AGENTS.md); not imported by app/
 ├── prompts/                ← canonical prompt files `<name>.md` (front-matter name + version; ADR-0008)
 ├── alembic/                ← async env, forward-only migrations in versions/
 ├── tests/                  ← unit + integration (marker `integration`), contract/ (schemathesis)
@@ -70,6 +72,10 @@ backend/
 - A chat send/regenerate passes, in order: drain check, `ratelimit.hit` (atomic), `usage.ensure_within_budgets`, `Moderator.check` (sends only), then the lease. Refusals (`RATE_LIMITED`, `BUDGET_EXCEEDED` with `details.scope`, `MODERATION_FLAGGED`) happen before anything is written. New run-starting endpoints must go through `RunService._admit`
 - Spend lives in `usage_daily` (USD); anything that calls a model for a user adds to it (runs `requests=1`, regenerates and jobs `requests=0`). Budget policy is `core/budgets.py` (pure); reading spend is `services/usage.py`
 - Moderation fails open and says so (log `moderation_skipped`, trace tag `moderation:skipped`); never log or echo the text
+
+### Feedback and traces
+- A run's Langfuse trace id is derived from the assistant message id (`Tracer.trace_id_for`) and stored in `messages.trace_id`; a rating (`services/feedback.py`) is stored first and then sent as the score `user_feedback`. Langfuse is a best-effort mirror: never fail a request on it, never send an unmasked comment
+- Only the caller's own assistant messages can be rated (everything else is 404); a rating replaces the earlier one
 
 ### Logging
 - structlog JSON only. Never log request bodies, query strings, headers or message content. Third-party stdlib loggers default to WARNING (client libraries log full URLs at INFO)

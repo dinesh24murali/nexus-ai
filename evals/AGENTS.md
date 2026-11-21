@@ -12,9 +12,10 @@ evals/
 ├── check_baseline.py    ← Stack-agnostic gate: compares results/latest.json to the baseline
 ├── datasets/            ← Versioned golden datasets (*.jsonl), one record per line
 └── results/             ← Eval run outputs (gitignored); the suite writes results/latest.json
+                           (LLM_MODE=fake writes latest.fake.json instead, which the gate never reads)
 ```
 
-The eval **suite** itself (the code that runs the app against datasets and scores outputs) lives with the backend and is invoked via `EVAL_COMMAND` / `EVAL_SMOKE_COMMAND` in the `Makefile`. It must write `evals/results/latest.json`:
+The eval **suite** itself (the code that runs the app against datasets and scores outputs) lives in `backend/evals/` (`run.py` CLI, `datasets.py` record schemas, `metrics.py`, `judges.py`, `canaries.py`, `runner.py`, `langfuse_log.py`; tests in `backend/tests/evals/`) and is invoked via `EVAL_COMMAND` / `EVAL_SMOKE_COMMAND` in the `Makefile`. `make eval` needs `OPENAI_API_KEY`. A dataset needs a record model in `backend/evals/datasets.py` (unknown fields are rejected) and a step in `evals/run.py`. A metric with no samples is left out of the results, so a gated metric that could not be measured fails the gate. It must write `evals/results/latest.json`:
 
 ```json
 {"metrics": {"rag.faithfulness": 0.91, "tools.selection_accuracy": 0.95}}

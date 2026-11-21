@@ -8,6 +8,7 @@ from typing import Annotated, Any, Literal, Self
 from pydantic import (
     AfterValidator,
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     Field,
     SerializerFunctionWrapHandler,
@@ -176,6 +177,37 @@ class SendMessageRequest(BaseModel):
     content: MessageContent
 
 
+Comment = Annotated[str, Field(max_length=1000), AfterValidator(_no_nul)]
+
+
+def _not_a_bool(value: Any) -> Any:
+    """`true` equals 1 in Python and would pass for a thumbs-up; the spec's score is an integer."""
+    if isinstance(value, bool):
+        raise ValueError("must be an integer")
+    return value
+
+
+class FeedbackRequest(NoNullFieldsModel):
+    # Strict: "1" is not a rating either.
+    model_config = ConfigDict(strict=True)
+
+    score: Annotated[Literal[-1, 1], BeforeValidator(_not_a_bool)]
+    comment: Comment | None = None
+
+    @model_validator(mode="after")
+    def _blank_comment_is_no_comment(self) -> Self:
+        if self.comment is not None and not self.comment.strip():
+            self.comment = None
+        return self
+
+
+class FeedbackOut(BaseModel):
+    message_id: uuid.UUID
+    score: Literal[-1, 1]
+    comment: str | None
+    created_at: datetime
+
+
 class MessageUsageOut(BaseModel):
     model: str | None
     prompt_tokens: int
@@ -207,7 +239,7 @@ class MessageOut(BaseModel):
         return data
 
     @classmethod
-    def from_model(cls, m: Any) -> MessageOut:
+    def from_model(cls, m: Any, feedback: int | None = None) -> MessageOut:
         usage = None
         if m.role == "assistant" and m.model is not None:
             usage = MessageUsageOut(
@@ -226,7 +258,7 @@ class MessageOut(BaseModel):
             finish_reason=m.finish_reason,
             tool_calls=list(m.tool_calls or []),
             citations=list(m.citations or []),
-            feedback=None,  # feedback endpoints are a later task
+            feedback=feedback,
             usage=usage,
             intent=None,  # the intent router arrives with M7
             documents=[],

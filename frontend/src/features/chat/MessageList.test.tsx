@@ -1,5 +1,8 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen, within } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import { AuthManager } from '../../lib/auth'
+import { AuthContext } from '../../lib/auth-context'
 import type { Message } from './api'
 import { MessageList } from './MessageList'
 import type { ChatRun } from './useChatRun'
@@ -27,16 +30,24 @@ const running = (over: Partial<ChatRun> = {}): ChatRun => ({
   ...over,
 })
 
+// The rating buttons call the API, so even this presentational test needs the providers (nothing
+// is sent: no test here presses a thumb).
+const manager = new AuthManager({ fetch: vi.fn() as unknown as typeof fetch, locks: null })
+
 function show(messages: Message[], run: ChatRun) {
   render(
-    <MessageList
-      messages={messages}
-      run={run}
-      hasEarlier={false}
-      loadingEarlier={false}
-      onLoadEarlier={() => undefined}
-      onRegenerate={() => undefined}
-    />,
+    <QueryClientProvider client={new QueryClient()}>
+      <AuthContext.Provider value={manager}>
+        <MessageList
+          messages={messages}
+          run={run}
+          hasEarlier={false}
+          loadingEarlier={false}
+          onLoadEarlier={() => undefined}
+          onRegenerate={() => undefined}
+        />
+      </AuthContext.Provider>
+    </QueryClientProvider>,
   )
   return within(screen.getByRole('log'))
 }

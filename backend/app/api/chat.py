@@ -12,7 +12,7 @@ from app.api import sse
 from app.api.deps import CurrentUserDep, FactoryDep, RunsDep
 from app.api.schemas import MessageOut, MessagePage, SendMessageRequest
 from app.core.errors import ApiError
-from app.db.repositories import conversations, messages
+from app.db.repositories import conversations, feedback, messages
 from app.services.runs import Run
 
 router = APIRouter(prefix="/conversations", tags=["chat"])
@@ -124,4 +124,8 @@ async def list_messages(
         items, next_cursor = await messages.list_page(
             session, current.id, cid, limit=limit, cursor=decoded
         )
-    return MessagePage(items=[MessageOut.from_model(m) for m in items], next_cursor=next_cursor)
+        ratings = await feedback.scores_for(session, current.id, [m.id for m in items])
+    return MessagePage(
+        items=[MessageOut.from_model(m, ratings.get(m.id)) for m in items],
+        next_cursor=next_cursor,
+    )

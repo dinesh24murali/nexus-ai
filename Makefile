@@ -1,4 +1,5 @@
-# Eval suite commands — set these once the eval suite exists (see evals/AGENTS.md)
+# Eval suite commands (see evals/AGENTS.md). They need OPENAI_API_KEY; LLM_MODE=fake only checks the
+# pipeline (it writes evals/results/latest.fake.json, which the gate never reads).
 EVAL_COMMAND ?= cd backend && uv run python -m evals.run --suite full
 EVAL_SMOKE_COMMAND ?= cd backend && uv run python -m evals.run --suite smoke
 

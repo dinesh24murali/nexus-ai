@@ -12,6 +12,7 @@ from app.core.net import client_ip
 from app.core.security import InvalidTokenError, TokenExpiredError, decode_access_token
 from app.db.models import User
 from app.db.repositories import users
+from app.services.feedback import FeedbackService
 from app.services.runs import RunService
 
 _bearer = HTTPBearer(auto_error=False, description="15-minute access token from /auth/login")
@@ -32,6 +33,11 @@ def get_runs(request: Request) -> RunService:
     return runs
 
 
+def get_feedback(request: Request) -> FeedbackService:
+    service: FeedbackService = request.app.state.feedback
+    return service
+
+
 def get_client_ip(request: Request, settings: Annotated[Settings, Depends(get_settings)]) -> str:
     return client_ip(request, trusted_proxy=settings.trusted_proxy)
 
@@ -40,6 +46,7 @@ SettingsDep = Annotated[Settings, Depends(get_settings)]
 FactoryDep = Annotated[async_sessionmaker[AsyncSession], Depends(get_session_factory)]
 ClientIpDep = Annotated[str, Depends(get_client_ip)]
 RunsDep = Annotated[RunService, Depends(get_runs)]
+FeedbackDep = Annotated[FeedbackService, Depends(get_feedback)]
 
 
 @dataclass(frozen=True)

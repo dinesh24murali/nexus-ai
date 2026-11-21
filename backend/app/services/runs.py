@@ -687,6 +687,11 @@ class RunService:
             cached_tokens=total.cached_tokens,
             completion_tokens=total.completion_tokens,
             cost_usd=used.cost_usd,
+            # The trace this run was exported under (None without tracing): a later rating of
+            # the answer is scored on it.
+            trace_id=(
+                self._tracer.trace_id_for(str(run.assistant_message_id)) if self._tracer else None
+            ),
         )
         await usage_repo.add(
             session,

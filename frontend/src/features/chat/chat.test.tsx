@@ -26,6 +26,7 @@ type Msg = {
   content: string
   status: 'complete' | 'cancelled' | 'failed'
   finish_reason?: string | null
+  feedback?: -1 | 1 | null
   created_at: string
 }
 
@@ -66,6 +67,8 @@ type Server = {
   /** What POST …/messages answers; default: a short complete answer that is also stored. */
   onSend?: (call: Call) => Response | Promise<Response>
   onRegenerate?: (call: Call) => Response | Promise<Response>
+  /** What PUT …/feedback answers; default: store the rating on the message. */
+  onRate?: (call: Call) => Response | Promise<Response>
   spend: number
   calls: Call[]
   /** While set, reading the history waits for it (a slow server). */
@@ -97,6 +100,19 @@ function chatServer(seed: Partial<Server> = {}) {
       return answerStream('A new answer')
     }
     if (path === `/conversations/${CID}/runs/cancel`) return new Response(null, { status: 202 })
+    const rating = /^\/messages\/([^/]+)\/feedback$/.exec(path)
+    if (rating && call.method === 'PUT') {
+      if (server.onRate) return server.onRate(call)
+      const target = server.messages.find((m) => m.id === rating[1])
+      if (!target) return problem(404, 'NOT_FOUND')
+      target.feedback = (call.body as { score: -1 | 1 }).score
+      return json(200, {
+        message_id: target.id,
+        score: target.feedback,
+        comment: null,
+        created_at: '2026-11-21T10:05:00Z',
+      })
+    }
     return problem(500, 'INTERNAL_ERROR', `unscripted ${call.method} ${path}`)
   })
   return { server, handler }
@@ -383,6 +399,99 @@ describe('regenerate', () => {
 
     await waitFor(() => expect(posts(server, '/regenerate')).toHaveLength(1))
     await seen('A new answer')
+  })
+})
+
+describe('rating an answer', () => {
+  const rates = (server: Server) => server.calls.filter((c) => c.method === 'PUT')
+  const thumbs = () => ({
+    up: screen.getByRole('button', { name: 'Good answer' }),
+    down: screen.getByRole('button', { name: 'Bad answer' }),
+  })
+
+  it('shows both thumbs unpressed on an answer nobody rated', async () => {
+    await open({ messages: [msg('user', 'q'), msg('assistant', 'a')] })
+    await seen('a')
+    expect(thumbs().up).toHaveAttribute('aria-pressed', 'false')
+    expect(thumbs().down).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.getByRole('group', { name: 'Rate this answer' })).toBeInTheDocument()
+  })
+
+  it('shows a rating the server already holds', async () => {
+    await open({ messages: [msg('user', 'q'), msg('assistant', 'a', { feedback: -1 })] })
+    await seen('a')
+    expect(thumbs().down).toHaveAttribute('aria-pressed', 'true')
+    expect(thumbs().up).toHaveAttribute('aria-pressed', 'false')
+  })
+
+  it('sends the rating of the thumb that was pressed and shows it', async () => {
+    const answer = msg('assistant', 'a')
+    const { user, server } = await open({ messages: [msg('user', 'q'), answer] })
+    await seen('a')
+
+    await user.click(thumbs().up)
+
+    await waitFor(() => expect(thumbs().up).toHaveAttribute('aria-pressed', 'true'))
+    expect(rates(server)).toHaveLength(1)
+    expect(rates(server)[0]!.path).toContain(`/messages/${answer.id}/feedback`)
+    expect(rates(server)[0]!.body).toEqual({ score: 1 })
+  })
+
+  it('changes the rating when the other thumb is pressed, and ignores a repeat press', async () => {
+    const { user, server } = await open({
+      messages: [msg('user', 'q'), msg('assistant', 'a', { feedback: 1 })],
+    })
+    await seen('a')
+
+    await user.click(thumbs().up) // already chosen: nothing to send
+    expect(rates(server)).toHaveLength(0)
+
+    await user.click(thumbs().down)
+    await waitFor(() => expect(thumbs().down).toHaveAttribute('aria-pressed', 'true'))
+    expect(thumbs().up).toHaveAttribute('aria-pressed', 'false')
+    expect(rates(server).map((c) => c.body)).toEqual([{ score: -1 }])
+  })
+
+  it('shows the rating at once and puts it back, with the reason, when the server refuses', async () => {
+    let refuse: () => void = () => undefined
+    const held = new Promise<void>((resolve) => (refuse = resolve))
+    const { user } = await open({
+      messages: [msg('user', 'q'), msg('assistant', 'a')],
+      onRate: () => held.then(() => problem(500, 'INTERNAL_ERROR', 'Something went wrong.')),
+    })
+    await seen('a')
+
+    await user.click(thumbs().down)
+    expect(thumbs().down).toHaveAttribute('aria-pressed', 'true') // before the server answered
+
+    refuse()
+    await screen.findByRole('alert')
+    expect(thumbs().down).toHaveAttribute('aria-pressed', 'false')
+    expect(thumbs().up).not.toBeDisabled()
+  })
+
+  it('does not offer a rating on a failed or empty answer, or on your own message', async () => {
+    await open({
+      messages: [
+        msg('user', 'q'),
+        msg('assistant', '', { status: 'failed', finish_reason: 'server_restart' }),
+      ],
+    })
+    await seen('Interrupted: the server restarted while answering.')
+    expect(screen.queryByRole('group', { name: 'Rate this answer' })).toBeNull()
+  })
+
+  it('keeps the rating after a regenerate replaced the answer with an unrated one', async () => {
+    const { user, server } = await open({
+      messages: [msg('user', 'q'), msg('assistant', 'old', { feedback: 1 })],
+    })
+    await seen('old')
+
+    await user.click(screen.getByRole('button', { name: 'Regenerate' }))
+
+    await seen('A new answer')
+    await waitFor(() => expect(thumbs().up).toHaveAttribute('aria-pressed', 'false'))
+    expect(rates(server)).toHaveLength(0)
   })
 })
 

@@ -2,6 +2,7 @@ import { AlertTriangle, RefreshCw } from 'lucide-react'
 import { Button } from '../../components/ui/Button'
 import { cn } from '../../lib/cn'
 import type { Message } from './api'
+import { Feedback } from './Feedback'
 import { Markdown } from './Markdown'
 import type { ChatRun } from './useChatRun'
 
@@ -39,6 +40,8 @@ type AssistantProps = {
 function AssistantBubble({ message, isLast, canRetry, onRegenerate }: AssistantProps) {
   const failed = message.status === 'failed'
   const interrupted = failed && message.finish_reason === 'server_restart'
+  // A failed answer is not an answer to rate, and an empty one has nothing to rate.
+  const ratable = !failed && message.content !== ''
   return (
     <article aria-label="Nexus reply" className="text-body-lg">
       {message.content && <Markdown text={message.content} />}
@@ -50,11 +53,16 @@ function AssistantBubble({ message, isLast, canRetry, onRegenerate }: AssistantP
             : "This answer didn't finish."}
         </Label>
       )}
-      {isLast && canRetry && (
-        <Button variant="ghost" size="sm" className="mt-2 -ml-3" onClick={onRegenerate}>
-          <RefreshCw className="size-3.5" aria-hidden />
-          {failed ? 'Retry' : 'Regenerate'}
-        </Button>
+      {(ratable || (isLast && canRetry)) && (
+        <div className="mt-2 flex items-center gap-1 -ml-2">
+          {ratable && <Feedback message={message} />}
+          {isLast && canRetry && (
+            <Button variant="ghost" size="sm" onClick={onRegenerate}>
+              <RefreshCw className="size-3.5" aria-hidden />
+              {failed ? 'Retry' : 'Regenerate'}
+            </Button>
+          )}
+        </div>
       )}
     </article>
   )

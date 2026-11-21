@@ -23,7 +23,7 @@ frontend/
 │   ├── components/ui/            ← shadcn-style primitives (Button, Field, Alert) on our tokens
 │   ├── components/               ← app components (ThemeToggle, sidebar/: ConversationNav, ConversationList, ConversationItem)
 │   ├── features/                 ← feature folders (conversations/ = TanStack Query hooks; chat/ = ChatView, useChatRun,
-│   │                               MessageList, Composer, Markdown + CodeBlock + highlight (Shiki), notices, UsageMeter;
+│   │                               MessageList, Composer, Feedback (thumbs), Markdown + CodeBlock + highlight (Shiki), notices, UsageMeter;
 │   │                               files/, settings/ to come)
 │   ├── styles/tokens.css, theme.css   ← design tokens + Tailwind 4 @theme (docs/02_outputs/07)
 │   └── config.ts                 ← build-time VITE_* config
@@ -48,6 +48,7 @@ frontend/
 - `useChatRun` owns one conversation's run. The live bubble yields to the stored message the moment its id (from `run_started`) is in the history, so nothing shows twice; the regenerated answer is hidden by id while its replacement streams
 - Model output is untrusted: `Markdown.tsx` has no `rehype-raw`, drops `javascript:` URLs, opens links with `rel="noopener noreferrer"`, never fetches images. Code colours: Shiki tokens become classes (`highlight.ts`), never `style` (the CSP forbids it); only design-token colours are used
 - The draft text lives in the page (`Composer` is controlled) so a send refused after the home-page hand-off can put it back
+- Ratings: `Feedback.tsx` (thumbs under a complete or stopped answer, not a failed or empty one) + `feedback.ts` (`useRate`: the rating shows at once, goes back with a message if the server refuses). The API cannot withdraw a rating, so pressing the chosen thumb again sends nothing. Anything that renders `MessageList` needs the query and auth providers
 - Tests: `renderApp(path, handler, {strict: true})` runs under StrictMode; `liveStream()` feeds a stream event by event; use `seen(text)` rather than `expect(await findByText(..)).toBeInTheDocument()` for text that moves from the live bubble to the stored message. `tests/e2e/chat.spec.ts` needs the stack in `LLM_MODE=fake` with `LLM_FAKE_TOKEN_DELAY_S=0.05` and fails loudly otherwise
 
 ### Auth and sessions

@@ -114,6 +114,8 @@ cd frontend && npm test -- --coverage
 make verify                                 # Playwright e2e + DOM checks (stack must be up with LLM_MODE=fake)
 make eval-smoke                             # small eval set with real models (budget < $0.75)
 make eval                                   # full eval set (budget < $7)
+# both need OPENAI_API_KEY. To check the pipeline offline: cd backend && LLM_MODE=fake uv run python -m evals.run --suite smoke
+# (writes evals/results/latest.fake.json, which the gate never reads)
 ```
 
 Coverage and eval gates live in `tests/coverage-baseline.json` and `evals/eval-baseline.json`. Both files hold **targets** (informational) and **gates** (measured baselines that only ratchet up, plus absolute safety gates) — see ADR-0009.

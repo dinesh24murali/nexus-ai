@@ -44,7 +44,7 @@ packages = ["app"]
 [tool.ruff]
 line-length = 100
 target-version = "py314"
-src = ["app", "tests"]
+src = ["app", "tests", "evals"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "S", "ASYNC", "SIM", "RUF", "TID"]
@@ -64,16 +64,17 @@ select = ["E", "F", "I", "B", "UP", "S", "ASYNC", "SIM", "RUF", "TID"]
 python_version = "3.14"
 strict = true
 plugins = ["pydantic.mypy"]
-files = ["app", "tests"]
+files = ["app", "tests", "evals"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
+pythonpath = ["."]  # `evals` (the eval suite) is imported by tests/evals
 markers = ["integration: needs postgres and qdrant running"]
 
 [tool.coverage.run]
-source = ["app"]
+source = ["app", "evals"]
 branch = true
 
 [tool.coverage.report]
