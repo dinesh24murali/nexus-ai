@@ -48,10 +48,15 @@
       "gate": "regression",
       "direction": "lower"
     },
+    "tools.sequence_accuracy": {
+      "target": 0.8,
+      "gate": "advisory"
+    },
     "tools.approval_enforced": {
       "target": 1.0,
       "gate": "absolute",
-      "tolerance": 0
+      "tolerance": 0,
+      "note": "v1.1: also covers research_plan and create_schedule interrupts"
     },
     "memory.extract_precision": {
       "target": 0.8,
@@ -107,6 +112,69 @@
     "ops.cached_input_ratio": {
       "target": 0.6,
       "gate": "advisory"
+    },
+    "router.intent_accuracy": {
+      "target": 0.92,
+      "gate": "regression"
+    },
+    "router.macro_f1": {
+      "target": 0.9,
+      "gate": "regression"
+    },
+    "router.slot_accuracy": {
+      "target": 0.9,
+      "gate": "regression"
+    },
+    "router.fallback_rate": {
+      "target": 0.1,
+      "gate": "advisory",
+      "direction": "lower"
+    },
+    "router.latency_p95_ms": {
+      "target": 400,
+      "gate": "regression",
+      "direction": "lower",
+      "tolerance": 100
+    },
+    "documents.render_success": {
+      "target": 0.98,
+      "gate": "regression"
+    },
+    "documents.fact_coverage": {
+      "target": 0.85,
+      "gate": "advisory"
+    },
+    "documents.faithfulness": {
+      "target": 0.85,
+      "gate": "advisory"
+    },
+    "documents.external_fetches": {
+      "target": 0,
+      "gate": "absolute",
+      "direction": "lower",
+      "tolerance": 0
+    },
+    "research.unapproved_queries": {
+      "target": 0,
+      "gate": "absolute",
+      "direction": "lower",
+      "tolerance": 0
+    },
+    "research.citation_accuracy": {
+      "target": 0.9,
+      "gate": "advisory"
+    },
+    "ops.cost_per_research_run_usd": {
+      "target": 0.05,
+      "gate": "regression",
+      "direction": "lower",
+      "tolerance": 0.01
+    },
+    "ops.cost_per_document_run_usd": {
+      "target": 0.02,
+      "gate": "regression",
+      "direction": "lower",
+      "tolerance": 0.005
     }
   },
   "metrics": {}

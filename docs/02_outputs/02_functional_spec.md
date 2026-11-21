@@ -1,6 +1,6 @@
 # Functional Specification — Nexus AI
 
-**Version:** 1.1 · **Date:** 2026-11-19 (revised, task 003) · **PRD:** [`01_prd.md`](01_prd.md) · **API:** [`04_api_spec.yaml`](04_api_spec.yaml)
+**Version:** 1.2 · **Date:** 2026-11-21 (v1.1: routing, documents, research, schedules) · previous 1.1 2026-11-19 (task 003) · **PRD:** [`01_prd.md`](01_prd.md) · **API:** [`04_api_spec.yaml`](04_api_spec.yaml)
 
 ## 1. Overview
 
@@ -42,6 +42,27 @@ This document specifies user-visible behaviour of Nexus AI v1: flows, screens, p
 4. In Settings → Memory, user edits or deletes the memory, or turns memory off.
 5. If the same turn already read file passages or web results and the assistant wants to save a memory, an approval card "Save to memory?" shows the exact text with Approve / Reject (the same card as web-search approval).
 
+**UF-009 Generate a PDF (v1.1)**
+1. User types "Turn this conversation into a PDF" (or `/pdf`). A small mode chip on the answer reads "Document".
+2. A progress line shows "Writing…" then "Rendering PDF…"; a document card appears with title, page count and a Download button (it shows "Preparing…" while the status is `pending`, polling `GET /documents/{id}` every 2 s).
+3. For "PDF news brief on <topic>", the web-search approval card (UF-005) appears first; after approval the same flow follows.
+4. The document is also listed on `/documents`.
+
+**UF-010 Deep research (v1.1)**
+1. User types "Research <question> in depth" (or `/research <question>`).
+2. An approval card "Research plan" lists 3–6 queries, each editable, with Approve / Edit / Reject.
+3. After approval, progress shows "Searching 3/5" then "Writing report"; the cited report streams in. "…as a PDF" ends with a document card instead.
+
+**UF-011 Schedule a recurring brief (v1.1)**
+1. User types "Every Monday at 8 send me a news brief on Rust as a PDF".
+2. An approval card "Create schedule?" shows what, topic, the exact search query, cadence, time and timezone (default: browser timezone), and output. Fields are editable.
+3. On approve, the answer confirms and links to the new conversation "Scheduled: Rust". Each run posts there and marks it unread (dot in the sidebar).
+4. Settings → Schedules lists schedules with next run, last result, Pause/Resume and Delete. "Stop my Rust brief" in chat does the same.
+
+**UF-012 Memory by chat (v1.1)**
+1. "What do you know about me?" → a list of memories with a link to Settings → Memory.
+2. "Forget where I work" → deletes the one matching memory and confirms with its text, or asks which one if several match.
+
 **UF-007 Feedback**
 1. User hovers an assistant message, clicks 👍 or 👎; 👎 opens an optional comment box.
 
@@ -56,6 +77,8 @@ This document specifies user-visible behaviour of Nexus AI v1: flows, screens, p
 | `/register` | Create account | Invite code (prefilled from `?invite=`), email, display name, password + strength hint, submit. With `REGISTRATION_MODE=open` the invite field is hidden | Public |
 | `/` | New chat | Sidebar (conversations, New chat, Files, Settings, usage meter), empty state with example prompts, composer | Authenticated |
 | `/c/:conversationId` | Conversation | Sidebar, message list (markdown, code blocks, tool cards, citation chips, approval cards, feedback buttons), composer (attach, send/stop), regenerate on last answer | Authenticated (owner only) |
+| `/documents` | Generated documents (v1.1) | Table (title, kind, pages, created, conversation link, download, delete), limit hint (10/day) | Authenticated |
+| `/settings/schedules` | Schedules (v1.1) | List (topic, cadence + time + timezone, next run, last result), Pause/Resume, Delete, limit hint (n/5 active) | Authenticated |
 | `/files` | Manage files | Upload dropzone, table (name, size, status, chunks, uploaded at, delete), limits indicator (n/50) | Authenticated |
 | `/settings/account` | Profile & account | Display name, email (read-only), change password, delete account | Authenticated |
 | `/settings/memory` | Memory control | Toggle memory on/off, list memories (edit inline, delete), Clear all | Authenticated |
@@ -107,6 +130,27 @@ This document specifies user-visible behaviour of Nexus AI v1: flows, screens, p
 - **Errors:** extraction failure is silent to the user (logged and traced).
 - **Edge cases:** user says "forget that I live in Berlin" → the agent calls `remember_fact` with `action=forget` for matching memory; sensitive categories (health, religion, sexual orientation, precise location, credentials) are never stored; a `remember_fact` call after reading files or web results needs approval (FR-035).
 
+### FS-009 Intent routing (FR-060, FR-061, FR-066)
+- **Trigger:** every new user message (not resumes).
+- **Happy path:** `route_selected` arrives before any tokens; the answer shows a small mode chip (Chat, Help, Memory, Document, Research, Schedule) with a tooltip "Wrong mode? Use /pdf, /research, /schedule, /memory".
+- **Slash commands:** typing `/` in the composer opens a menu; the command is removed from the text and sent as `mode`.
+- **Errors:** router failure is invisible (falls back to Chat).
+
+### FS-010 Documents (FR-062)
+- **Trigger:** `generate_document` intent or `/pdf`.
+- **Validation:** 10 per user per UTC day; ≤ 30 pages (longer drafts are shortened by the model, then truncated with a note); the 100 most recent are kept.
+- **Errors:** limit reached → assistant explains and shows reset time; render failure → card "Couldn't create the PDF" + Retry (re-enqueues render); empty thread → "There's nothing to summarise yet".
+- **Edge cases:** the conversation is deleted → the document stays in `/documents` without a conversation link; account deletion removes all PDFs.
+
+### FS-011 Deep research (FR-063)
+- **Validation:** plan of 1–6 queries, each 1–400 chars (edited queries too).
+- **Errors:** remaining budget below the estimate → explained, nothing runs; a search times out → the report notes the missing source; reject → "OK, I won't search" with no report.
+
+### FS-012 Schedules (FR-064)
+- **Validation:** cadence daily/weekly (weekly needs a weekday); time HH:MM; valid IANA timezone; ≤ 5 active (6th → explained; resume → 409 `SCHEDULE_LIMIT`).
+- **Runs:** at `time_local` in the schedule's timezone, ±1 min; skipped with a note if the daily budget is exhausted; 3 consecutive failures → paused with reason shown in Settings and in the conversation.
+- **Edge cases:** deleting the schedule's conversation deletes the schedule; deleting a schedule keeps its conversation; DST shifts follow the timezone's wall clock.
+
 ### FS-007 Feedback (FR-050)
 - One rating per user per message (re-rating overwrites); comment ≤ 1000 chars.
 
@@ -135,7 +179,7 @@ stateDiagram-v2
 ```mermaid
 stateDiagram-v2
   [*] --> running: message sent
-  running --> awaiting_approval: web_search interrupt
+  running --> awaiting_approval: approval interrupt (web_search, remember_fact, research_plan, create_schedule)
   awaiting_approval --> running: approve / edit / reject
   awaiting_approval --> expired: 24 h elapsed
   running --> completed: done
@@ -146,6 +190,17 @@ stateDiagram-v2
   cancelled --> [*]
   failed --> [*]
   expired --> [*]
+```
+
+**Schedule (v1.1)**
+```mermaid
+stateDiagram-v2
+  [*] --> active: user approves create_schedule
+  active --> active: run ok / skipped (budget)
+  active --> paused: user pauses / 3 consecutive failures
+  paused --> active: user resumes (≤ 5 active)
+  active --> [*]: deleted
+  paused --> [*]: deleted
 ```
 
 **Account**
@@ -166,6 +221,8 @@ No emails in v1. In-app only:
 | Toast "File ready" / "File failed" | File status changes while user is in the app | File name + status/reason |
 | Banner "Daily limit reached" | `BUDGET_EXCEEDED` | Which limit (yours / the instance's) and reset time (UTC) |
 | Banner "Session expired" | Refresh fails | Prompt to sign in |
+| Unread dot on a scheduled conversation (v1.1) | A scheduled run delivered a message | Sidebar dot; cleared when the conversation is opened |
+| Toast "Schedule paused" (v1.1) | 3 consecutive failures | Topic + link to Settings → Schedules |
 
 ## 7. Permissions Matrix
 
@@ -175,7 +232,7 @@ Single role `user`; all resources are owner-scoped. Admin actions exist only as 
 |------|--------|----------|-------|
 | anonymous | register (with valid invite when `REGISTRATION_MODE=invite`) / login | auth | ✅ |
 | anonymous | any other | any | ❌ (401) |
-| user | create/read/update/delete | own conversations, messages, files, memories, feedback | ✅ |
+| user | create/read/update/delete | own conversations, messages, files, memories, feedback, documents, schedules (schedules are created only via chat with approval) | ✅ |
 | user | any action | another user's resources | ❌ (404) |
 | user | read | own usage | ✅ |
 | user | delete | own account | ✅ |
@@ -190,6 +247,8 @@ Single role `user`; all resources are owner-scoped. Admin actions exist only as 
 | Uploaded files (disk) | Until user deletes file or account | File removed from disk + Qdrant points deleted |
 | Vector chunks (Qdrant) | Same as file | Deleted by `file_id` filter (and by `user_id` on account deletion) |
 | Memories | Until user deletes or account deletion | Hard delete from store |
+| Generated documents (v1.1) | 100 most recent per user; until user deletes or account deletion | PDF removed from disk + row deleted; conversation deletion only unlinks |
+| Schedules (v1.1) | Until user deletes the schedule, its conversation, or the account | Hard delete; pending `run_schedule` jobs cancelled |
 | Feedback | Until account deletion | Hard delete; Langfuse scores remain anonymised (hashed user id) until trace expiry |
 | Langfuse traces (Langfuse Cloud, EU region) | 30 days | Automatic expiry; user id is hashed, content redacted for PII before export |
 | Invites | Until used, revoked or expired + 30 days | Hard delete by a periodic cleanup |

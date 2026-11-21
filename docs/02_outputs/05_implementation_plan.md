@@ -1,10 +1,10 @@
 # Implementation Plan — Nexus AI v1
 
-**Version:** 1.1 · **Date:** 2026-11-19 (revised, task 003) · **Inputs:** [PRD](01_prd.md), [Architecture](03_tech_architecture.md), [API](04_api_spec.yaml), [AI design](08_ai_system_design.md), [Eval plan](09_eval_plan.md), [Threat model](10_llm_threat_model.md)
+**Version:** 1.2 · **Date:** 2026-11-21 (M7 added: intent routing & generated outputs) · previous 1.1 2026-11-19 (task 003) · **Inputs:** [PRD](01_prd.md), [Architecture](03_tech_architecture.md), [API](04_api_spec.yaml), [AI design](08_ai_system_design.md), [Eval plan](09_eval_plan.md), [Threat model](10_llm_threat_model.md)
 
 Work is organised by **milestone** (PRD §12). Milestones set the order, not dates; the builder is one developer working part-time with AI coding agents. **Every milestone ends deployed**: run the `deploy.yml` workflow and check `/readyz` and a chat smoke on the hosted instance.
 
-Each repo task group in brackets becomes `tasks/active/<NNN>-<slug>.md` when started (task 003 was the plan revision, so groups start at 004). TASK ids are stable references; tasks added in revision 1.1 are numbered from 036.
+Each repo task group in brackets becomes `tasks/active/<NNN>-<slug>.md` when started (task 003 was the plan revision, so groups start at 004). TASK ids are stable references; tasks added in revision 1.1 are numbered from 036, and M7 tasks (revision 1.2) from 038.
 
 ---
 
@@ -318,6 +318,87 @@ Each repo task group in brackets becomes `tasks/active/<NNN>-<slug>.md` when sta
 
 ---
 
+## M7 — Intent routing & generated outputs (v1.1)
+
+Starts after M6 so the v1 core ships hardened first. Every task ships with its eval suite (G9); safety gates are added before the feature is enabled in prod.
+
+### Router & cheap intents  [011-intent-router]
+
+#### TASK-038: Router node, dispatch & route events
+- **Depends on:** TASK-035
+- **Files:** `backend/app/graph/router.py`, `backend/app/graph/builder.py`, `backend/prompts/nexus.route.md`, `backend/app/llm/factory.py` (`router` role), `backend/app/api/chat.py` (`mode`, `client_timezone`), `adr/0010-intent-router.md`
+- **Description:** `RouteDecision` structured output on `gpt-6-luna`, running in parallel with `load_context`; dispatch to subgraphs with `general_chat` as fallback (confidence < 0.70, error, 5 s timeout); `mode` skips the router; resume never re-routes; `route_selected` SSE event; `intent`/`route_source` stored on messages; trace tags; kill switches `ROUTER_DISABLED`, `INTENTS_DISABLED`. Fake-LLM mode supports scripted route decisions.
+- **Acceptance criteria:**
+  - [ ] Unit tests (fake LLM): fallback on low confidence, timeout and invalid JSON; `mode` bypass; resume keeps the subgraph
+  - [ ] `router.intents` dataset (120 / 24) reviewed; first baselines for `router.intent_accuracy`, `router.macro_f1`, `router.slot_accuracy`, `router.latency_p95_ms` recorded
+  - [ ] rt-22 passes; router input asserted to contain user text only
+
+#### TASK-039: Fast path & memory by chat
+- **Depends on:** TASK-038, TASK-026
+- **Files:** `backend/app/graph/intents/{smalltalk_help,manage_memory}.py`, `backend/prompts/nexus.smalltalk.md`, `backend/app/memory/ops.py` (shared with `remember_fact`)
+- **Description:** `smalltalk_help` on the router model tier with a static capability list; `manage_memory` list/save/forget reusing the GAP-08 resolution rules, with no LLM call for `list`.
+- **Acceptance criteria:**
+  - [ ] `memory.e2e` cases pass through the `manage_memory` route as well as `remember_fact`
+  - [ ] `ops.ttft_p95_ms` measured separately for `smalltalk_help` (expected well below the chat path)
+
+#### TASK-040: Mode chip & slash commands (UI)
+- **Depends on:** TASK-038
+- **Files:** `frontend/src/features/chat/{ModeChip,SlashMenu}.tsx`, `frontend/src/api/stream.ts`
+- **Description:** Render `route_selected` as a chip on the answer; the `/` menu sets `mode`; send `client_timezone`.
+- **Acceptance criteria:**
+  - [ ] Component tests; Playwright: `/pdf` sends `mode=document`
+
+### Documents & research  [012-documents-research]
+
+#### TASK-041: Document pipeline & PDF rendering
+- **Depends on:** TASK-038
+- **Files:** `backend/app/graph/intents/generate_document.py`, `backend/app/documents/{draft,render,fetcher}.py`, `backend/app/jobs/render_document.py`, `backend/prompts/nexus.document.md`, migration (`documents`), `backend/Dockerfile` (WeasyPrint system libs)
+- **Description:** Gather (thread from the read model, or one approved `web_search`) → `DocumentDraft` on `long_form` → persist → `render_document` job (sanitised HTML, deny-all URL fetcher, 60 s, ≤ 30 pages) → `document_created`; limits 10/day, keep 100; `cleanup_documents`.
+- **Acceptance criteria:**
+  - [ ] `documents.golden` reviewed; `documents.render_success` baseline recorded; `documents.external_fetches = 0` (absolute)
+  - [ ] rt-23 and rt-24 pass; the fetcher unit test rejects `file://`, `http(s)://` and `data:` outside the allowlist
+
+#### TASK-042: Documents API & UI
+- **Depends on:** TASK-041
+- **Files:** `backend/app/api/documents.py`, `frontend/src/features/documents/*`, `frontend/src/features/chat/DocumentCard.tsx`
+- **Description:** List/get/delete/download endpoints (owner-scoped, 404 on mismatch); download through a Bearer fetch → blob; `/documents` page; document card with polling.
+- **Acceptance criteria:**
+  - [ ] Contract tests for the new paths; IDOR test (user B gets 404 on user A's document and download)
+
+#### TASK-043: Deep research
+- **Depends on:** TASK-041, TASK-023
+- **Files:** `backend/app/graph/intents/deep_research.py`, `backend/prompts/{nexus.research_plan,nexus.research_report}.md`, `frontend/src/features/chat/ResearchPlanCard.tsx`, `evals/fixtures/web/`
+- **Description:** Plan → `research_plan` interrupt (editable queries) → parallel approved searches with `progress` events → report (chat or PDF hand-off); budget pre-check and $0.05 cap. Eval runner replays recorded Tavily fixtures.
+- **Acceptance criteria:**
+  - [ ] `research.unapproved_queries = 0` and `tools.approval_enforced = 1` (absolute)
+  - [ ] `research.golden` reviewed; `ops.cost_per_research_run_usd` baseline ≤ $0.05; rt-25 passes
+
+### Schedules  [013-schedules]
+
+#### TASK-044: Schedule intent, storage & worker runs
+- **Depends on:** TASK-041, TASK-043, TASK-012
+- **Files:** `backend/app/graph/intents/schedule_task.py`, `backend/app/schedules/*`, `backend/app/jobs/{run_due_schedules,run_schedule}.py`, migration (`schedules`, `conversations.kind/unread`)
+- **Description:** Parse slots → `create_schedule` interrupt → insert schedule + conversation; `run_due_schedules` every 60 s; `run_schedule` builds input only from the stored spec (stored query only; no `general_chat` tools; no memory writes), checks the budget, uses the run lease, pauses after 3 failures; list/pause/resume/delete by chat; `SCHEDULES_DISABLED`.
+- **Acceptance criteria:**
+  - [ ] Unit tests: `next_run_at` across DST changes; a 6th active schedule is refused; budget-skip note; pause after 3 failures; lease-held retry
+  - [ ] A scheduled-run test asserts the Tavily query equals the stored query; rt-24 and rt-26 pass
+
+#### TASK-045: Schedules API & UI
+- **Depends on:** TASK-044
+- **Files:** `backend/app/api/schedules.py`, `frontend/src/features/settings/Schedules.tsx`, `frontend/src/features/chat/ScheduleApprovalCard.tsx`, sidebar unread dot
+- **Description:** List/pause/resume/delete endpoints; Settings → Schedules; approval card with editable fields; unread indicator.
+- **Acceptance criteria:**
+  - [ ] Contract + IDOR tests; Playwright: create (approve), pause, delete
+
+#### TASK-046: M7 hardening & release
+- **Depends on:** TASK-038…045
+- **Files:** `evals/eval-baseline.json`, `docs/02_outputs/release_checklist.md`
+- **Description:** Full eval run incl. rt-22–26; review the router confusion matrix and add misroutes to `router.intents`; cost review (G4 excludes research/document/scheduled runs, which are checked against their caps); kill switches tested in prod config.
+- **Acceptance criteria:**
+  - [ ] `make eval` (full) passes with all v1.1 gates present in `metrics`
+
+---
+
 ## Dependency Graph Summary
 
 ```mermaid
@@ -328,6 +409,9 @@ flowchart LR
   R --> T[M4 Tools/HITL<br/>008]
   T --> MEM[M5 Memory<br/>009]
   MEM --> H[M6 Hardening<br/>010]
+  H --> RO[M7 Router + fast paths<br/>011]
+  RO --> DOC[M7 Documents + research<br/>012]
+  DOC --> SC[M7 Schedules<br/>013]
 ```
 
 - **Sequential:** milestones run in order; each ends deployed. The eval harness lands in M2 so every later feature ships with its suite and gate (G9).

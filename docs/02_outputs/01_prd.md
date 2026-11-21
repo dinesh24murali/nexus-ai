@@ -1,6 +1,6 @@
 # Product Requirements Document — Nexus AI
 
-**Version:** 1.1 · **Date:** 2026-11-19 · **Owner:** Nexus AI Team · **Status:** Revised after plan review (task 003)
+**Version:** 1.2 · **Date:** 2026-11-21 (v1.1 scope: intent routing, PDF documents, deep research, schedules) · previous 1.1 2026-11-19 (task 003) · **Owner:** Nexus AI Team · **Status:** Revised
 **Source:** `docs/00_intake/intake_questionnaire.md`
 
 ---
@@ -8,6 +8,8 @@
 ## 1. Executive Summary
 
 Nexus AI is a self-hostable, ChatGPT-style assistant for individual knowledge workers. It streams answers, grounds them in the user's own uploaded documents with citations, uses tools (web search, calculator) with the user's approval, and remembers user preferences across conversations, in a way users can fully inspect and control.
+
+**v1.1 scope:** an **intent router** sends each message to a dedicated pipeline: general chat, a fast path for greetings and help, memory commands, **PDF documents** (a summary of the current thread, a news brief on a topic), **deep research** (a multi-search cited report) and **scheduled tasks** (e.g. a weekly news brief). See §7.7 and ADR-0010.
 
 **What it is:** a **reference build** that the developer runs themselves, with an **invite-only** hosted instance for a few people. "Production-grade" means engineering discipline — evals as quality gates, tracing, tests, tenant isolation, guardrails and cost caps — not an operated public service with an SLO. It is built by one developer working part-time with AI coding agents.
 
@@ -24,10 +26,11 @@ Nexus AI is a self-hostable, ChatGPT-style assistant for individual knowledge wo
 | G1 | Users find answers useful (**advisory** — few invited users, so not a gate) | % of rated answers thumbs-up | ≥ 70% |
 | G2 | Grounded document answers | RAG faithfulness (offline eval) | ≥ 0.85 |
 | G3 | Responsive experience | p95 time-to-first-token (no tools) | < 2 s |
-| G4 | Affordable to run | Average LLM cost per message (cache-friendly prompt layout, models per 08 §3) | < $0.01 |
+| G4 | Affordable to run | Average LLM cost per chat message (cache-friendly prompt layout, models per 08 §3). Research, document and scheduled runs have their own per-run caps (§7.7) | < $0.01 |
 | G5 | Trustworthy with data | Cross-user leakage incidents (evals + prod) | 0 |
 | G8 | Easy to run as a reference | Fresh clone → working local stack by following the README | ≤ 15 min |
 | G9 | Quality is gated, not hoped for | AI features shipped with their eval suite and gate | 100% |
+| G10 | Requests reach the right pipeline | Intent-router accuracy on `router.intents` (offline eval) | ≥ 0.92 |
 
 G6 (adoption) and G7 (availability SLO) were dropped in revision 1.1: the hosted instance is invite-only and has no SLO. Quality targets are **targets**; CI gates on measured baselines that only ratchet up (ADR-0009).
 
@@ -76,6 +79,14 @@ G6 (adoption) and G7 (availability SLO) were dropped in revision 1.1: the hosted
 - US-16 As any user, I want to rate answers thumbs up/down with an optional comment so that quality improves.
 - US-17 As Sam, I want per-user and global daily spending limits so that nobody can run up the bill.
 - US-18 As Sam, I want to invite people from the command line so that only people I choose can register.
+
+**Routing & generated outputs (v1.1)**
+- US-19 As Priya, I want to ask for "a PDF summary of this chat" and download it so that I can share the outcome with colleagues who don't use Nexus.
+- US-20 As Marco, I want a PDF news brief on a topic ("latest on the EU AI Act") with sources so that I can read it offline.
+- US-21 As Priya, I want to ask for in-depth research on a question, approve the search plan, and get a cited report so that I can trust where the claims come from.
+- US-22 As Marco, I want to say "every Monday at 8, send me a news brief on Rust" and find it waiting in Nexus so that I stay current without asking each time.
+- US-23 As any user, I want to manage memories by chat ("what do you know about me?", "forget where I work") so that I don't have to open Settings.
+- US-24 As any user, I want to see which mode handled my message and force one with a slash command (`/pdf`, `/research`, `/schedule`, `/memory`) so that I stay in control when the assistant guesses wrong.
 
 ## 7. Functional Requirements
 
@@ -126,6 +137,15 @@ G6 (adoption) and G7 (availability SLO) were dropped in revision 1.1: the hosted
 - FR-052 User input is checked by OpenAI moderation; flagged input is refused with an explanation. If the moderation API is unavailable, input is allowed (fail-open), logged and tagged in the trace.
 - FR-053 Users can see their spend and message count for today against their budget.
 
+### 7.7 Intent Routing & Generated Outputs (v1.1)
+- FR-060 Every new user message is classified into one intent: `general_chat`, `smalltalk_help`, `manage_memory`, `generate_document`, `deep_research` or `schedule_task`. Low confidence (< 0.70), a router error or a timeout falls back to `general_chat` (v1 behaviour). Resuming an approval never re-routes.
+- FR-061 The UI shows which mode handled each message. A slash command (`/pdf`, `/research`, `/schedule`, `/memory`) forces the mode and skips the router. An operator kill switch (`ROUTER_DISABLED=1`) sends everything to `general_chat`.
+- FR-062 **PDF documents.** Users can generate a PDF from (a) the current conversation (summary, decisions, open questions) or (b) a topic news brief built from web search (the query needs approval, like FR-031). The PDF has a title, date, sections and numbered sources. It appears as a download card on the assistant message and in a Documents list. Limits: 10 documents per user per day, ≤ 30 pages, the 100 most recent are kept per user. Users can delete documents.
+- FR-063 **Deep research.** The assistant proposes a research plan of 3–6 search queries, which the user approves, edits or rejects with **one** approval. Only approved queries run. Progress is streamed. The result is a cited report (≤ 1,500 words) in chat, or a PDF if asked. Per-run cost cap $0.05; the run doesn't start if the user's remaining daily budget is lower.
+- FR-064 **Scheduled tasks.** Users can create a recurring news brief or research report by chat. Before saving, an approval card shows the parsed schedule (what, topic, cadence, time, timezone, output). Cadence is daily or weekly, with no more often than daily. Each schedule delivers into its own conversation ("Scheduled: <topic>"), which is marked unread. Limits: 5 active schedules per user; runs count against the user's daily budget and are skipped (and noted) if it is exhausted; a schedule pauses after 3 consecutive failures. Users can list, pause, resume and delete schedules in Settings and by chat. Delivery is in-app only (no email in v1.1).
+- FR-065 **Memory by chat.** "What do you know about me?" lists memories; "remember X" saves; "forget X" deletes one clear match or asks which one (doc 08 §13 GAP-08). Respects memory on/off and the sensitive-category deny-list.
+- FR-066 **Fast path.** Greetings, thanks and "what can you do?" are answered by the low-cost model with no tools, including a short list of capabilities and slash commands.
+
 ## 8. Non-Functional Requirements
 
 | Area | Requirement |
@@ -161,7 +181,7 @@ Resolved in revision 1.1: no staging environment (CI acts as staging); models ch
 
 ## 11. Out of Scope (v1)
 
-Image generation and image/voice input; code execution sandbox; team workspaces and conversation sharing; custom assistants; plugin/MCP marketplace; mobile apps; multiple LLM providers; billing; OAuth/SSO; email notifications; admin UI; data export (FR-005, deferred); availability SLO; Prometheus metrics (deferred).
+Image generation and image/voice input; code execution sandbox; email/push delivery of scheduled results; editing generated PDFs; team workspaces and conversation sharing; custom assistants; plugin/MCP marketplace; mobile apps; multiple LLM providers; billing; OAuth/SSO; email notifications; admin UI; data export (FR-005, deferred); availability SLO; Prometheus metrics (deferred).
 
 ## 12. Milestones (order, not dates)
 
@@ -176,3 +196,17 @@ Milestones set the order of work; there are no dates. Each milestone ends **depl
 | M4 Tools + HITL | Web search approval, calculator, tool evals |
 | M5 Memory | Extraction, `remember_fact`, memories UI, memory evals |
 | M6 Hardening | Full red-team set, account purge test, security review, mock-LLM load test, coverage targets |
+| M7 Routing & outputs (v1.1) | Intent router + router evals, fast path, memory by chat, PDF documents, deep research, scheduled tasks, new red-team cases (tasks 011–013) |
+
+## 13. Future Intents (backlog)
+
+Candidates for later router intents, kept out of v1.1. Each needs its own eval suite and threat-model rows before it ships.
+
+| Intent | Example | Notes |
+|--------|---------|-------|
+| `extract_structured` | "Pull every invoice total from my files into a CSV" | Map-reduce structured output over chunks; CSV/XLSX export |
+| `compare_documents` | "What changed between contract v1 and v2?" | Two-file scoped retrieval; depends on GAP-01 file targeting |
+| `recall_history` | "What did we decide last week about the DB?" | New index over past conversations |
+| `analyze_data` | "Chart monthly totals from sales.csv" | Code-execution sandbox; largest security cost, so last |
+| `study_aid` | "Make 10 flashcards from chapter 3" | Fixed JSON schema rendered as cards |
+| `diagram` | "Draw this flow as a diagram" | Mermaid output rendered client-side |

@@ -18,6 +18,8 @@ Checked against OpenAI docs on 2026-11-19; re-check at the M2 bake-off (TASK-036
 | judge (evals only) | `gpt-5.5-2026-04-23` (pinned) | effort `medium`; pinned so judge calibration stays valid |
 | embeddings | `text-embedding-3-small` | 1536-d; changing it requires re-index (ADR-0003) |
 | moderation | `omni-moderation-latest` | **fail-open** on outage (logged + tagged) |
+| router (v1.1) | `gpt-6-luna` | effort `none`, max 150, 5 s, **no retries/fallback model: any failure → `general_chat`**; also serves `smalltalk_help` |
+| long_form (v1.1) | `gpt-6.1-terra` | effort `medium`, max 6000, 120 s; document drafts + research reports; fallback luna |
 
 - All created via `backend/app/llm/factory.py` (ADR-0005); names and efforts from env. `LLM_MODE=fake` gives the scripted fake model (refused in production).
 - **Reasoning effort replaces temperature**: GPT-6 accepts `temperature` only at effort `none`; `gpt-6.2-*` rejects `none`.
@@ -37,15 +39,20 @@ Prompts are canonical in `backend/prompts/<name>.md` (front-matter `name`, `vers
 | `nexus.summarize` | not yet created | `summarize` node | |
 | `nexus.title` | not yet created | `generate_title` job | ≤ 6 words |
 | `nexus.memory_extract` | not yet created | `extract_memories` job | sensitive-category deny-list |
+| `nexus.route` (v1.1) | not yet created | `route` node | strict JSON `RouteDecision`; input = last 3 user messages + previous intent only |
+| `nexus.smalltalk` (v1.1) | not yet created | `smalltalk_help` | static capability list + slash commands |
+| `nexus.document` (v1.1) | not yet created | `generate_document` | JSON `DocumentDraft` |
+| `nexus.research_plan` / `nexus.research_report` (v1.1) | not yet created | `deep_research` | 3–6 queries; cited report ≤ 1,500 words |
 | `eval.judge.faithfulness` / `relevance` | not yet created | evals | only faithfulness is calibrated in v1 (30 labels, κ ≥ 0.7) |
 
 ## Orchestration Graph
 
 - **Framework:** `LangGraph` 1.x
-- **Topology:** `load_context → (summarize?) → agent ⇄ [approval →] tools → agent → END`; max 6 tool calls/turn
+- **Topology (v1):** `load_context → (summarize?) → agent ⇄ [approval →] tools → agent → END`; max 6 tool calls/turn
+- **Topology (v1.1, ADR-0010):** `load_context ∥ route → dispatch → {general_chat (= v1 agent), smalltalk_help, manage_memory, generate_document, deep_research, schedule_task}`; confidence < 0.70 / error → `general_chat`; request `mode` skips the router; resume never re-routes; kill switches `ROUTER_DISABLED`, `INTENTS_DISABLED`, `SCHEDULES_DISABLED`
 - **Prompt layout (cache-friendly):** system → `<summary>` → history → late context message (memories, date) → newest user message
 - **Checkpointer / thread-id strategy:** `AsyncPostgresSaver` (psycopg 3), `thread_id = conversation_id`; summary lives only in graph state; regenerate forks from the checkpoint before the last answer
-- **Interrupt (HITL) points:** `TOOL_POLICY` — `web_search` every call; `remember_fact` only if `read_untrusted_this_turn`; pending interrupt mirrored to `conversations.pending_interrupt`, expires after 24 h
+- **Interrupt (HITL) points:** `TOOL_POLICY` — `web_search` every call; `remember_fact` only if `read_untrusted_this_turn`; v1.1: `research_plan` once per research run (only approved queries run), `create_schedule` always (stores the exact query scheduled runs may send); pending interrupt mirrored to `conversations.pending_interrupt`, expires after 24 h
 - **Run lease:** `active_run_id` + `run_heartbeat_at` (10 s); worker `reap_stale_runs` (30 s, stale after 60 s) writes a `failed` message (`finish_reason=server_restart`); graceful drain 90 s on SIGTERM
 - **Tenant context:** `user_id` comes from `config["configurable"]`, never from model/tool args
 
@@ -67,6 +74,7 @@ Prompts are canonical in `backend/prompts/<name>.md` (front-matter `name`, `vers
 
 - Per-user daily spend budget $0.50 (env), global daily cap $5 (env), 30 msg/min; background jobs count toward the user's spend
 - G4 target < $0.01/message is reachable only with prompt caching working — track `ops.cost_per_turn_usd` and `ops.cached_input_ratio`
+- v1.1: G4 covers chat messages only; research runs cap at $0.05 (pre-run budget check), documents ≈ $0.01–0.02 (10/user/day); scheduled runs count toward the user's daily budget and are skipped when it's exhausted
 
 ## Eval Status
 
@@ -78,10 +86,12 @@ Two-tier gate (ADR-0009): `evals/eval-baseline.json` → `targets` (from doc 09 
 | `tools.selection_accuracy` | 0.90 | regression (measured) | — | — |
 | `safety.injection_resistance` | 0.95 | absolute | — | — |
 | `safety.cross_tenant_leaks` | 0 | absolute | — | — |
+| `router.intent_accuracy` (v1.1) | 0.92 | regression (measured) | — | — |
+| `documents.external_fetches` / `research.unapproved_queries` (v1.1) | 0 | absolute | — | — |
 
 ## Known Failure Modes & Gotchas
 
 - SSE needs unbuffered proxies (Caddy `flush_interval -1`, `X-Accel-Buffering: no`)
 - Langfuse SDK v4+ filters non-LLM spans by default — enable per-node spans explicitly (TASK-009)
 - Alias-only GPT-6 models can change silently; the nightly full eval is the drift alarm
-- Threat IDs `LLM-T01…T16` are defined in `docs/02_outputs/10_llm_threat_model.md`; red-team cases reference them
+- Threat IDs `LLM-T01…T20` are defined in `docs/02_outputs/10_llm_threat_model.md`; red-team cases reference them

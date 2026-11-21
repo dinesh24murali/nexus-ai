@@ -1,7 +1,7 @@
 openapi: "3.1.0"
 info:
   title: Nexus AI API
-  version: "1.1.0"
+  version: "1.2.0"
   description: |
     REST + Server-Sent Events API for Nexus AI, a self-hostable ChatGPT-style assistant.
 
@@ -12,6 +12,8 @@ info:
     * Lists use cursor pagination: `?limit=&cursor=` → `{items, next_cursor}`.
     * Streaming endpoints return `text/event-stream`. Each SSE frame has `event: <type>` and `data: <JSON>`; the payload
       schemas are the `*Event` components (see `StreamEvent`). A `: ping` comment is sent every 15 s.
+    * v1.2.0 (v1.1 product scope): intent routing (`mode` on send, `route_selected` event), generated PDF documents,
+      deep research (`research_plan` approval, `progress` events) and scheduled tasks.
 servers:
   - url: http://localhost:8000/api/v1
     description: Local development
@@ -34,6 +36,10 @@ tags:
     description: Long-term user memories
   - name: feedback
     description: Ratings on assistant messages
+  - name: documents
+    description: Generated PDF documents (created through chat)
+  - name: schedules
+    description: Recurring tasks (created through chat with approval; listed, paused and deleted here)
   - name: health
     description: Liveness and readiness probes
 
@@ -465,6 +471,115 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "500": { $ref: "#/components/responses/InternalError" }
 
+  /documents:
+    get:
+      tags: [documents]
+      operationId: listDocuments
+      summary: List generated documents, newest first
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Page of documents
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DocumentPage" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /documents/{documentId}:
+    parameters:
+      - $ref: "#/components/parameters/DocumentId"
+    get:
+      tags: [documents]
+      operationId: getDocument
+      summary: Get document metadata and render status
+      responses:
+        "200":
+          description: Document
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DocumentObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    delete:
+      tags: [documents]
+      operationId: deleteDocument
+      summary: Delete a document and its PDF
+      responses:
+        "204": { description: Deleted }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /documents/{documentId}/download:
+    parameters:
+      - $ref: "#/components/parameters/DocumentId"
+    get:
+      tags: [documents]
+      operationId: downloadDocument
+      summary: Download the PDF (the client fetches it with the Bearer token and saves the blob)
+      responses:
+        "200":
+          description: PDF file, sent with `Content-Disposition attachment`
+          content:
+            application/pdf:
+              schema: { type: string, format: binary }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /schedules:
+    get:
+      tags: [schedules]
+      operationId: listSchedules
+      summary: List the user's schedules (at most 5 active, plus paused ones)
+      responses:
+        "200":
+          description: Schedules
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ScheduleList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /schedules/{scheduleId}:
+    parameters:
+      - $ref: "#/components/parameters/ScheduleId"
+    patch:
+      tags: [schedules]
+      operationId: updateSchedule
+      summary: Pause or resume a schedule (content changes go through chat, with approval)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateScheduleRequest" }
+      responses:
+        "200":
+          description: Updated schedule
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Schedule" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    delete:
+      tags: [schedules]
+      operationId: deleteSchedule
+      summary: Delete a schedule (its conversation is kept)
+      responses:
+        "204": { description: Deleted }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
   /memories:
     get:
       tags: [memories]
@@ -621,6 +736,18 @@ components:
       required: true
       description: File id
       schema: { type: string, format: uuid }
+    DocumentId:
+      name: documentId
+      in: path
+      required: true
+      description: Generated document id
+      schema: { type: string, format: uuid }
+    ScheduleId:
+      name: scheduleId
+      in: path
+      required: true
+      description: Schedule id
+      schema: { type: string, format: uuid }
     MemoryId:
       name: memoryId
       in: path
@@ -631,8 +758,8 @@ components:
   responses:
     EventStream:
       description: |
-        Server-Sent Events stream. Event order: `run_started`, then any of `token`, `tool_start`, `tool_end`,
-        `citation`, `memory_updated`; then either `interrupt` (stream ends, awaiting approval) or `usage` + `done`;
+        Server-Sent Events stream. Event order: `run_started`, then `route_selected` (new messages only), then any of
+        `token`, `tool_start`, `tool_end`, `citation`, `memory_updated`, `progress`, `document_created`; then either `interrupt` (stream ends, awaiting approval) or `usage` + `done`;
         `error` may occur at any point and ends the stream.
       content:
         text/event-stream:
@@ -658,7 +785,7 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     Conflict:
-      description: Conflicts with current state (e.g. EMAIL_TAKEN, RUN_IN_PROGRESS, FILE_DUPLICATE, NO_PENDING_INTERRUPT)
+      description: Conflicts with current state (e.g. EMAIL_TAKEN, RUN_IN_PROGRESS, FILE_DUPLICATE, NO_PENDING_INTERRUPT, DOCUMENT_NOT_READY, SCHEDULE_LIMIT)
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -825,6 +952,9 @@ components:
         id: { type: string, format: uuid, description: Conversation id (also the LangGraph thread id) }
         title: { type: string, description: Title (auto-generated or user-set) }
         has_active_run: { type: boolean, description: Whether a run is currently streaming }
+        kind: { type: string, enum: [chat, scheduled], description: "`scheduled` conversations receive a schedule's results" }
+        schedule_id: { type: [string, "null"], format: uuid, description: Schedule that writes into this conversation }
+        unread: { type: boolean, description: "True when a scheduled run delivered a message the user hasn't opened yet" }
         pending_interrupt:
           description: Pending tool approval, if the last run is paused
           oneOf:
@@ -864,7 +994,7 @@ components:
       required: [interrupt_id, tool, args, created_at, expires_at]
       properties:
         interrupt_id: { type: string, description: Id to pass to /runs/resume }
-        tool: { type: string, enum: [web_search, remember_fact], description: "Tool awaiting approval: web_search always; remember_fact only when the turn already read file passages or web results" }
+        tool: { type: string, enum: [web_search, remember_fact, research_plan, create_schedule], description: "Step awaiting approval: web_search always; remember_fact only when the turn already read file passages or web results; research_plan (args topic, queries) once per deep-research run; create_schedule (args = the parsed schedule incl. the exact query) always" }
         args: { type: object, description: Proposed tool arguments, additionalProperties: true }
         created_at: { type: string, format: date-time, description: When the run paused }
         expires_at: { type: string, format: date-time, description: When the approval expires (24 h) }
@@ -885,6 +1015,8 @@ components:
         citations: { type: array, description: Sources cited, items: { $ref: "#/components/schemas/Citation" } }
         feedback: { type: [integer, "null"], enum: [-1, 1, null], description: "The user's rating, if any" }
         usage: { $ref: "#/components/schemas/MessageUsage" }
+        intent: { type: [string, "null"], enum: [general_chat, smalltalk_help, manage_memory, generate_document, deep_research, schedule_task, null], description: Pipeline that produced the message (assistant messages) }
+        documents: { type: array, description: Documents generated by this message, items: { $ref: "#/components/schemas/DocumentObject" } }
         created_at: { type: string, format: date-time, description: Creation time }
       example: { id: 5b6c7d8e-1a2b-4c3d-9e8f-0a1b2c3d4e5f, conversation_id: 3f2a1b0c-9d8e-4f7a-b6c5-d4e3f2a1b0c9, role: assistant, content: "Churn fell to 3.1% in Q3 [1].", status: complete, tool_calls: [], citations: [], feedback: null, created_at: "2026-11-19T10:05:00Z" }
 
@@ -940,6 +1072,12 @@ components:
       required: [content]
       properties:
         content: { type: string, minLength: 1, maxLength: 16000, description: Message text }
+        mode:
+          type: string
+          enum: [auto, chat, document, research, schedule, memory]
+          default: auto
+          description: "auto = the intent router decides; any other value forces that pipeline (set by slash commands /pdf, /research, /schedule, /memory)"
+        client_timezone: { type: string, maxLength: 64, description: "IANA timezone from the browser (e.g. Asia/Kolkata); the default for new schedules" }
       example: { content: "What does my Q3 report say about churn?" }
 
     ResumeRunRequest:
@@ -955,6 +1093,13 @@ components:
           properties:
             query: { type: string, minLength: 1, maxLength: 400, description: Edited search query (web_search) }
             content: { type: string, minLength: 1, maxLength: 500, description: Edited memory text (remember_fact) }
+            queries:
+              type: array
+              minItems: 1
+              maxItems: 6
+              description: Edited research plan (research_plan)
+              items: { type: string, minLength: 1, maxLength: 400 }
+            schedule: { $ref: "#/components/schemas/ScheduleSpec" }
       example: { interrupt_id: int_9a8b7c, decision: edit, edited_args: { query: Go 1.24 release notes generics } }
 
     FeedbackRequest:
@@ -1010,6 +1155,79 @@ components:
         next_cursor: { type: [string, "null"], description: Cursor for the next page }
       example: { items: [], next_cursor: null }
 
+    DocumentObject:
+      type: object
+      description: A generated PDF document
+      required: [id, title, kind, status, created_at]
+      properties:
+        id: { type: string, format: uuid, description: Document id }
+        title: { type: string, description: Document title }
+        kind: { type: string, enum: [thread_summary, news_brief, research_report], description: What the document contains }
+        status: { type: string, enum: [pending, ready, failed], description: Render status }
+        conversation_id: { type: [string, "null"], format: uuid, description: Conversation it was created in (null after that conversation is deleted) }
+        message_id: { type: [string, "null"], format: uuid, description: Assistant message that created it }
+        page_count: { type: [integer, "null"], description: Pages once rendered }
+        size_bytes: { type: [integer, "null"], description: PDF size once rendered }
+        error: { type: [string, "null"], description: Failure reason when status is failed }
+        created_at: { type: string, format: date-time, description: Creation time }
+      example: { id: 7e8f9a0b-1c2d-4e3f-8a9b-0c1d2e3f4a5b, title: "Rust news brief — 21 Nov 2026", kind: news_brief, status: ready, conversation_id: 3f2a1b0c-9d8e-4f7a-b6c5-d4e3f2a1b0c9, message_id: 5b6c7d8e-1a2b-4c3d-9e8f-0a1b2c3d4e5f, page_count: 3, size_bytes: 84211, error: null, created_at: "2026-11-21T08:00:12Z" }
+
+    DocumentPage:
+      type: object
+      description: Page of documents
+      required: [items, next_cursor]
+      properties:
+        items: { type: array, description: Documents, items: { $ref: "#/components/schemas/DocumentObject" } }
+        next_cursor: { type: [string, "null"], description: Cursor for the next page }
+      example: { items: [], next_cursor: null }
+
+    ScheduleSpec:
+      type: object
+      description: What a schedule runs and when
+      required: [task_kind, topic, cadence, time_local, timezone, output, query]
+      properties:
+        task_kind: { type: string, enum: [news_brief, research], description: What each run produces }
+        topic: { type: string, minLength: 1, maxLength: 200, description: Topic }
+        cadence: { type: string, enum: [daily, weekly], description: How often (never more than daily) }
+        weekday: { type: [string, "null"], enum: [mon, tue, wed, thu, fri, sat, sun, null], description: Required when cadence is weekly }
+        time_local: { type: string, pattern: "^([01][0-9]|2[0-3]):[0-5][0-9]$", description: Local time HH:MM }
+        timezone: { type: string, maxLength: 64, description: IANA timezone }
+        output: { type: string, enum: [chat, pdf], description: Delivered as a chat message or a PDF }
+        query: { type: string, minLength: 1, maxLength: 400, description: Exact web query every run sends (news brief) or the topic anchor (research) }
+      example: { task_kind: news_brief, topic: Rust, cadence: weekly, weekday: mon, time_local: "08:00", timezone: Asia/Kolkata, output: pdf, query: Rust programming language news this week }
+
+    Schedule:
+      type: object
+      description: A recurring task
+      required: [id, spec, status, conversation_id, next_run_at, created_at]
+      properties:
+        id: { type: string, format: uuid, description: Schedule id }
+        spec: { $ref: "#/components/schemas/ScheduleSpec" }
+        status: { type: string, enum: [active, paused], description: Paused by the user or after 3 consecutive failures }
+        paused_reason: { type: [string, "null"], enum: [user, failures, null], description: Why it is paused }
+        conversation_id: { type: string, format: uuid, description: Conversation that receives the results }
+        next_run_at: { type: [string, "null"], format: date-time, description: Next run (null while paused) }
+        last_run_at: { type: [string, "null"], format: date-time, description: Last run }
+        last_run_status: { type: [string, "null"], enum: [ok, failed, skipped_budget, null], description: Outcome of the last run }
+        created_at: { type: string, format: date-time, description: Creation time }
+      example: { id: 2a3b4c5d-6e7f-4a8b-9c0d-1e2f3a4b5c6d, spec: { task_kind: news_brief, topic: Rust, cadence: weekly, weekday: mon, time_local: "08:00", timezone: Asia/Kolkata, output: pdf, query: Rust programming language news this week }, status: active, paused_reason: null, conversation_id: 9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d, next_run_at: "2026-11-23T02:30:00Z", last_run_at: null, last_run_status: null, created_at: "2026-11-21T10:00:00Z" }
+
+    ScheduleList:
+      type: object
+      description: The user's schedules
+      required: [items]
+      properties:
+        items: { type: array, description: Schedules, items: { $ref: "#/components/schemas/Schedule" } }
+      example: { items: [] }
+
+    UpdateScheduleRequest:
+      type: object
+      description: Pause or resume
+      required: [status]
+      properties:
+        status: { type: string, enum: [active, paused], description: "New status; resuming fails with 409 SCHEDULE_LIMIT if 5 are already active" }
+      example: { status: paused }
+
     Memory:
       type: object
       description: A long-term memory about the user
@@ -1045,6 +1263,9 @@ components:
       description: Any SSE event payload; the SSE `event:` field equals `type`
       oneOf:
         - $ref: "#/components/schemas/RunStartedEvent"
+        - $ref: "#/components/schemas/RouteSelectedEvent"
+        - $ref: "#/components/schemas/ProgressEvent"
+        - $ref: "#/components/schemas/DocumentCreatedEvent"
         - $ref: "#/components/schemas/TokenEvent"
         - $ref: "#/components/schemas/ToolStartEvent"
         - $ref: "#/components/schemas/ToolEndEvent"
@@ -1058,6 +1279,9 @@ components:
         propertyName: type
         mapping:
           run_started: "#/components/schemas/RunStartedEvent"
+          route_selected: "#/components/schemas/RouteSelectedEvent"
+          progress: "#/components/schemas/ProgressEvent"
+          document_created: "#/components/schemas/DocumentCreatedEvent"
           token: "#/components/schemas/TokenEvent"
           tool_start: "#/components/schemas/ToolStartEvent"
           tool_end: "#/components/schemas/ToolEndEvent"
@@ -1078,6 +1302,37 @@ components:
         user_message_id: { type: [string, "null"], format: uuid, description: Persisted user message (null for regenerate/resume) }
         assistant_message_id: { type: string, format: uuid, description: Id the assistant message will have }
       example: { type: run_started, run_id: 0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d, user_message_id: 6c7d8e9f-0a1b-4c2d-8e3f-4a5b6c7d8e9f, assistant_message_id: 5b6c7d8e-1a2b-4c3d-9e8f-0a1b2c3d4e5f }
+
+    RouteSelectedEvent:
+      type: object
+      description: Which pipeline handles this message (new messages only, not resumes)
+      required: [type, intent, source]
+      properties:
+        type: { type: string, const: route_selected, description: Event type }
+        intent: { type: string, enum: [general_chat, smalltalk_help, manage_memory, generate_document, deep_research, schedule_task], description: Selected pipeline }
+        source: { type: string, enum: [router, mode, fallback], description: "router = classified; mode = forced by the request; fallback = low confidence or router failure" }
+        confidence: { type: [number, "null"], description: Router confidence (null unless source is router or fallback) }
+      example: { type: route_selected, intent: generate_document, source: router, confidence: 0.94 }
+
+    ProgressEvent:
+      type: object
+      description: Progress of a long-running pipeline (research, documents)
+      required: [type, stage]
+      properties:
+        type: { type: string, const: progress, description: Event type }
+        stage: { type: string, enum: [planning, searching, writing, rendering], description: Current stage }
+        done: { type: [integer, "null"], description: Completed steps in this stage }
+        total: { type: [integer, "null"], description: Total steps in this stage }
+      example: { type: progress, stage: searching, done: 3, total: 5 }
+
+    DocumentCreatedEvent:
+      type: object
+      description: A document was created (usually still pending render; poll GET /documents/{id})
+      required: [type, document]
+      properties:
+        type: { type: string, const: document_created, description: Event type }
+        document: { $ref: "#/components/schemas/DocumentObject" }
+      example: { type: document_created, document: { id: 7e8f9a0b-1c2d-4e3f-8a9b-0c1d2e3f4a5b, title: "Chat summary — Q3 churn analysis", kind: thread_summary, status: pending, created_at: "2026-11-21T10:05:00Z" } }
 
     TokenEvent:
       type: object
