@@ -14,8 +14,13 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 COPY app ./app
 COPY alembic.ini ./
 COPY alembic ./alembic
+# Prompts are canonical in the repo and loaded from disk at runtime (ADR-0008).
+COPY prompts ./prompts
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev
+# tiktoken downloads its encoding on first use; bake it in so token counting works offline.
+ENV TIKTOKEN_CACHE_DIR=/app/.tiktoken
+RUN /app/.venv/bin/python -c "import tiktoken; tiktoken.get_encoding('o200k_base')"
 
 FROM python:3.14-slim-bookworm AS runtime
 RUN groupadd --system --gid 10001 nexus \
@@ -23,7 +28,8 @@ RUN groupadd --system --gid 10001 nexus \
 WORKDIR /app
 COPY --from=builder --chown=nexus:nexus /app /app
 COPY --chown=nexus:nexus uvicorn_logging.json /app/uvicorn_logging.json
-ENV PATH="/app/.venv/bin:$PATH" PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+ENV PATH="/app/.venv/bin:$PATH" PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 \
+    TIKTOKEN_CACHE_DIR=/app/.tiktoken
 USER nexus
 EXPOSE 8000
 CMD ["uvicorn", "app.main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000", \

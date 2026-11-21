@@ -16,6 +16,8 @@ _ROOT_ENV = Path(__file__).resolve().parents[3] / ".env"
 
 _MIN_SECRET_LENGTH = 32
 
+ReasoningEffort = Literal["none", "minimal", "low", "medium", "high"]
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=_ROOT_ENV, extra="ignore", case_sensitive=False)
@@ -37,8 +39,22 @@ class Settings(BaseSettings):
     # Auth
     auth_secret: SecretStr = SecretStr("")
 
-    # AI (the model factory arrives with TASK-009; only the mode is needed to guard production)
+    # AI: models and reasoning effort per role (docs/02_outputs/08_ai_system_design.md section 3).
+    # Only `llm/factory.py` turns these into clients (ADR-0005).
     llm_mode: Literal["real", "fake"] = "real"
+    openai_api_key: SecretStr = SecretStr("")
+    llm_chat_model: str = "gpt-6.1-terra"
+    llm_chat_reasoning_effort: ReasoningEffort = "low"
+    llm_fallback_model: str = "gpt-6-luna"
+    llm_background_model: str = "gpt-6-luna"
+    llm_router_model: str = "gpt-6-luna"
+    llm_long_form_model: str = "gpt-6.1-terra"
+    llm_long_form_reasoning_effort: ReasoningEffort = "medium"
+    llm_judge_model: str = "gpt-5.5-2026-04-23"
+    llm_embedding_model: str = "text-embedding-3-small"
+    llm_moderation_model: str = "omni-moderation-latest"
+    llm_request_timeout_s: float = 60
+    llm_max_retries: int = Field(default=2, ge=0, le=5)
 
     # Vector DB
     qdrant_url: str = "http://localhost:6333"

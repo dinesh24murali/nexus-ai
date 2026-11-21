@@ -20,7 +20,11 @@ backend/
 │   ├── db/                 ← base, models, session, repositories/ (every query is owner-scoped)
 │   ├── core/               ← config, logging, errors, security, ratelimit, runtime_flags, health, net
 │   ├── cli.py              ← admin CLI (python -m app.cli); worker.py; migrate.py
-│   └── (graph/ llm/ rag/ memory/ jobs/ ...  arrive with M2+; layout in docs/02_outputs/03_tech_architecture.md §2)
+│   ├── llm/                ← factory.py (the only place provider clients are built), fake.py (LLM_MODE=fake),
+│   │                         prompts.py + prompt_sync.py, tracing.py, redaction.py, pricing.py, tokens.py
+│   ├── graph/              ← state.py, prompting.py (cache-friendly request layout), builder.py, nodes/
+│   └── (rag/ memory/ jobs/ ...  arrive with M3+; layout in docs/02_outputs/03_tech_architecture.md §2)
+├── prompts/                ← canonical prompt files `<name>.md` (front-matter name + version; ADR-0008)
 ├── alembic/                ← async env, forward-only migrations in versions/
 ├── tests/                  ← unit + integration (marker `integration`), contract/ (schemathesis)
 ├── Dockerfile, uvicorn_logging.json

@@ -54,3 +54,28 @@ def test_invalid_registration_mode_rejected() -> None:
 
 def test_secrets_not_in_repr() -> None:
     assert SECRET not in repr(make())
+
+
+def test_llm_defaults_match_env_example() -> None:
+    s = make()
+    assert s.llm_chat_model == "gpt-6.1-terra"
+    assert s.llm_chat_reasoning_effort == "low"
+    assert s.llm_fallback_model == "gpt-6-luna"
+    assert s.llm_background_model == "gpt-6-luna"
+    assert s.llm_router_model == "gpt-6-luna"
+    assert s.llm_long_form_model == "gpt-6.1-terra"
+    assert s.llm_long_form_reasoning_effort == "medium"
+    assert s.llm_judge_model == "gpt-5.5-2026-04-23"
+    assert s.llm_request_timeout_s == 60
+    assert s.llm_max_retries == 2
+
+
+def test_openai_key_is_secret_and_not_in_repr() -> None:
+    s = make(openai_api_key="sk-proj-abcdefghijklmnopqrstuvwxyz0123456789")
+    assert "sk-proj" not in repr(s)
+    assert s.openai_api_key.get_secret_value().startswith("sk-proj")
+
+
+def test_invalid_reasoning_effort_rejected() -> None:
+    with pytest.raises(ValidationError):
+        make(llm_chat_reasoning_effort="extreme")

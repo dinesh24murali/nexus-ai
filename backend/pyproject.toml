@@ -7,13 +7,18 @@ dependencies = [
     "argon2-cffi>=25.1.0",
     "fastapi>=0.165.0",
     "httpx>=0.28.1",
+    "langchain-core>=1.8.4",
+    "langchain-openai>=1.8.5",
+    "langfuse>=5.2.0",
     "langgraph>=1.2.24",
     "langgraph-checkpoint-postgres>=3.2.1",
     "psycopg[binary,pool]>=3.3.9",
     "pydantic-settings>=2.16.3",
     "pyjwt>=2.15.1",
+    "pyyaml>=6.0.4",
     "sqlalchemy[asyncio]>=2.1.9",
     "structlog>=26.1.0",
+    "tiktoken>=0.14.0",
     "uvicorn[standard]>=0.54.0",
 ]
 
@@ -26,6 +31,7 @@ dev = [
     "pytest-cov>=7.1.0",
     "ruff>=0.17.6",
     "schemathesis>=4.33.4",
+    "types-pyyaml>=6.0.12.20261113",
 ]
 
 [build-system]
@@ -41,10 +47,18 @@ target-version = "py314"
 src = ["app", "tests"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "B", "UP", "S", "ASYNC", "SIM", "RUF"]
+select = ["E", "F", "I", "B", "UP", "S", "ASYNC", "SIM", "RUF", "TID"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+# ADR-0005: provider clients are created only in app/llm/factory.py.
+"openai.OpenAI".msg = "Create model clients through app.llm.factory.get_model (ADR-0005)."
+"openai.AsyncOpenAI".msg = "Create model clients through app.llm.factory.get_model (ADR-0005)."
+"langchain_openai.ChatOpenAI".msg = "Create model clients through app.llm.factory.get_model (ADR-0005)."
+"langchain_openai.OpenAIEmbeddings".msg = "Create embedding clients through app.llm.factory (ADR-0005)."
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101", "S105", "S106", "S107"]
+"tests/**" = ["S101", "S105", "S106", "S107", "TID251"]
+"app/llm/factory.py" = ["TID251"]
 
 [tool.mypy]
 python_version = "3.14"

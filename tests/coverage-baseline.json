@@ -4,5 +4,9 @@
     "backend": 80,
     "frontend": 70
   },
-  "packages": {}
+  "packages": {
+    "backend/app/llm": 95,
+    "backend/app/graph": 91
+  },
+  "_measured": "Percent of statements + branches, `pytest --cov=app` over unit and integration tests (needs `make up`). Gates are floored measurements and only ratchet up."
 }
