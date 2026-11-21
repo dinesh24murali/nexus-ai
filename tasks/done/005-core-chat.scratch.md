@@ -150,3 +150,90 @@ Yes (per the developer's instruction); defaults above are flagged for review in 
 ## Outcome of pass 2 (2026-11-21)
 
 Implemented as planned, TASK-012 first. Resolutions: U1 kept (and doc 08 §2.3 corrected); U2 kept; U3 kept and flagged (Idempotency-Key not honoured); U4/U5 kept; U6 kept; U7 kept (contract exclusions documented); U8 kept (graphs cached per override value); **U9 verified on the real stack** (a stream open at SIGTERM completes, container exits 0 in ~8 s); U10 kept (scaled-time tests with a negative control). Additions: `GET …/messages`, delete-cancels-run, `requeue_stale_jobs` and `cleanup_rate_limits`, `LLM_FAKE_TOKEN_DELAY_S`, spec 1.3.2, and a NUL-in-text fix found by the contract scope.
+
+---
+
+# Pass 3: TASK-014 (moderation, rate limits, budgets) then TASK-013 (chat UI)
+
+> Written before any code (AGENTS.md §3.1). The developer asked for "the next 2 tasks" and to stop afterwards; these are the two tasks left in `005-core-chat`. **TASK-014 first**: the UI has to render its errors (`MODERATION_FLAGGED`, `BUDGET_EXCEEDED`, `RATE_LIMITED`) and show the `/me/usage` meter, so the backend contract must exist before the UI is written against it. Open points below are decided with a stated default and flagged in the final report.
+
+## Plan (TDD: failing test, watch it fail, minimal code, green; one slice at a time)
+
+**TASK-014 backend**
+1. `core/budgets.py` (pure policy): `Budgets(user_usd, global_usd)`, UTC-day helpers (`resets_at`, seconds until reset), `budget_exceeded(scope, now)` → `ApiError(429, BUDGET_EXCEEDED, details={scope, resets_at}, Retry-After)`. Settings: `USER_DAILY_BUDGET_USD` (0.50), `GLOBAL_DAILY_BUDGET_USD` (5.00), `CHAT_RATE_LIMIT_PER_MIN` (30) (names already in `.env.example` except the last).
+2. `db/repositories/usage.py`: `get_day(user, day)` and `global_cost(day)` (sum over users). `services/usage.py`: `ensure_within_budgets` (global first, then user; `>=` blocks), `usage_summary` for the endpoint, `note_global_spend` (80 % alert: one `global_spend_alert` WARNING per UTC day, deduped with a `rate_limits` row).
+3. `core/ratelimit.py`: `hit(factory, key, limit, window_s)` = atomic `INSERT … ON CONFLICT` increment, then compare (check-then-record would let a burst of parallel requests through). Key `chat:{user_id}`, 60 s fixed window, 429 `RATE_LIMITED` with `Retry-After`. Counts sends **and** regenerates (both cost a model call).
+4. `llm/moderation.py` (`Moderator`): 5 s timeout, 1 retry; flagged → `MODERATION_FLAGGED` (400, message not stored, category names only in the log, never the text); any failure → fail-open with a `moderation_skipped` log and a `moderation:skipped` trace tag. Client comes from `llm/factory.py` (`get_moderation_client`; the only place provider clients are built); `LLM_MODE=fake` gets a scripted client (`[[moderation:flag]]` flags, `[[moderation:down]]` raises) so the real HTTP path is testable.
+5. `RunService.start_send`: draining → rate limit → budgets → moderation → acquire lease (doc 08 §1; moderation sits before the lease so a 5 s network call never holds it). `start_regenerate`: draining → rate limit → budgets (no moderation: no new user text). `_write_outcome`: regenerate passes `requests=0` (spec: `messages` = messages sent). After a finished run: `note_global_spend` (best effort).
+6. `GET /me/usage` (`api/me.py`) returning the spec's `Usage`.
+7. Tests: unit (policy, moderator with a stub client incl. timeout/5xx/flag), repo tests, API/integration tests (429 `details.scope`, `Retry-After`, 30/min boundary, moderation 400 leaves no message and no lease, fail-open, usage endpoint, owner isolation of the usage numbers), concurrency test for the limiter, mutation checks. Contract suite: the new endpoint plus the 400/429 responses; `CHAT_RATE_LIMIT_PER_MIN` is raised for the fuzz run so it does not trip over its own limiter.
+
+**TASK-013 frontend**
+8. Deps: `react-markdown`, `remark-gfm`, `shiki` (core + JS regex engine, languages lazy-loaded). No `rehype-raw`: raw HTML in a model answer is rendered as text. Links get `rel="noopener noreferrer" target="_blank"`; images are not fetched (CSP anyway) and render as their alt text.
+9. `src/api/stream.ts`: the one hand-written stream client (AGENTS §3.7). `SseParser` (line based; frames split across chunks, CRLF, multi-line `data:`, `: ping` comments, multi-byte characters split across chunks) + `streamRun(manager, path, {body, signal})` async generator of `StreamEvent` (type from the generated schema). A non-2xx start throws the usual `ApiProblem`. A stream that ends without `done`/`error`/`interrupt` throws `StreamInterrupted`. Unknown event types are ignored (forward compatible); a frame whose JSON is invalid throws.
+10. `features/chat/`: `api.ts` (messages query, usage query), `useChatRun` (send / stop / regenerate, token batching, terminal events), `MessageList`, `MessageBubble`, `Markdown` + `CodeBlock` (Shiki tokens rendered as classed spans, **no inline style** because of the CSP; colours only from the design tokens), `Composer` (Enter sends, Shift+Enter newline, 16 000 chars, Send ↔ Stop), `RunNotice` (moderation, budget with reset time and scope wording, rate limit, restarting, connection lost, interrupted, model unavailable), `UsageMeter` (sidebar).
+11. Pages: `ConversationPage` (history, composer, streaming, regenerate on the last assistant message, "Interrupted" + Retry for `server_restart`), `HomePage` (empty state with composer: creates the conversation, navigates, and the new page sends the first message).
+12. Tests: parser/`streamRun` unit tests on recorded fixtures (chunk boundaries inside frames and inside multi-byte characters, pings, errors, abort); component tests on the real `<App />` with a scripted streaming `fetch`; Playwright `tests/e2e/chat.spec.ts` against the fake-LLM stack (send, stream, stop, regenerate, plus the moderation notice).
+13. Wrap-up: `memory/api.md`, `memory/ai.md`, `CHANGELOG.md`, `tests/coverage-baseline.json`, `backend/AGENTS.md` and `frontend/AGENTS.md` structure, `docs/02_outputs/04_api_spec.yaml` only if a documented behaviour changes (regenerate the client if so), `make lint`, `make test`, `make test-integration`, `make verify`.
+
+## Files to create or modify (estimate)
+
+| File | Action |
+|------|--------|
+| `backend/app/core/{budgets,config,ratelimit}.py` | create / modify |
+| `backend/app/services/usage.py`, `backend/app/services/runs.py`, `backend/app/main.py` | create / modify |
+| `backend/app/db/repositories/usage.py` | modify |
+| `backend/app/llm/{moderation,factory,fake,tracing}.py` | create / modify |
+| `backend/app/api/{me,schemas}.py` | modify |
+| `backend/tests/{core,llm,services,api,db,contract}/*` | create / modify |
+| `docs/02_outputs/04_api_spec.yaml`, `frontend/src/api/schema.ts` | only if a behaviour changes |
+| `frontend/package.json`, `frontend/package-lock.json` | modify (`make npm-lock`) |
+| `frontend/src/api/stream.ts` (+ test, fixtures) | create |
+| `frontend/src/features/chat/*` | create |
+| `frontend/src/components/sidebar/*`, `frontend/src/routes/{ConversationPage,HomePage,AppShell}.tsx`, `frontend/src/lib/messages.ts`, `frontend/src/styles/*` | modify |
+| `tests/e2e/chat.spec.ts`, `verify/scripts/check-dom.ts` (if the chat page needs a check) | create / modify |
+| `memory/{api,ai}.md`, `CHANGELOG.md`, `tests/coverage-baseline.json`, `backend/AGENTS.md`, `frontend/AGENTS.md`, task file | modify |
+
+## Uncertainties and the defaults I'm taking
+
+- **U1: which budget wins when both are exceeded.** Default: `global` is reported first (it blocks everyone, so it is the more useful explanation). Both reset at 00:00 UTC.
+- **U2: `>=` vs `>`.** A user at exactly the budget is blocked. A run that starts under budget can end over it (never cut off, FS-008), so spend can exceed the budget by one run.
+- **U3: regenerate counts toward the 30/min limit and the budgets.** Not literally in the task text ("message rate limit"), but it costs a model call and would otherwise be an unmetered path.
+- **U4: `messages` in `/me/usage`.** The spec says "messages sent today"; `usage_daily.requests` was incremented once per run, so a regenerate would count as a message. Default: regenerate writes `requests=0`.
+- **U5: spend alert.** "Alert at 80 % of the global cap" is implemented as one `global_spend_alert` WARNING log per UTC day. Routing it to a channel is an ops step (TASK-034 uptime/spend check); said plainly in the report.
+- **U6: no index on `usage_daily(day)`.** The global sum scans one day of an invite-only instance (rows = users × days); an index would need a migration for no measurable gain. Revisit if the table grows.
+- **U7: moderation of long text.** The whole message (≤ 16 000 chars) is sent in one call; no chunking. Moderation is skipped (fail-open) on any error, including a missing API key in real mode.
+- **U8: usage meter placement and the Settings page.** The task says "usage meter in the sidebar"; `/settings/usage` (functional spec route table) belongs to the settings work and is not built here.
+- **U9: Shiki and the CSP.** Shiki's default HTML output uses inline `style` attributes, which the CSP forbids. Default: tokens rendered as spans with classes (CSS-variables theme), palette limited to existing design tokens. Highlighting is progressive: the code shows as plain text first and is highlighted once the grammar chunk has loaded. Fewer colours than a stock Shiki theme; said in the report.
+- **U10: Stop = `POST …/runs/cancel`, not `AbortController.abort()`.** Aborting the fetch only closes the connection; the run would continue server-side (ADR-0006). The abort signal is used for navigation away and unmount.
+- **U11: "Connection lost" Retry.** The run continues server-side, so Retry must not resend the message (a second send would hit 409 or duplicate it). Default: Retry reloads the history; the answer appears when the run ends.
+- **U12: title refresh.** The title job runs after the first answer; the sidebar refetches a few times (1.5 s, 4 s, 8 s) while the title is still "New chat". No server push exists.
+- **U13: first message on `/`.** The empty home page owns a composer; sending creates the conversation, navigates to `/c/:id` and hands the text over in router state, and the new page sends it once (guarded against StrictMode double effects).
+- **U14: Playwright needs the fake-LLM stack.** The chat spec fails with an explicit message when the stack runs in real mode, rather than skipping silently. I start the stack with a throw-away Compose override file for verification and restore the normal config afterwards.
+- **U15: `Idempotency-Key`, `READ_ONLY_MODE`, `runs/resume`, tool and citation rendering**: unchanged from pass 2 (not built; no tools yet).
+
+## What Will Be Skipped (and why)
+
+- Feedback buttons (TASK-016), files UI (TASK-021), tool-call cards and approval UI (TASK-023/024), memory toast (TASK-025+), citations: no events exist yet; the stream client ignores them.
+- Settings page and `/settings/usage` (see U8). Conversation search.
+- Per-run worst-case cost checks for research/document pipelines (M7); the chat check is "spend < budget".
+- `make eval`: the harness is TASK-015, still no AI-behaviour regression gate. Moderation is not model behaviour we tune; its red-team record (rt-17) and `chat.refusal_accuracy` belong to the eval suite.
+- Real OpenAI moderation call: no API key locally; the fake client and stub clients cover the paths, and the first real call is unobserved (said in the report).
+
+## Risks
+
+- **Rate limiter races:** the increment is a single atomic statement; a parallel-requests test proves a burst cannot exceed the limit.
+- **Moderation on the request path:** a slow API must not hold a lease or stall the API; 5 s timeout, 1 retry, before the lease. Fail-open is deliberate (threat model LLM-T14) and tagged.
+- **SSE parsing bugs are invisible with whole-frame test chunks:** the fixtures are re-chunked at every byte boundary in a test.
+- **React state during fast token streams:** tokens are batched (≈16 ms) so a long answer does not re-render markdown per token.
+- **Untrusted model output in the DOM:** no raw HTML, no `dangerouslySetInnerHTML`, `javascript:` URLs stripped; each has a test that fails when the protection is removed.
+- **Cancel/regenerate/refresh races** (user sends while the previous run is finishing → 409): the composer is disabled while a run is active in this tab; a 409 from another tab shows a clear notice.
+- Blast radius: `RunService.start_*` gains three pre-checks, so every existing chat test now passes through the limiter and budgets (limits are far above what they use); `HomePage`/`ConversationPage` are replaced, so the existing sidebar e2e (`h1` = title) must stay green.
+
+## Ready to implement?
+
+Yes (per the developer's instruction); defaults above are flagged for review in the final report.
+
+## Outcome of pass 3 (2026-11-21)
+
+Implemented as planned, TASK-014 first. Resolutions: U1 (global first) kept; U2 (`>=`) kept; U3 kept (regenerate is limited and budgeted); U4 kept (`requests=0` on regenerate, with a test); U5 kept (log line only); U6 kept (no index); U7 kept (whole message in one moderation call, fail-open on any error, including no API key); U8 kept; U9 kept (4 classes, design tokens); U10 kept; U11 kept; U12 kept (and covered by a unit test and the e2e); U13 kept, plus a fix: the draft lives in the page so a refused hand-off restores it; U14 kept; U15 unchanged. Additions beyond the plan: `seen()` and `liveStream()` test helpers, a StrictMode option in `renderApp`, a `Message`-id based hand-over from the live view to the stored rows, spec 1.3.3, `CHAT_RATE_LIMIT_PER_MIN` in `.env.example`, `app/core` and two frontend packages in the coverage baseline.

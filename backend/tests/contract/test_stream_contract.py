@@ -129,3 +129,44 @@ def test_the_stream_ends_with_an_error_event_when_the_model_fails(
         VALIDATOR.validate(data)
     assert [e for e, _, _ in frames] == ["run_started", "error"]
     assert frames[-1][2]["code"] == "INTERNAL" and "blew up" not in r.text
+
+
+# ---------------------------------------------------------------- refusals before the stream opens
+
+ERROR_VALIDATOR = jsonschema_rs.validator_for(
+    {"$ref": "#/components/schemas/Error", "components": SPEC["components"]}
+)
+
+
+def test_a_moderation_refusal_is_a_documented_400_error(
+    http: tuple[str, httpx.Client, str],
+) -> None:
+    base, client, cid = http
+
+    r = client.post(f"{base}/conversations/{cid}/messages", json={"content": "[[moderation:flag]]"})
+
+    assert (
+        r.status_code == 400
+        and "400" in SPEC["paths"]["/conversations/{conversationId}/messages"]["post"]["responses"]
+    )
+    ERROR_VALIDATOR.validate(r.json())
+    assert r.json()["error"]["code"] == "MODERATION_FLAGGED"
+
+
+def test_a_budget_refusal_is_a_documented_429_with_retry_after_and_scope(
+    http: tuple[str, httpx.Client, str], db: Any, make_user: Any
+) -> None:
+    base, client, cid = http
+    db.execute(
+        "INSERT INTO usage_daily (user_id, day, cost_usd)"
+        " SELECT id, (now() AT TIME ZONE 'UTC')::date, 99 FROM users"
+    )
+
+    r = client.post(f"{base}/conversations/{cid}/messages", json={"content": "hello"})
+
+    assert r.status_code == 429
+    responses = SPEC["paths"]["/conversations/{conversationId}/messages"]["post"]["responses"]
+    assert "429" in responses
+    ERROR_VALIDATOR.validate(r.json())
+    assert r.json()["error"]["details"]["scope"] in {"user", "global"}
+    assert int(r.headers["retry-after"]) > 0

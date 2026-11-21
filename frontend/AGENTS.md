@@ -16,12 +16,15 @@ frontend/
 │   ├── main.tsx, App.tsx         ← entry (providers) and route table
 │   ├── api/schema.ts             ← GENERATED from the OpenAPI spec (`npm run gen:api`); never edit
 │   ├── api/client.ts             ← typed openapi-fetch client on top of AuthManager.fetch; `useApiClient()`, `unwrap()`
+│   ├── api/stream.ts             ← the ONE hand-written client: SSE parser + `openStream()` (types from the schema)
 │   ├── lib/                      ← auth.ts (session manager), auth-context.ts, AuthProvider.tsx,
 │   │                               theme.ts, messages.ts (error text), cn.ts
 │   ├── routes/                   ← pages (LoginPage, RegisterPage, AppShell, ...) and guards.tsx
 │   ├── components/ui/            ← shadcn-style primitives (Button, Field, Alert) on our tokens
 │   ├── components/               ← app components (ThemeToggle, sidebar/: ConversationNav, ConversationList, ConversationItem)
-│   ├── features/                 ← feature folders (conversations/ = TanStack Query hooks; chat/, files/, settings/ to come)
+│   ├── features/                 ← feature folders (conversations/ = TanStack Query hooks; chat/ = ChatView, useChatRun,
+│   │                               MessageList, Composer, Markdown + CodeBlock + highlight (Shiki), notices, UsageMeter;
+│   │                               files/, settings/ to come)
 │   ├── styles/tokens.css, theme.css   ← design tokens + Tailwind 4 @theme (docs/02_outputs/07)
 │   └── config.ts                 ← build-time VITE_* config
 ├── public/theme-init.js          ← sets data-theme before first paint (CSP forbids inline scripts)
@@ -38,6 +41,14 @@ frontend/
 - To regenerate: `cd frontend && npm run gen:api` (fill in your actual codegen command)
 - **Streaming exception:** streaming endpoints (SSE/WebSocket) use one hand-written stream client (e.g. `src/api/stream.ts`); its event types must come from the generated schema types — see `AGENTS.md` §3.7
 - Render model output as untrusted: sanitize markdown/HTML, no `dangerouslySetInnerHTML` on raw model text, external links get `rel="noopener noreferrer"`
+
+### Chat (TASK-013)
+- `api/stream.ts` reads SSE from a `fetch` body (an `EventSource` cannot POST or send a bearer token). `SseParser` is chunk-size independent; a stream that ends without `done`/`error`/`interrupt` throws `StreamInterrupted`; unknown event types are ignored. A refusal before the stream opens (429, 400, 409, 503) is the usual `ApiProblem`
+- **Stop = `POST …/runs/cancel`**, never `abort()`: aborting only closes the connection and the run keeps going server-side (ADR-0006). Leaving the page aborts the connection and nothing else. "Connection lost" → Reload re-reads the history; it never resends
+- `useChatRun` owns one conversation's run. The live bubble yields to the stored message the moment its id (from `run_started`) is in the history, so nothing shows twice; the regenerated answer is hidden by id while its replacement streams
+- Model output is untrusted: `Markdown.tsx` has no `rehype-raw`, drops `javascript:` URLs, opens links with `rel="noopener noreferrer"`, never fetches images. Code colours: Shiki tokens become classes (`highlight.ts`), never `style` (the CSP forbids it); only design-token colours are used
+- The draft text lives in the page (`Composer` is controlled) so a send refused after the home-page hand-off can put it back
+- Tests: `renderApp(path, handler, {strict: true})` runs under StrictMode; `liveStream()` feeds a stream event by event; use `seen(text)` rather than `expect(await findByText(..)).toBeInTheDocument()` for text that moves from the live bubble to the stored message. `tests/e2e/chat.spec.ts` needs the stack in `LLM_MODE=fake` with `LLM_FAKE_TOKEN_DELAY_S=0.05` and fails loudly otherwise
 
 ### Auth and sessions
 - All session logic is `src/lib/auth.ts` (`AuthManager`). Use `manager.fetch()` for every API call: it adds the bearer token, refreshes once on 401 and retries. Never put tokens in localStorage, sessionStorage, URLs or the DOM

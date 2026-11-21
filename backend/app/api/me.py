@@ -1,10 +1,13 @@
+from datetime import UTC, datetime
+
 from fastapi import APIRouter, Response
 
-from app.api.deps import CurrentUserDep, FactoryDep
-from app.api.schemas import ChangePasswordRequest, UpdateMeRequest, UserOut
+from app.api.deps import CurrentUserDep, FactoryDep, SettingsDep
+from app.api.schemas import ChangePasswordRequest, UpdateMeRequest, UsageOut, UserOut
 from app.core.errors import ApiError
 from app.db.repositories import users
 from app.services import auth as auth_service
+from app.services import usage as usage_service
 
 router = APIRouter(prefix="/me", tags=["account"])
 
@@ -40,3 +43,21 @@ async def change_password(
         new_password=body.new_password,
     )
     return Response(status_code=204)
+
+
+@router.get("/usage", response_model=UsageOut, summary="Spend, tokens and messages for today (UTC)")
+async def get_usage(
+    current: CurrentUserDep, factory: FactoryDep, settings: SettingsDep
+) -> UsageOut:
+    summary = await usage_service.usage_summary(
+        factory, settings, current.id, now=datetime.now(UTC)
+    )
+    return UsageOut(
+        day=summary.day,
+        spend_usd=float(summary.spend_usd),
+        budget_usd=float(summary.budget_usd),
+        tokens_used=summary.tokens_used,
+        messages=summary.messages,
+        global_cap_reached=summary.global_cap_reached,
+        resets_at=summary.resets_at,
+    )

@@ -4,6 +4,7 @@ Field names map 1:1 to the variables in `.env.example`. Variables this module do
 are ignored, so one shared `.env` can serve the API, worker, CLI and Compose.
 """
 
+from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal, Self
@@ -57,6 +58,11 @@ class Settings(BaseSettings):
     llm_moderation_model: str = "omni-moderation-latest"
     llm_request_timeout_s: float = 60
     llm_max_retries: int = Field(default=2, ge=0, le=5)
+
+    # Limits (docs/02_outputs/02 FS-008): spend in USD per UTC day, and chat sends per minute
+    user_daily_budget_usd: Decimal = Field(default=Decimal("0.50"), ge=0)
+    global_daily_budget_usd: Decimal = Field(default=Decimal("5.00"), ge=0)
+    chat_rate_limit_per_min: int = Field(default=30, ge=1)
 
     # Vector DB
     qdrant_url: str = "http://localhost:6333"

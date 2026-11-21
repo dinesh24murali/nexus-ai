@@ -1,14 +1,53 @@
+import { useState } from 'react'
+import { useNavigate } from 'react-router'
+import { Alert } from '../components/ui/Alert'
+import { Composer } from '../features/chat/Composer'
+import type { HandoffState } from '../features/chat/ChatView'
+import { useCreateConversation } from '../features/conversations/api'
 import { useAuth } from '../lib/auth-context'
+import { describeProblem } from '../lib/messages'
 
-/** Empty state for a new chat. The composer and streaming arrive in the next milestone (M2). */
+/**
+ * Empty state for a new chat. Sending creates the conversation, opens it, and hands the text over
+ * so the conversation page sends it (the stream belongs to the page that shows it).
+ */
 export function HomePage() {
   const { user } = useAuth()
+  const navigate = useNavigate()
+  const create = useCreateConversation()
+  const [error, setError] = useState<string | null>(null)
+  const [text, setText] = useState('')
+
+  async function start(text: string): Promise<boolean> {
+    setError(null)
+    try {
+      const created = await create.mutateAsync()
+      const state: HandoffState = { initialMessage: text }
+      void navigate(`/c/${created.id}`, { state })
+      return true
+    } catch (e) {
+      setError(describeProblem(e).message)
+      return false
+    }
+  }
+
   return (
-    <div className="mx-auto flex min-h-screen max-w-chat flex-col items-center justify-center px-4 text-center">
-      <h1 className="text-h1">Hello, {user?.display_name}</h1>
-      <p className="mt-3 text-body-lg text-fg-muted">
-        You are signed in. Chat is coming in the next milestone.
-      </p>
+    <div className="mx-auto flex min-h-screen max-w-chat flex-col justify-center px-4">
+      <h1 className="text-center text-h1">Hello, {user?.display_name}</h1>
+      <p className="mt-3 mb-8 text-center text-body-lg text-fg-muted">What can I help with?</p>
+      {error && (
+        <Alert variant="error" className="mb-3">
+          {error}
+        </Alert>
+      )}
+      <Composer
+        text={text}
+        setText={setText}
+        onSend={start}
+        onStop={() => undefined}
+        running={false}
+        stopping={false}
+      />
     </div>
   )
 }

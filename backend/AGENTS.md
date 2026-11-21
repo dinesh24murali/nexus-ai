@@ -18,14 +18,16 @@ backend/
 │   ├── api/                ← routers (thin), deps.py (auth + session factory), schemas.py,
 │   │                         chat.py (send/regenerate/cancel/history) + sse.py (typed events, framing)
 │   ├── services/           ← use cases and transaction boundaries (auth.py; runs.py = run lease,
-│   │                         streaming, cancel, regenerate, drain)
+│   │                         streaming, cancel, regenerate, drain, pre-run limits; usage.py = spend reads,
+│   │                         budget check, /me/usage, spend alert)
 │   ├── jobs/               ← queue.py (Postgres SKIP LOCKED), handlers.py (registry: kind -> handler,
 │   │                         timeout, attempts), periodic.py (reaper, stale-job requeue, cleanups)
 │   ├── db/                 ← base, models, session, repositories/ (every query is owner-scoped)
-│   ├── core/               ← config, logging, errors, security, ratelimit, runtime_flags, health, net
+│   ├── core/               ← config, logging, errors, security, ratelimit, budgets (policy), runtime_flags, health, net
 │   ├── cli.py              ← admin CLI (python -m app.cli); worker.py (job loops + periodic); migrate.py
 │   ├── llm/                ← factory.py (the only place provider clients are built), fake.py (LLM_MODE=fake),
 │   │                         prompts.py + prompt_sync.py, tracing.py, redaction.py, pricing.py, tokens.py,
+│   │                         moderation.py (input moderation, fail-open),
 │   │                         usage.py (per-run token + cost collector)
 │   ├── graph/              ← state.py, prompting.py (cache-friendly request layout), builder.py, nodes/
 │   └── (rag/ memory/ ...  arrive with M3+; layout in docs/02_outputs/03_tech_architecture.md §2)
@@ -63,6 +65,11 @@ backend/
 - Everything a run or job persists for a user goes through owner-scoped repositories; the job's `user_id` column (not its payload) says whose job it is
 - Jobs are idempotent (the queue can run one twice after a crash) and are enqueued in the caller's transaction with an idempotency key. New job kinds register in `jobs/handlers.py::JOBS` with a hard timeout and attempt limit
 - Anything that waits for time (heartbeats, stale windows, drain) takes its duration as a parameter so tests run it scaled down; production constants live next to the code (`periodic.py`, `worker.py`, `runs.py`)
+
+### Limits and moderation
+- A chat send/regenerate passes, in order: drain check, `ratelimit.hit` (atomic), `usage.ensure_within_budgets`, `Moderator.check` (sends only), then the lease. Refusals (`RATE_LIMITED`, `BUDGET_EXCEEDED` with `details.scope`, `MODERATION_FLAGGED`) happen before anything is written. New run-starting endpoints must go through `RunService._admit`
+- Spend lives in `usage_daily` (USD); anything that calls a model for a user adds to it (runs `requests=1`, regenerates and jobs `requests=0`). Budget policy is `core/budgets.py` (pure); reading spend is `services/usage.py`
+- Moderation fails open and says so (log `moderation_skipped`, trace tag `moderation:skipped`); never log or echo the text
 
 ### Logging
 - structlog JSON only. Never log request bodies, query strings, headers or message content. Third-party stdlib loggers default to WARNING (client libraries log full URLs at INFO)

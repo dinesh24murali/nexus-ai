@@ -232,3 +232,47 @@ class FakeChatModel(BaseChatModel):
 
     def bind_tools(self, tools: Sequence[Any], **kwargs: Any) -> FakeChatModel:
         return self
+
+
+# ---------------------------------------------------------------- moderation (LLM_MODE=fake)
+
+_MODERATION_FLAG = "[[moderation:flag]]"
+_MODERATION_DOWN = "[[moderation:down]]"
+
+
+class FakeModerationError(Exception):
+    """Stands in for an unreachable moderation API."""
+
+
+class _FakeCategories(BaseModel):
+    violence: bool = False
+
+
+class _FakeModerationResult(BaseModel):
+    flagged: bool
+    categories: _FakeCategories
+
+
+class _FakeModerationResponse(BaseModel):
+    results: list[_FakeModerationResult]
+
+
+class _FakeModerations:
+    async def create(self, *, model: str, input: str) -> _FakeModerationResponse:
+        if _MODERATION_DOWN in input:
+            raise FakeModerationError("scripted moderation outage")
+        flagged = _MODERATION_FLAG in input
+        return _FakeModerationResponse(
+            results=[
+                _FakeModerationResult(flagged=flagged, categories=_FakeCategories(violence=flagged))
+            ]
+        )
+
+
+class FakeModerationClient:
+    """Same call shape as `openai.AsyncOpenAI().moderations.create`. Text containing
+    `[[moderation:flag]]` is flagged and `[[moderation:down]]` simulates an outage, so the whole
+    HTTP path (flagged refusal, fail-open) can be exercised without a network."""
+
+    def __init__(self) -> None:
+        self.moderations = _FakeModerations()

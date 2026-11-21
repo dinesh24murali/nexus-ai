@@ -2,7 +2,7 @@
 
 import re
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Annotated, Any, Literal, Self
 
 from pydantic import (
@@ -70,6 +70,18 @@ class UserOut(BaseModel):
     display_name: str
     memory_enabled: bool
     created_at: datetime
+
+
+class UsageOut(BaseModel):
+    """`Usage` in the OpenAPI spec: today's (UTC) numbers for the current user."""
+
+    day: date
+    spend_usd: float
+    budget_usd: float
+    tokens_used: int
+    messages: int
+    global_cap_reached: bool
+    resets_at: datetime
 
 
 class AuthResponse(BaseModel):

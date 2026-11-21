@@ -16,7 +16,7 @@ type Page = components['schemas']['ConversationPage']
 const PAGE_SIZE = 30
 
 /** Keys carry the user id: a cache can never be shown to a different account on the same tab. */
-function useKeys() {
+export function useConversationKeys() {
   const { user } = useAuth()
   const uid = user?.id ?? 'anonymous'
   return {
@@ -27,7 +27,7 @@ function useKeys() {
 
 export function useConversations() {
   const api = useApiClient()
-  const keys = useKeys()
+  const keys = useConversationKeys()
   return useInfiniteQuery({
     queryKey: keys.list,
     initialPageParam: undefined as string | undefined,
@@ -43,7 +43,7 @@ export function useConversations() {
 
 export function useConversation(id: string | undefined) {
   const api = useApiClient()
-  const keys = useKeys()
+  const keys = useConversationKeys()
   return useQuery({
     queryKey: keys.one(id ?? ''),
     enabled: id !== undefined,
@@ -59,7 +59,7 @@ export function useConversation(id: string | undefined) {
 
 export function useCreateConversation() {
   const api = useApiClient()
-  const keys = useKeys()
+  const keys = useConversationKeys()
   const qc = useQueryClient()
   return useMutation({
     mutationFn: () => unwrap<Conversation>(api.POST('/conversations', { body: {} })),
@@ -72,7 +72,7 @@ export function useCreateConversation() {
 
 export function useRenameConversation() {
   const api = useApiClient()
-  const keys = useKeys()
+  const keys = useConversationKeys()
   const qc = useQueryClient()
   return useMutation({
     mutationFn: ({ id, title }: { id: string; title: string }) =>
@@ -102,7 +102,7 @@ export function useRenameConversation() {
 
 export function useDeleteConversation() {
   const api = useApiClient()
-  const keys = useKeys()
+  const keys = useConversationKeys()
   const qc = useQueryClient()
   return useMutation({
     mutationFn: async (id: string) => {

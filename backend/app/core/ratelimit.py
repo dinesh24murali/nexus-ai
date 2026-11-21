@@ -27,11 +27,13 @@ def retry_after_s(now: datetime, window_s: int) -> int:
     return max(1, int(start.timestamp()) + window_s - int(now.timestamp()))
 
 
-def rate_limited(now: datetime, window_s: int = WINDOW_S) -> ApiError:
+def rate_limited(
+    now: datetime, window_s: int = WINDOW_S, message: str = "Too many attempts. Try again later."
+) -> ApiError:
     return ApiError(
         429,
         "RATE_LIMITED",
-        "Too many attempts. Try again later.",
+        message,
         headers={"Retry-After": str(retry_after_s(now, window_s))},
     )
 
@@ -59,3 +61,23 @@ async def record(
 ) -> int:
     async with factory() as session, session.begin():
         return await rate_limits.increment(session, key, window_start(now, window_s))
+
+
+async def hit(
+    factory: async_sessionmaker[AsyncSession],
+    key: str,
+    limit: int,
+    *,
+    now: datetime,
+    window_s: int,
+    message: str = "Too many attempts. Try again later.",
+) -> None:
+    """Count one attempt and refuse it when it is past `limit` in the current window.
+
+    Unlike `check` + `record`, the count and the comparison are one atomic statement, so a burst of
+    parallel requests cannot all slip under the limit. Refused attempts are counted too, which is
+    harmless for a fixed window. The count commits on its own so it survives the request failing.
+    """
+    used = await record(factory, key, now=now, window_s=window_s)
+    if used > limit:
+        raise rate_limited(now, window_s, message)

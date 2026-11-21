@@ -180,3 +180,10 @@ async def test_eval_mode_attaches_no_per_node_callbacks(
     await _graph().ainvoke({"messages": [HumanMessage("hi")]}, config=config)
     tracer.flush()
     assert exporter.get_finished_spans() == ()
+
+
+def test_extra_tags_are_added_to_the_run_config(tracer: Tracer) -> None:
+    config = tracer.run_config(trace(tags=("moderation:skipped",)))
+
+    assert "moderation:skipped" in config["tags"]
+    assert "feature:chat" in config["tags"]

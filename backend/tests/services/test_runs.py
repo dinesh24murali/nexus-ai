@@ -81,6 +81,7 @@ async def make_env(
         token_delay_s: float = 0.0,
         heartbeat_s: float = 0.05,
         flags: Any = None,
+        tracer: Any = None,
     ) -> Env:
         user = UUID(make_user())
         row = db.execute(
@@ -105,6 +106,7 @@ async def make_env(
             settings=settings,
             graph_factory=graph_factory,
             flags=flags,
+            tracer=tracer,
             heartbeat_s=heartbeat_s,
         )
         return Env(service, saver, db, user, UUID(str(row[0])), overrides)
@@ -464,3 +466,26 @@ async def test_the_chat_model_override_kill_switch_reaches_the_graph(make_env: A
     await collect(await env.send("hi"))
 
     assert env.overrides == ["gpt-6-luna"]
+
+
+class RecordingTracer:
+    """Stands in for `Tracer`: records each run's trace description, adds no callbacks."""
+
+    def __init__(self) -> None:
+        self.traces: list[Any] = []
+
+    def run_config(self, trace: Any, **_: Any) -> dict[str, Any]:
+        self.traces.append(trace)
+        return {}
+
+
+async def test_a_skipped_moderation_check_is_tagged_on_the_runs_trace(
+    make_env: Callable[..., Any],
+) -> None:
+    tracer = RecordingTracer()
+    env = await make_env(tracer=tracer)
+
+    await collect(await env.send("hello [[moderation:down]]"))
+    await collect(await env.send("a normal message"))
+
+    assert [t.tags for t in tracer.traces] == [("moderation:skipped",), ()]

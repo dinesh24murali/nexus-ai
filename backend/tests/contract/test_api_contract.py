@@ -26,7 +26,7 @@ schema = (
     schemathesis.openapi.from_path(SPEC)
     .include(
         path_regex=(
-            r"^/(healthz|readyz|auth/.*|me(/password)?|conversations(/\{conversationId\})?"
+            r"^/(healthz|readyz|auth/.*|me(/password|/usage)?|conversations(/\{conversationId\})?"
             r"|conversations/\{conversationId\}/(messages|regenerate|runs/cancel))$"
         )
     )

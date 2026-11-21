@@ -1543,7 +1543,7 @@ export interface components {
                 "text/event-stream": components["schemas"]["StreamEvent"];
             };
         };
-        /** @description Malformed request */
+        /** @description Malformed request, or MODERATION_FLAGGED (sendMessage: the text was refused by input moderation and nothing was stored) */
         BadRequest: {
             headers: {
                 [name: string]: unknown;

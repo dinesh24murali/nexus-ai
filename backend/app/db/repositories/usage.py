@@ -1,9 +1,10 @@
-"""Per-user daily spend (`usage_daily`, USD). Budgets that read it arrive with TASK-014."""
+"""Per-user daily spend (`usage_daily`, USD): written at run/job end, read by the budget checks."""
 
 import uuid
 from datetime import date
 from decimal import Decimal
 
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -40,3 +41,14 @@ async def add(
         },
     )
     await session.execute(stmt)
+
+
+async def get_day(session: AsyncSession, user_id: uuid.UUID, day: date) -> UsageDaily | None:
+    stmt = select(UsageDaily).where(UsageDaily.user_id == user_id, UsageDaily.day == day)
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def global_cost(session: AsyncSession, day: date) -> Decimal:
+    """Spend of every user on `day` (the instance-wide cap compares against this)."""
+    stmt = select(func.coalesce(func.sum(UsageDaily.cost_usd), 0)).where(UsageDaily.day == day)
+    return Decimal((await session.execute(stmt)).scalar_one())

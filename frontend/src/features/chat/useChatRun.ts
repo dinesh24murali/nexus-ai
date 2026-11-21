@@ -1,0 +1,209 @@
+import { useQueryClient } from '@tanstack/react-query'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { useApiClient } from '../../api/client'
+import { openStream } from '../../api/stream'
+import { useAuthManager } from '../../lib/auth-context'
+import { useConversationKeys } from '../conversations/api'
+import type { Conversation } from '../conversations/api'
+import { useChatKeys } from './api'
+import { noticeFromError, type Notice } from './notices'
+import { TITLE_REFRESH_DELAYS_MS, TOKEN_BATCH_MS } from './timing'
+
+export type ChatRun = {
+  running: boolean
+  stopping: boolean
+  /** The text just sent, shown until the stored message replaces it. */
+  pendingUser: string | null
+  streamingText: string
+  /** Ids the server announced in `run_started`; once a stored message has the id, it replaces the live one. */
+  userMessageId: string | null
+  assistantMessageId: string | null
+  /** The stored answer a regenerate will replace (hidden while the new one streams). */
+  replacesMessageId: string | null
+  notice: Notice | null
+}
+
+const IDLE: ChatRun = {
+  running: false,
+  stopping: false,
+  pendingUser: null,
+  streamingText: '',
+  userMessageId: null,
+  assistantMessageId: null,
+  replacesMessageId: null,
+  notice: null,
+}
+
+const DEFAULT_TITLE = 'New chat'
+
+type Live = { controller: AbortController; text: string; timer: number | undefined }
+
+/**
+ * One conversation's run: send, stop and regenerate, and what the screen shows meanwhile.
+ *
+ * The run belongs to the server (ADR-0006): closing this stream does not stop it, so "Stop" asks
+ * the API to cancel, and leaving the page only closes the connection. After a run the stored
+ * messages are re-read, so what you see afterwards is what was saved.
+ */
+export function useChatRun(conversationId: string) {
+  const manager = useAuthManager()
+  const api = useApiClient()
+  const queryClient = useQueryClient()
+  const chatKeys = useChatKeys()
+  const conversationKeys = useConversationKeys()
+  const [state, setState] = useState<ChatRun>(IDLE)
+  const live = useRef<Live | null>(null)
+  const mounted = useRef(false)
+  const titleTimers = useRef<number[]>([])
+
+  useEffect(() => {
+    mounted.current = true
+    const timers = titleTimers.current
+    return () => {
+      mounted.current = false
+      // StrictMode runs cleanup and setup back to back on the same instance: only close the
+      // stream (and stop the timers) if the component really did go away.
+      setTimeout(() => {
+        if (mounted.current) return
+        live.current?.controller.abort()
+        timers.forEach(clearTimeout)
+      }, 0)
+    }
+  }, [])
+
+  const refreshTitle = useCallback(() => {
+    titleTimers.current.forEach(clearTimeout)
+    titleTimers.current = TITLE_REFRESH_DELAYS_MS.map((delay) =>
+      window.setTimeout(() => {
+        const cached = queryClient.getQueryData<Conversation>(conversationKeys.one(conversationId))
+        if (cached && cached.title !== DEFAULT_TITLE) return
+        void queryClient.invalidateQueries({ queryKey: conversationKeys.one(conversationId) })
+        void queryClient.invalidateQueries({ queryKey: conversationKeys.list })
+      }, delay),
+    )
+  }, [queryClient, conversationKeys, conversationId])
+
+  /** Resolves true once the server accepted the run (its first event), false if it refused. */
+  const start = useCallback(
+    (
+      path: string,
+      body: unknown,
+      options: { pendingUser: string | null; replacesMessageId: string | null },
+    ): Promise<boolean> => {
+      if (live.current) return Promise.resolve(false)
+      const controller = new AbortController()
+      const run: Live = { controller, text: '', timer: undefined }
+      live.current = run
+      setState({
+        ...IDLE,
+        running: true,
+        pendingUser: options.pendingUser,
+        replacesMessageId: options.replacesMessageId,
+      })
+
+      let accept: (ok: boolean) => void = () => undefined
+      const accepted = new Promise<boolean>((resolve) => {
+        accept = resolve
+      })
+
+      const flush = () => {
+        run.timer = undefined
+        setState((s) => ({ ...s, streamingText: run.text }))
+      }
+
+      void (async () => {
+        let notice: Notice | null = null
+        let started = false
+        try {
+          for await (const event of openStream(manager, path, {
+            body,
+            signal: controller.signal,
+          })) {
+            started = true
+            accept(true)
+            if (event.type === 'run_started') {
+              setState((s) => ({
+                ...s,
+                userMessageId: event.user_message_id,
+                assistantMessageId: event.assistant_message_id,
+              }))
+            } else if (event.type === 'token') {
+              run.text += event.delta
+              run.timer ??= window.setTimeout(flush, TOKEN_BATCH_MS)
+            } else if (event.type === 'error') {
+              notice = { kind: 'run_error', message: event.message, retryable: event.retryable }
+            }
+          }
+        } catch (error) {
+          if (!controller.signal.aborted) notice = noticeFromError(error)
+        } finally {
+          accept(false) // no effect once accepted
+          if (run.timer !== undefined) clearTimeout(run.timer)
+          if (!controller.signal.aborted) {
+            // Show everything that arrived (the last batch may still be waiting for its timer).
+            setState((s) => ({ ...s, streamingText: run.text }))
+            if (started) {
+              // Re-read what the server saved before dropping the live view, so nothing flickers.
+              await Promise.allSettled([
+                queryClient.invalidateQueries({ queryKey: chatKeys.messages(conversationId) }),
+                queryClient.invalidateQueries({ queryKey: chatKeys.usage }),
+                queryClient.invalidateQueries({ queryKey: conversationKeys.list }),
+              ])
+              refreshTitle()
+            }
+            live.current = null
+            setState({ ...IDLE, notice })
+          } else {
+            live.current = null
+          }
+        }
+      })()
+      return accepted
+    },
+    [manager, queryClient, chatKeys, conversationKeys, conversationId, refreshTitle],
+  )
+
+  const send = useCallback(
+    (text: string) =>
+      start(
+        `/conversations/${conversationId}/messages`,
+        { content: text },
+        { pendingUser: text, replacesMessageId: null },
+      ),
+    [start, conversationId],
+  )
+
+  const regenerate = useCallback(
+    (replacesMessageId: string | null) =>
+      start(`/conversations/${conversationId}/regenerate`, undefined, {
+        pendingUser: null,
+        replacesMessageId,
+      }),
+    [start, conversationId],
+  )
+
+  const stop = useCallback(async () => {
+    if (!live.current) return
+    setState((s) => ({ ...s, stopping: true }))
+    try {
+      await api.POST('/conversations/{conversationId}/runs/cancel', {
+        params: { path: { conversationId } },
+      })
+    } catch {
+      // The stream still ends when the run does; a failed cancel just means it keeps going.
+    }
+  }, [api, conversationId])
+
+  const reload = useCallback(async () => {
+    setState((s) => ({ ...s, notice: null }))
+    await Promise.allSettled([
+      queryClient.invalidateQueries({ queryKey: chatKeys.messages(conversationId) }),
+      queryClient.invalidateQueries({ queryKey: conversationKeys.one(conversationId) }),
+      queryClient.invalidateQueries({ queryKey: chatKeys.usage }),
+    ])
+  }, [queryClient, chatKeys, conversationKeys, conversationId])
+
+  const dismissNotice = useCallback(() => setState((s) => ({ ...s, notice: null })), [])
+
+  return { state, send, regenerate, stop, reload, dismissNotice }
+}

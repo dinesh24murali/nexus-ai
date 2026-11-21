@@ -44,6 +44,7 @@ from app.api.sse import (
     Usage,
     UsageEvent,
 )
+from app.core import ratelimit
 from app.core.config import Settings
 from app.core.errors import ApiError
 from app.core.runtime_flags import RuntimeFlags
@@ -53,10 +54,12 @@ from app.graph.builder import build_graph
 from app.jobs import queue
 from app.jobs.handlers import JOBS
 from app.llm.factory import LLMConfigError, get_model
+from app.llm.moderation import Moderator, moderation_flagged
 from app.llm.prompts import load_prompt
 from app.llm.redaction import hash_user_id
 from app.llm.tracing import RunTrace, Tracer
 from app.llm.usage import UsageCollector
+from app.services import usage as usage_service
 
 _log = structlog.get_logger("nexus.runs")
 
@@ -69,6 +72,8 @@ DRAIN_TIMEOUT_S = 90.0  # ADR-0006
 _FORCE_STOP_WAIT_S = 10.0
 _RETRY_AFTER_S = "10"
 _TRACED_PROMPTS = ("nexus.system", "nexus.context", "nexus.summarize")
+_RATE_WINDOW_S = 60
+_RATE_LIMITED_MESSAGE = "You're sending messages too quickly. Please wait a moment."
 
 StopReason = Literal["cancel", "drain", "lost"]
 FinishReason = Literal["stop", "length", "cancelled", "tool_limit"]
@@ -87,6 +92,8 @@ class Run:
     events: asyncio.Queue[Event | None] = field(default_factory=asyncio.Queue)  # None ends it
     done: asyncio.Event = field(default_factory=asyncio.Event)
     partial: list[str] = field(default_factory=list)  # text streamed so far
+    trace_tags: tuple[str, ...] = ()  # e.g. `moderation:skipped`
+    persisted: bool = False  # the outcome was written (so spend changed)
     stop_reason: StopReason | None = None
     inner: asyncio.Task[Any] | None = None
     collector: UsageCollector = field(init=False)
@@ -174,6 +181,7 @@ class RunService:
         graph_factory: GraphFactory,
         flags: RuntimeFlags | Any | None = None,
         tracer: Tracer | None = None,
+        moderator: Moderator | None = None,
         heartbeat_s: float = HEARTBEAT_INTERVAL_S,
     ) -> None:
         self._factory = factory
@@ -181,6 +189,7 @@ class RunService:
         self._graph_factory = graph_factory
         self._flags = flags
         self._tracer = tracer
+        self._moderator = moderator or Moderator(settings)
         self._heartbeat_s = heartbeat_s
         self._graphs: dict[str, Graph] = {}
         self._runs: dict[uuid.UUID, Run] = {}  # conversation id -> its active run (this process)
@@ -196,6 +205,13 @@ class RunService:
         content: str,
     ) -> Run:
         self._accepting()
+        await self._admit(user_id)
+        verdict = await self._moderator.check(
+            content
+        )  # before the lease: a slow API must not hold it
+        if verdict.flagged:
+            raise moderation_flagged()
+        tags = ("moderation:skipped",) if verdict.skipped else ()
         override = await self._override()
         run_id, user_message_id = uuid.uuid4(), uuid.uuid4()
         async with self._factory() as session, session.begin():
@@ -208,7 +224,9 @@ class RunService:
                 role="user",
                 content=content,
             )
-        run = self._register(run_id, conversation_id, user_id, user_message_id, None, override)
+        run = self._register(
+            run_id, conversation_id, user_id, user_message_id, None, override, tags
+        )
         message = HumanMessage(content=content, id=str(user_message_id))
         return self._launch(run, {"messages": [message]}, display_name, override, None, "chat.turn")
 
@@ -216,6 +234,7 @@ class RunService:
         self, user_id: uuid.UUID, display_name: str, conversation_id: uuid.UUID
     ) -> Run:
         self._accepting()
+        await self._admit(user_id)
         override = await self._override()
         run_id = uuid.uuid4()
         async with self._factory() as session, session.begin():
@@ -300,6 +319,27 @@ class RunService:
                 headers={"Retry-After": _RETRY_AFTER_S},
             )
 
+    async def _admit(self, user_id: uuid.UUID) -> None:
+        """Per-user rate limit, then the daily budgets: both refuse before anything is written."""
+        now = datetime.now(UTC)
+        await ratelimit.hit(
+            self._factory,
+            f"chat:{user_id}",
+            self._settings.chat_rate_limit_per_min,
+            now=now,
+            window_s=_RATE_WINDOW_S,
+            message=_RATE_LIMITED_MESSAGE,
+        )
+        await usage_service.ensure_within_budgets(self._factory, self._settings, user_id, now=now)
+
+    async def _note_spend(self) -> None:
+        try:
+            await usage_service.note_global_spend(
+                self._factory, self._settings, now=datetime.now(UTC)
+            )
+        except Exception:
+            _log.warning("spend_alert_check_failed", exc_info=True)
+
     async def _override(self) -> str | None:
         if self._flags is None:
             return None
@@ -353,6 +393,7 @@ class RunService:
         user_message_id: uuid.UUID | None,
         replace_message_id: uuid.UUID | None,
         override: str | None,
+        trace_tags: tuple[str, ...] = (),
     ) -> Run:
         run = Run(
             run_id=run_id,
@@ -363,6 +404,7 @@ class RunService:
             replace_message_id=replace_message_id,
             override=override,
             default_model=override or self._settings.llm_chat_model,
+            trace_tags=trace_tags,
         )
         self._runs[conversation_id] = run
         return run
@@ -424,6 +466,8 @@ class RunService:
                 beat.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await beat
+            if run.persisted:  # the `done` event is already queued; only the close waits for this
+                await self._note_spend()
             self._runs.pop(run.conversation_id, None)
             run.events.put_nowait(None)
             run.done.set()
@@ -521,6 +565,7 @@ class RunService:
                 run_id=str(run.run_id),
                 assistant_message_id=str(run.assistant_message_id),
                 prompts=[load_prompt(name) for name in _TRACED_PROMPTS],
+                tags=run.trace_tags,
             )
             traced = self._tracer.run_config(trace)
             config["callbacks"] += traced.pop("callbacks", [])
@@ -579,6 +624,7 @@ class RunService:
                 else:
                     await self._write_outcome(session, run, status, finish_reason, text)
                     persisted = True
+                    run.persisted = True
         except Exception:
             _log.exception("run_persist_failed", run_id=str(run.run_id))
             run.events.put_nowait(
@@ -649,7 +695,8 @@ class RunService:
             prompt_tokens=total.prompt_tokens,
             completion_tokens=total.completion_tokens,
             cost_usd=used.cost_usd,
-            requests=1,
+            # A regenerate re-runs an existing message: it costs money but is not a message sent.
+            requests=0 if run.replace_message_id is not None else 1,
         )
         if status == "complete":
             # Idempotent per conversation: only the first completed turn creates the job.

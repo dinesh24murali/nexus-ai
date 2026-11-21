@@ -46,6 +46,7 @@ class RunTrace:
     assistant_message_id: str | None = None
     prompts: Sequence[Prompt] = ()
     features: Sequence[str] = ("chat",)
+    tags: Sequence[str] = ()  # extra trace tags, e.g. `moderation:skipped`
 
 
 def _export_span(span: ReadableSpan) -> bool:
@@ -80,7 +81,11 @@ class Tracer:
     def run_config(self, trace: RunTrace, *, mode: TraceMode = "run") -> dict[str, Any]:
         config: dict[str, Any] = {
             "run_name": trace.name,
-            "tags": [f"env:{self._environment}", *(f"feature:{f}" for f in trace.features)],
+            "tags": [
+                f"env:{self._environment}",
+                *(f"feature:{f}" for f in trace.features),
+                *trace.tags,
+            ],
             "metadata": self._metadata(trace),
         }
         if mode == "run" and (handler := self._handler()) is not None:

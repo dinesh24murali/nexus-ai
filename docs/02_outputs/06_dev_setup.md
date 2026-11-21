@@ -85,7 +85,7 @@ npm run gen:api      # regenerate client from docs/02_outputs/04_api_spec.yaml
 npm run dev          # http://localhost:5173, proxies /api to :8000
 ```
 
-**No OpenAI key / offline:** set `LLM_MODE=fake` in `.env` to use the scripted fake model (deterministic replies, tool calls and approval interrupts, with a realistic per-token delay). Unit tests, Playwright e2e and the load test all use it. The API refuses to start with `LLM_MODE=fake` when `APP_ENV=production`.
+**No OpenAI key / offline:** set `LLM_MODE=fake` in `.env` to use the scripted fake model (deterministic replies, tool calls and approval interrupts, with a realistic per-token delay). Unit tests, Playwright e2e and the load test all use it. The API refuses to start with `LLM_MODE=fake` when `APP_ENV=production`. For the chat Playwright tests also set `LLM_FAKE_TOKEN_DELAY_S=0.05` (so Stop can be pressed mid-answer); in fake mode a message containing `[[fixture:long]]` gets a long answer, `[[moderation:flag]]` is refused by moderation and `[[moderation:down]]` simulates a moderation outage.
 
 ## 4. Database Setup
 
