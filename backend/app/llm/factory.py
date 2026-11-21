@@ -128,7 +128,7 @@ def get_model(
     spec = _spec(role, s)
 
     if s.llm_mode == "fake":
-        fake: BaseChatModel = FakeChatModel(role=role)
+        fake: BaseChatModel = FakeChatModel(role=role, token_delay_s=s.llm_fake_token_delay_s)
         return fake.bind_tools(tools) if tools else fake
 
     if not s.openai_api_key.get_secret_value():

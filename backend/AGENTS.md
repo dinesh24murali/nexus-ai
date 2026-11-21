@@ -15,15 +15,20 @@
 backend/
 ├── app/
 │   ├── main.py             ← create_app() factory (run: uvicorn app.main:create_app --factory)
-│   ├── api/                ← routers (thin), deps.py (auth + session factory), schemas.py
-│   ├── services/           ← use cases and transaction boundaries (services/auth.py)
+│   ├── api/                ← routers (thin), deps.py (auth + session factory), schemas.py,
+│   │                         chat.py (send/regenerate/cancel/history) + sse.py (typed events, framing)
+│   ├── services/           ← use cases and transaction boundaries (auth.py; runs.py = run lease,
+│   │                         streaming, cancel, regenerate, drain)
+│   ├── jobs/               ← queue.py (Postgres SKIP LOCKED), handlers.py (registry: kind -> handler,
+│   │                         timeout, attempts), periodic.py (reaper, stale-job requeue, cleanups)
 │   ├── db/                 ← base, models, session, repositories/ (every query is owner-scoped)
 │   ├── core/               ← config, logging, errors, security, ratelimit, runtime_flags, health, net
-│   ├── cli.py              ← admin CLI (python -m app.cli); worker.py; migrate.py
+│   ├── cli.py              ← admin CLI (python -m app.cli); worker.py (job loops + periodic); migrate.py
 │   ├── llm/                ← factory.py (the only place provider clients are built), fake.py (LLM_MODE=fake),
-│   │                         prompts.py + prompt_sync.py, tracing.py, redaction.py, pricing.py, tokens.py
+│   │                         prompts.py + prompt_sync.py, tracing.py, redaction.py, pricing.py, tokens.py,
+│   │                         usage.py (per-run token + cost collector)
 │   ├── graph/              ← state.py, prompting.py (cache-friendly request layout), builder.py, nodes/
-│   └── (rag/ memory/ jobs/ ...  arrive with M3+; layout in docs/02_outputs/03_tech_architecture.md §2)
+│   └── (rag/ memory/ ...  arrive with M3+; layout in docs/02_outputs/03_tech_architecture.md §2)
 ├── prompts/                ← canonical prompt files `<name>.md` (front-matter name + version; ADR-0008)
 ├── alembic/                ← async env, forward-only migrations in versions/
 ├── tests/                  ← unit + integration (marker `integration`), contract/ (schemathesis)
@@ -52,6 +57,12 @@ backend/
 - Migrations: `uv run alembic revision --autogenerate -m "..."`, then **review and hand-edit** (extensions, modern typing, indexes). `tests/db/test_migrations.py` fails if models and migrations drift
 - Concurrency-sensitive reads use `SELECT ... FOR UPDATE` (invite redemption, refresh-token rotation)
 - LangGraph's own tables are created by `python -m app.migrate`, not by Alembic
+
+### Chat runs and jobs
+- A run is a detached asyncio task (`services/runs.py`): the HTTP response only drains its event queue, so a client disconnect never stops it; only `POST …/runs/cancel` (or deleting the conversation) does. One atomic UPDATE takes the lease; ending a run is one transaction that also checks the lease is still ours (if the reaper took it, the run writes nothing)
+- Everything a run or job persists for a user goes through owner-scoped repositories; the job's `user_id` column (not its payload) says whose job it is
+- Jobs are idempotent (the queue can run one twice after a crash) and are enqueued in the caller's transaction with an idempotency key. New job kinds register in `jobs/handlers.py::JOBS` with a hard timeout and attempt limit
+- Anything that waits for time (heartbeats, stale windows, drain) takes its duration as a parameter so tests run it scaled down; production constants live next to the code (`periodic.py`, `worker.py`, `runs.py`)
 
 ### Logging
 - structlog JSON only. Never log request bodies, query strings, headers or message content. Third-party stdlib loggers default to WARNING (client libraries log full URLs at INFO)

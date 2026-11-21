@@ -32,5 +32,9 @@ ENV PATH="/app/.venv/bin:$PATH" PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 \
     TIKTOKEN_CACHE_DIR=/app/.tiktoken
 USER nexus
 EXPOSE 8000
+# --timeout-graceful-shutdown: on SIGTERM uvicorn waits this long for open requests (streaming chat
+# runs) before cutting them off. It must exceed the 90 s run drain (ADR-0006) and stay below the
+# Compose `stop_grace_period` (120 s).
 CMD ["uvicorn", "app.main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000", \
-     "--log-config", "/app/uvicorn_logging.json", "--no-server-header"]
+     "--log-config", "/app/uvicorn_logging.json", "--no-server-header", \
+     "--timeout-graceful-shutdown", "105"]

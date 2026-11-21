@@ -112,3 +112,65 @@ def make_user(db: psycopg.Connection[Any]) -> Any:
         return str(row[0])
 
     return _make
+
+
+# ───────────── async SQLAlchemy sessions on a fresh database ─────────────
+from collections.abc import AsyncIterator  # noqa: E402
+
+from app.db.session import create_engine, create_session_factory  # noqa: E402
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker  # noqa: E402
+
+
+@pytest.fixture
+async def session_factory(db_url: str) -> AsyncIterator[async_sessionmaker[AsyncSession]]:
+    """Async sessions on a fresh, migrated database (real Postgres, never mocked)."""
+    engine = create_engine(db_url)
+    try:
+        yield create_session_factory(engine)
+    finally:
+        await engine.dispose()
+
+
+# ───────────── the real app under uvicorn, for streaming and contract tests ─────────────
+import socket  # noqa: E402
+import threading  # noqa: E402
+import time  # noqa: E402
+from collections.abc import Callable  # noqa: E402
+
+import uvicorn  # noqa: E402
+
+
+@pytest.fixture
+def live_server(settings: Settings, db_url: str) -> Iterator[Callable[..., str]]:
+    """`start(**settings_overrides) -> base url`: run the app under uvicorn in a thread, so tests
+    can hold a streaming connection open, drop it, and watch the server from outside."""
+    servers: list[tuple[uvicorn.Server, threading.Thread]] = []
+
+    def start(**overrides: Any) -> str:
+        app = create_app(settings.model_copy(update={"database_url": db_url, **overrides}))
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+        server = uvicorn.Server(
+            uvicorn.Config(app, host="127.0.0.1", port=port, log_config=None, lifespan="on")
+        )
+        thread = threading.Thread(target=server.run, daemon=True)
+        thread.start()
+        deadline = time.monotonic() + 10
+        while not server.started:
+            assert time.monotonic() < deadline, "server did not start"
+            time.sleep(0.02)
+        servers.append((server, thread))
+        return f"http://127.0.0.1:{port}/api/v1"
+
+    try:
+        yield start
+    finally:
+        for server, thread in servers:
+            server.should_exit = True
+            thread.join(timeout=15)
+
+
+@pytest.fixture
+def live_server_url(live_server: Callable[..., str]) -> str:
+    return live_server()

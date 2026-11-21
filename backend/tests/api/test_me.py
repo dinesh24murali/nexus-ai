@@ -98,6 +98,8 @@ def test_patch_me_with_empty_body_is_a_noop(client: TestClient, make_user: Any) 
     [
         {"display_name": ""},
         {"display_name": "x" * 61},
+        # Postgres text cannot hold NUL: it must be a 422, never a 500 from the driver.
+        {"display_name": "Ma\x00rco"},
         {"memory_enabled": "maybe"},
         # The spec types these as non-nullable: null is a violation, not "leave unchanged".
         {"memory_enabled": None},

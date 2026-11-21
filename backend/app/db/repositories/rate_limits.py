@@ -3,7 +3,7 @@ periodic cleanup job (TASK-012) deletes them."""
 
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,3 +28,8 @@ async def increment(session: AsyncSession, key: str, window_start: datetime) -> 
         .returning(RateLimit.count)
     )
     return (await session.execute(stmt)).scalar_one()
+
+
+async def delete_older_than(session: AsyncSession, cutoff: datetime) -> int:
+    result = await session.execute(delete(RateLimit).where(RateLimit.window_start < cutoff))
+    return int(result.rowcount)  # type: ignore[attr-defined]

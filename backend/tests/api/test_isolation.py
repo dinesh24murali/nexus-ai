@@ -100,3 +100,45 @@ def test_each_user_only_lists_their_own(
     assert sorted(
         c["title"] for c in client.get(f"{API}/conversations", headers=bob).json()["items"]
     ) == ["B1", "B2"]
+
+
+def test_messages_and_runs_of_another_users_conversation_are_invisible_and_untouchable(
+    client: TestClient,
+    two_users: tuple[dict[str, str], dict[str, str]],
+    db: psycopg.Connection[Any],
+) -> None:
+    alice, bob = two_users
+    cid = client.post(f"{API}/conversations", headers=alice, json={}).json()["id"]
+    client.post(f"{API}/conversations/{cid}/messages", headers=alice, json={"content": "my secret"})
+    before = db.execute("SELECT count(*), max(created_at) FROM messages").fetchone()
+    assert before and before[0] == 2
+
+    history = client.get(f"{API}/conversations/{cid}/messages", headers=bob)
+    send = client.post(f"{API}/conversations/{cid}/messages", headers=bob, json={"content": "hi"})
+    regenerate = client.post(f"{API}/conversations/{cid}/regenerate", headers=bob)
+    cancel = client.post(f"{API}/conversations/{cid}/runs/cancel", headers=bob)
+
+    for r in (history, send, regenerate, cancel):
+        assert r.status_code == 404 and r.json()["error"]["code"] == "NOT_FOUND"
+        assert "secret" not in r.text
+    assert db.execute("SELECT count(*), max(created_at) FROM messages").fetchone() == before
+    assert db.execute("SELECT count(*) FROM usage_daily").fetchone() == (1,)  # only Alice spent
+    assert db.execute("SELECT active_run_id FROM conversations").fetchone() == (None,)
+
+
+def test_a_message_cursor_cannot_be_replayed_against_another_users_conversation(
+    client: TestClient, two_users: tuple[dict[str, str], dict[str, str]]
+) -> None:
+    alice, bob = two_users
+    a = client.post(f"{API}/conversations", headers=alice, json={}).json()["id"]
+    b = client.post(f"{API}/conversations", headers=bob, json={}).json()["id"]
+    for text in ("one", "two"):
+        client.post(f"{API}/conversations/{a}/messages", headers=alice, json={"content": text})
+    cursor = client.get(f"{API}/conversations/{a}/messages?limit=1", headers=alice).json()[
+        "next_cursor"
+    ]
+    assert cursor
+
+    leaked = client.get(f"{API}/conversations/{b}/messages?cursor={cursor}", headers=bob).json()
+
+    assert leaked == {"items": [], "next_cursor": None}

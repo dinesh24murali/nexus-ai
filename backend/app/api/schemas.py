@@ -10,18 +10,33 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    SerializerFunctionWrapHandler,
     StrictBool,
     StringConstraints,
+    model_serializer,
     model_validator,
 )
 
-DisplayName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=60)]
+
+def _no_nul(value: str) -> str:
+    """Postgres text cannot hold NUL: it would reach the driver and surface as a 500."""
+    if "\x00" in value:
+        raise ValueError("must not contain NUL characters")
+    return value
+
+
+DisplayName = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=60),
+    AfterValidator(_no_nul),
+]
 Password = Annotated[str, Field(min_length=10, max_length=128)]
 
-# One "@", no whitespace, something on both sides. Deliberately NOT a deliverability check: v1 sends
+# One "@", no whitespace or NUL (Postgres text cannot hold it), something on both sides.
+# Deliberately NOT a deliverability check: v1 sends
 # no email (no verification or reset), so the address is only a login identifier. Stricter
 # validators reject reserved names (.test, .invalid, .local) that the spec's `format: email` allows.
-_EMAIL_SHAPE = re.compile(r"^[^@\s]+@[^@\s]+$")
+_EMAIL_SHAPE = re.compile(r"^[^@\s\x00]+@[^@\s\x00]+$")
 
 
 def _normalise_email(value: str) -> str:
@@ -89,13 +104,6 @@ class ChangePasswordRequest(BaseModel):
 # ───────────────────────────── conversations ─────────────────────────────
 
 
-def _no_nul(value: str) -> str:
-    """Postgres text cannot hold NUL: it would reach the driver and surface as a 500."""
-    if "\x00" in value:
-        raise ValueError("must not contain NUL characters")
-    return value
-
-
 Title = Annotated[
     str,
     StringConstraints(strip_whitespace=True, min_length=1, max_length=100),
@@ -133,4 +141,87 @@ class ConversationOut(BaseModel):
 
 class ConversationPage(BaseModel):
     items: list[ConversationOut]
+    next_cursor: str | None
+
+
+# ───────────────────────────────── chat ─────────────────────────────────
+
+
+def _not_blank(value: str) -> str:
+    """A message of only whitespace is a user error; the spec's `minLength: 1` is looser (same
+    documented pattern as conversation titles)."""
+    if not value.strip():
+        raise ValueError("must not be blank")
+    return value
+
+
+MessageContent = Annotated[
+    str, Field(min_length=1, max_length=16_000), AfterValidator(_no_nul), AfterValidator(_not_blank)
+]
+
+
+class SendMessageRequest(BaseModel):
+    content: MessageContent
+
+
+class MessageUsageOut(BaseModel):
+    model: str | None
+    prompt_tokens: int
+    cached_tokens: int
+    completion_tokens: int
+    cost_usd: float
+
+
+class MessageOut(BaseModel):
+    id: uuid.UUID
+    conversation_id: uuid.UUID
+    role: Literal["user", "assistant"]
+    content: str
+    status: Literal["complete", "cancelled", "failed"]
+    finish_reason: str | None
+    tool_calls: list[Any]
+    citations: list[Any]
+    feedback: int | None
+    usage: MessageUsageOut | None
+    intent: str | None
+    documents: list[Any]
+    created_at: datetime
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_usage(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        data: dict[str, Any] = handler(self)
+        if data.get("usage") is None:
+            data.pop("usage", None)  # the spec's `usage` is an object, never null (user messages)
+        return data
+
+    @classmethod
+    def from_model(cls, m: Any) -> MessageOut:
+        usage = None
+        if m.role == "assistant" and m.model is not None:
+            usage = MessageUsageOut(
+                model=m.model,
+                prompt_tokens=m.prompt_tokens,
+                cached_tokens=m.cached_tokens,
+                completion_tokens=m.completion_tokens,
+                cost_usd=float(m.cost_usd),
+            )
+        return cls(
+            id=m.id,
+            conversation_id=m.conversation_id,
+            role=m.role,
+            content=m.content,
+            status=m.status,
+            finish_reason=m.finish_reason,
+            tool_calls=list(m.tool_calls or []),
+            citations=list(m.citations or []),
+            feedback=None,  # feedback endpoints are a later task
+            usage=usage,
+            intent=None,  # the intent router arrives with M7
+            documents=[],
+            created_at=m.created_at,
+        )
+
+
+class MessagePage(BaseModel):
+    items: list[MessageOut]
     next_cursor: str | None

@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError
 
-from app.api.deps import CurrentUserDep, FactoryDep
+from app.api.deps import CurrentUserDep, FactoryDep, RunsDep
 from app.api.schemas import (
     ConversationOut,
     ConversationPage,
@@ -121,10 +121,12 @@ async def rename_conversation(
 
 @router.delete("/{conversation_id}", status_code=204, summary="Delete a conversation")
 async def delete_conversation(
-    conversation_id: str, current: CurrentUserDep, factory: FactoryDep
+    conversation_id: str, current: CurrentUserDep, factory: FactoryDep, runs: RunsDep
 ) -> Response:
     cid = _parse_id(conversation_id)
-    # TODO(TASK-011): cancel an active run before deleting (the run service does not exist yet).
+    # A run still writing into the conversation would hit a foreign-key error (or resurrect its
+    # checkpoints), so stop it and wait until it has been saved. A no-op for other users' ids.
+    await runs.cancel_and_wait(current.id, cid)
     async with factory() as session, session.begin():
         deleted = await repo.delete_with_checkpoints(session, current.id, cid)
     if not deleted:

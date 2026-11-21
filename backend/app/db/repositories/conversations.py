@@ -3,9 +3,9 @@
 import base64
 import binascii
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
-from sqlalchemy import and_, delete, or_, select, text, update
+from sqlalchemy import and_, delete, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Conversation
@@ -93,6 +93,96 @@ async def rename(
         .execution_options(populate_existing=True)
     )
     return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def set_generated_title(
+    session: AsyncSession, user_id: uuid.UUID, conversation_id: uuid.UUID, title: str
+) -> bool:
+    """Apply a generated title, but only while the conversation still has the default one, so a
+    name the user chose (even while the job was queued) is never overwritten. Like `rename`, it
+    leaves `updated_at` (last activity) alone."""
+    stmt = (
+        update(Conversation)
+        .where(
+            Conversation.user_id == user_id,
+            Conversation.id == conversation_id,
+            Conversation.title == DEFAULT_TITLE,
+        )
+        .values(title=title, updated_at=Conversation.updated_at)
+        .returning(Conversation.id)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none() is not None
+
+
+async def acquire_lease(
+    session: AsyncSession, user_id: uuid.UUID, conversation_id: uuid.UUID, run_id: uuid.UUID
+) -> bool:
+    """Take the run lease if nobody holds it. One atomic UPDATE: of any number of concurrent
+    sends exactly one matches `active_run_id IS NULL`."""
+    stmt = (
+        update(Conversation)
+        .where(
+            Conversation.user_id == user_id,
+            Conversation.id == conversation_id,
+            Conversation.active_run_id.is_(None),
+        )
+        .values(
+            active_run_id=run_id, run_heartbeat_at=func.now(), updated_at=Conversation.updated_at
+        )
+        .returning(Conversation.id)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none() is not None
+
+
+async def heartbeat_lease(
+    session: AsyncSession, conversation_id: uuid.UUID, run_id: uuid.UUID
+) -> bool:
+    """False when this run no longer holds the lease (the reaper took it)."""
+    stmt = (
+        update(Conversation)
+        .where(Conversation.id == conversation_id, Conversation.active_run_id == run_id)
+        .values(run_heartbeat_at=func.now(), updated_at=Conversation.updated_at)
+        .returning(Conversation.id)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none() is not None
+
+
+async def release_lease(
+    session: AsyncSession, conversation_id: uuid.UUID, run_id: uuid.UUID
+) -> bool:
+    """Free the conversation and count the run as activity (`updated_at`, which orders the
+    sidebar). False when the lease is not ours: the caller must then write nothing."""
+    stmt = (
+        update(Conversation)
+        .where(Conversation.id == conversation_id, Conversation.active_run_id == run_id)
+        .values(active_run_id=None, run_heartbeat_at=None, updated_at=func.now())
+        .returning(Conversation.id)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none() is not None
+
+
+async def stale_leases(
+    session: AsyncSession, stale_after: timedelta
+) -> list[tuple[uuid.UUID, uuid.UUID, uuid.UUID]]:
+    """Conversations whose run stopped heart-beating: (conversation id, user id, run id), row-locked
+    until the transaction ends. SKIP LOCKED: two reapers split the work instead of doubling it."""
+    stmt = (
+        select(Conversation.id, Conversation.user_id, Conversation.active_run_id)
+        .where(
+            Conversation.active_run_id.is_not(None),
+            Conversation.run_heartbeat_at < func.now() - stale_after,
+        )
+        .with_for_update(skip_locked=True)
+    )
+    return [(r[0], r[1], r[2]) for r in (await session.execute(stmt)).all() if r[2] is not None]
+
+
+async def clear_lease(session: AsyncSession, conversation_id: uuid.UUID) -> None:
+    await session.execute(
+        update(Conversation)
+        .where(Conversation.id == conversation_id)
+        .values(active_run_id=None, run_heartbeat_at=None)
+    )
 
 
 # LangGraph keys its tables by thread_id (= conversation id) and exposes no user filter, so

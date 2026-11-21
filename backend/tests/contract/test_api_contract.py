@@ -25,10 +25,15 @@ pytestmark = pytest.mark.integration
 schema = (
     schemathesis.openapi.from_path(SPEC)
     .include(
-        path_regex=r"^/(healthz|readyz|auth/.*|me(/password)?|conversations(/\{conversationId\})?)$"
+        path_regex=(
+            r"^/(healthz|readyz|auth/.*|me(/password)?|conversations(/\{conversationId\})?"
+            r"|conversations/\{conversationId\}/(messages|regenerate|runs/cancel))$"
+        )
     )
     # Not implemented yet: account deletion is TASK-028 (M6).
     .exclude(path="/me", method="DELETE")
+    # Not implemented yet: resuming after a tool approval needs tools (M4). Matched by neither
+    # pattern above, listed here so the next reader sees it is a decision, not an oversight.
 )
 
 
@@ -81,11 +86,22 @@ def test_api_conforms_to_the_spec(case: Any, live_server_url: str) -> None:
     #    non-empty and free of NUL (Postgres cannot store it); the spec's `minLength: 1` is looser
     #    than that, and the stricter rule is a documented 422 (tested in test_conversations.py).
     excluded: list[Any] = [allow_header_conformance]
+    #  * Positive-data acceptance on PATCH /me, POST /auth/register, POST /auth/login: a NUL
+    #    character in `display_name` or the email is schema-valid, but Postgres text cannot store
+    #    it, so it is a documented 422 (tested in test_me.py / test_auth.py), not a 500. Goes away
+    #    if the spec gains a pattern excluding NUL (open decision, see the 004-skeleton task).
     if case.operation.label in (
+        "PATCH /me",
+        "POST /auth/register",
+        "POST /auth/login",
         "POST /me/password",
         "GET /conversations",
         "POST /conversations",
         "PATCH /conversations/{conversationId}",
+        # content: NUL and whitespace-only are documented 422s the spec's `minLength: 1` does not
+        # express (like titles); the history cursor is opaque and server-issued (like the list's).
+        "POST /conversations/{conversationId}/messages",
+        "GET /conversations/{conversationId}/messages",
     ):
         excluded.append(positive_data_acceptance)
     case.call_and_validate(base_url=live_server_url, excluded_checks=excluded)

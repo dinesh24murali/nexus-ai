@@ -185,6 +185,8 @@ def test_open_registration_mode_needs_no_invite(settings: Settings, db_url: str)
         {"email": "not-an-email"},
         {"display_name": ""},
         {"display_name": "x" * 61},
+        {"display_name": "Ma\x00rco"},
+        {"email": "ma\x00rco@example.com"},
     ],
 )
 def test_register_validation_errors_are_422(
@@ -363,3 +365,11 @@ def test_logout_revokes_the_session_and_clears_the_cookie(
 
 def test_logout_requires_authentication(client: TestClient) -> None:
     assert client.post(f"{API}/auth/logout").status_code == 401
+
+
+def test_login_with_a_nul_in_the_email_is_a_422_not_a_server_error(client: TestClient) -> None:
+    r = client.post(
+        f"{API}/auth/login", json={"email": "ma\x00rco@example.com", "password": PASSWORD}
+    )
+    assert r.status_code == 422
+    assert r.json()["error"]["code"] == "VALIDATION_FAILED"

@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Invite
@@ -67,3 +67,15 @@ async def revoke(
         .values(revoked_at=now)
     )
     return bool(result.rowcount)  # type: ignore[attr-defined]
+
+
+async def delete_dead(session: AsyncSession, cutoff: datetime) -> int:
+    """Remove UNUSED invites that expired or were revoked before `cutoff`. Used invites stay: they
+    record who joined with which code."""
+    result = await session.execute(
+        delete(Invite).where(
+            Invite.used_at.is_(None),
+            or_(Invite.expires_at < cutoff, Invite.revoked_at < cutoff),
+        )
+    )
+    return int(result.rowcount)  # type: ignore[attr-defined]

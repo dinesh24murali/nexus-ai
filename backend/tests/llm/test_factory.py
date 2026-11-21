@@ -164,6 +164,16 @@ def test_fake_mode_returns_the_scripted_model_for_every_role(role: str) -> None:
     assert model.role == role
 
 
+def test_fake_mode_applies_the_configured_delay_between_tokens() -> None:
+    settings = real_settings(llm_mode="fake", openai_api_key="", llm_fake_token_delay_s=0.25)
+    model = get_model("chat", settings=settings)
+    assert isinstance(model, FakeChatModel)
+    assert model.token_delay_s == 0.25
+    default = get_model("chat", settings=real_settings(llm_mode="fake", openai_api_key=""))
+    assert isinstance(default, FakeChatModel)
+    assert default.token_delay_s == 0
+
+
 def test_fake_mode_needs_no_api_key_and_accepts_tools() -> None:
     settings = real_settings(llm_mode="fake", openai_api_key="")
     assert isinstance(get_model("chat", tools=[lookup], settings=settings), FakeChatModel)

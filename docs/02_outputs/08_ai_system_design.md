@@ -145,7 +145,7 @@ flowchart TD
 - **Checkpointer:** `AsyncPostgresSaver` (`langgraph-checkpoint-postgres`), `thread_id = conversation_id`.
 - **Regenerate** (only on `general_chat` answers; the UI hides it on memory, document and research messages, where the user asks again instead): find the checkpoint just before the last `agent` invocation that produced the final answer (via `aget_state_history`), invoke from that checkpoint (`checkpoint_id` in config) → forks the thread; the `messages` read model replaces the old assistant row.
 - **Cancel:** the API cancels the `asyncio.Task` running `astream`; partial text accumulated by the API is saved as a `cancelled` assistant message and appended to the thread via `aupdate_state` so the model sees what it said. Works in every pipeline: research cancelled before the report is written produces no report, and the `cancelled` message lists the searches already done; a document cancelled before `persist_document` creates nothing; once its `render_document` job is queued, the document finishes.
-- **Run lease (ADR-0006):** the API sets `active_run_id` and updates `run_heartbeat_at` every 10 s while the task runs, and clears both on `done`/`error`/`interrupt`. On SIGTERM it refuses new runs (503 `SERVICE_RESTARTING`) and drains for up to 90 s; leftovers are saved as `failed`. The worker's `reap_stale_runs` (every 30 s) clears leases with a heartbeat older than 60 s, writes a `failed` assistant message (`finish_reason=server_restart`, partial text if the API saved any) and appends it to the thread via `aupdate_state`.
+- **Run lease (ADR-0006):** the API sets `active_run_id` and updates `run_heartbeat_at` every 10 s while the task runs, and clears both on `done`/`error`/`interrupt`. On SIGTERM it refuses new runs (503 `SERVICE_RESTARTING`) and drains for up to 90 s; leftovers are saved as `failed`. The worker's `reap_stale_runs` (every 30 s) clears leases with a heartbeat older than 60 s and writes a `failed` assistant message (`finish_reason=server_restart`, empty content: the text streamed by a dead process is lost). It does **not** touch the thread (an empty AI message in the checkpoint is worse than none; the next turn sees two user messages in a row). Cancel and drain, where the API still has the text, do append it via `aupdate_state` (cancel) or keep it in the `failed` row (drain).
 - **Resume after interrupt:** `graph.astream(Command(resume={"decision": ..., "args": ...}), config)` with the same thread; the API verifies `interrupt_id` matches `conversations.pending_interrupt` and that it hasn't expired (24 h).
 - **Deletion:** `checkpointer.adelete_thread(conversation_id)` on conversation/account delete.
 
@@ -334,7 +334,9 @@ Tool arguments are validated with Pydantic before execution; validation errors a
 | `extract_memories` | each completed turn, memory enabled (not `manage_memory` turns) | `memory_extract` | `mem:{assistant_message_id}` | 2 |
 | `purge_user` | account deletion | — | `purge:{user_id}` | 10 |
 | `reap_stale_runs` | periodic, every 30 s | — | — (idempotent) | — |
-| `cleanup_invites` | periodic, daily | — | — (idempotent) | — |
+| `requeue_stale_jobs` | periodic, every 30 s | — | — (idempotent) | — |
+| `cleanup_invites` | periodic, daily (unused invites expired or revoked > 30 days) | — | — (idempotent) | — |
+| `cleanup_rate_limits` | periodic, daily (windows > 1 day old) | — | — (idempotent) | — |
 | `render_document` | `generate_document` persisted a draft | — | `render:{document_id}` | 2 |
 | `cleanup_documents` | periodic, daily: keep the 100 most recent documents per user | — | — (idempotent) | — |
 

@@ -42,6 +42,8 @@ class Settings(BaseSettings):
     # AI: models and reasoning effort per role (docs/02_outputs/08_ai_system_design.md section 3).
     # Only `llm/factory.py` turns these into clients (ADR-0005).
     llm_mode: Literal["real", "fake"] = "real"
+    # Pause between streamed words in fake mode, so e2e tests can press Stop mid-answer.
+    llm_fake_token_delay_s: float = Field(default=0, ge=0, le=5)
     openai_api_key: SecretStr = SecretStr("")
     llm_chat_model: str = "gpt-6.1-terra"
     llm_chat_reasoning_effort: ReasoningEffort = "low"

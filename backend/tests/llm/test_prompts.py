@@ -109,3 +109,7 @@ def test_context_prompt_variables() -> None:
 
 def test_summarize_prompt_variables() -> None:
     assert load_prompt("nexus.summarize").variables == frozenset({"existing_summary", "messages"})
+
+
+def test_title_prompt_variables() -> None:
+    assert load_prompt("nexus.title").variables == frozenset({"first_user_message", "first_answer"})

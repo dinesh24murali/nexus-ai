@@ -76,3 +76,77 @@ Yes (per the developer's instruction); defaults above are flagged for review.
 ## Outcome (2026-11-21)
 
 Implemented as planned. Resolutions: U1 kept as stated (agent sends unmodified state; documented in `memory/ai.md` and doc 08 §3). U3 confirmed by test. U6 answered yes (source + docs, no live probe). U7: Langfuse v5 exports node spans by default; made explicit and tested. U8 not wired (as planned). Dockerfile also copies `prompts/` and bakes the tiktoken cache. Embeddings, moderation, title prompt, tools, route state remain skipped as listed.
+
+---
+
+# Pass 2: TASK-012 (job queue, worker, periodic) then TASK-011 (SSE endpoint, run lease)
+
+> Written before any code (AGENTS.md §3.1). The developer asked for "the next 2 tasks" and to stop afterwards. I do **TASK-012 first**: TASK-011's run end enqueues `generate_title` and both share the usage repository, and the queue is independent of the graph. TASK-013 (chat UI) and TASK-014 (moderation, rate limits, budgets) are out of scope.
+
+## Plan (TDD: failing test, watch it fail, minimal code, green; one slice at a time)
+
+**TASK-012: `app/jobs/`**
+1. `jobs/queue.py`: `enqueue(session, kind, payload, idempotency_key, user_id=, max_attempts=, run_after=)` (INSERT … ON CONFLICT DO NOTHING, so enqueue joins the caller's transaction); `claim()` = `SELECT … status='queued' AND run_after<=now() ORDER BY run_after,id FOR UPDATE SKIP LOCKED LIMIT 1` then mark `running`, `attempts+1`, `locked_at/locked_by`; `heartbeat()`, `complete()`, `fail()` (retry with exponential backoff 10 s→2 min, or `failed` when attempts are spent), `requeue_stale(older_than)`. Every state change is conditional on `locked_by` so a worker whose job was requeued cannot complete someone else's run.
+2. `jobs/handlers.py`: kind registry `{handler, timeout_s, max_attempts}`; `generate_title` (new prompt `nexus.title` v1, `title` role; only overwrites a title that is still `New chat`; never bumps `updated_at`; cost recorded against the user).
+3. `jobs/periodic.py`: `PeriodicTask(name, interval_s, fn)` runner (an exception is logged, never kills the loop); tasks `reap_stale_runs` (30 s), `requeue_stale_jobs` (30 s, job heartbeat), `cleanup_invites` (daily), `cleanup_rate_limits` (daily; `rate_limits.py` says TASK-012 owns it).
+4. `worker.py`: concurrency 4 claim loops, 1 s poll, per-job heartbeat task (`locked_at` every 30 s), hard per-kind timeout (`asyncio.timeout`), graceful shutdown (stop claiming; wait for in-flight jobs up to a grace; the rest go back to the queue). The existing heartbeat-file behaviour and test stay.
+5. Reaper (`services/runs.py` or `jobs/periodic.py`, DB only): lease with `run_heartbeat_at` older than 60 s → `failed` assistant message (`finish_reason=server_restart`), lease cleared, in one transaction, `FOR UPDATE SKIP LOCKED` so two workers do not double-write.
+
+**TASK-011**
+6. `db/repositories/{messages,usage}.py` (owner-scoped; usage = `usage_daily` upsert in USD) and the lease operations (`acquire`, `heartbeat`, `release`) on the conversations repository.
+7. `api/sse.py`: event models mirroring the spec's `*Event` components, frame encoder (`event:`, `id: <seq>`, `data:`), `: ping` every 15 s.
+8. `services/runs.py` (`RunService`, on `app.state.runs`): acquire the lease atomically → insert the user message → run the graph as a **detached asyncio task** that pushes events into a queue the HTTP response drains. So a client disconnect never stops it. Heartbeat every 10 s. Finish = one transaction: release lease (if the lease is gone because the reaper took it, write nothing) + insert assistant message + `usage_daily` + `enqueue generate_title` on the first answer. Cancel (`POST /runs/cancel`): cancel the inner graph task, persist the partial text as `cancelled`, append it to the thread with `aupdate_state(as_node="agent")`, emit `done(finish_reason=cancelled)`. Regenerate: fork from the latest checkpoint whose `next == ("agent",)` and replace the last assistant row. Drain: `begin_drain()` → 503 `SERVICE_RESTARTING` + `Retry-After`; `drain(90 s)`; leftovers saved `failed`/`server_restart`; lifespan shutdown calls it; SIGTERM handler chained in front of uvicorn's so new runs are refused as soon as the signal arrives.
+9. `api/chat.py`: `POST /conversations/{id}/messages`, `/regenerate`, `/runs/cancel`; `GET /conversations/{id}/messages` (spec'd, owned by no task, needed to observe the read model and by TASK-013). Delete-conversation now cancels an active run first (removes the TODO).
+10. Contract tests: parse the live stream and validate every frame against `StreamEvent` in the spec; order `run_started → token* → usage → done`. Add the three operations to the schemathesis include list.
+11. Wrap-up: `memory/api.md`, `memory/ai.md`, `memory/_index.md` (only if wording changes), `CHANGELOG.md`, `tests/coverage-baseline.json` (new packages `app/jobs`, `app/services` extended), `backend/AGENTS.md` structure, ADR-0006/0007 only if a decision changes (none expected), task file.
+
+## Files (estimate)
+
+| File | Action |
+|------|--------|
+| `backend/app/jobs/{__init__,queue,handlers,periodic}.py` | create |
+| `backend/app/worker.py` | modify |
+| `backend/app/services/runs.py`, `backend/app/api/{chat,sse}.py` | create |
+| `backend/app/api/{schemas,deps}.py`, `backend/app/main.py`, `backend/app/api/conversations.py` | modify |
+| `backend/app/db/repositories/{messages,usage}.py`, `…/conversations.py` | create / modify |
+| `backend/app/llm/tracing.py` (job trace names), `backend/prompts/nexus.title.md` | modify / create |
+| `backend/tests/jobs/*`, `backend/tests/services/*`, `backend/tests/api/test_chat.py`, `backend/tests/contract/*`, `backend/tests/conftest.py` (shared live-server fixture) | create / modify |
+| `docs/02_outputs/04_api_spec.yaml` | only if a documented behaviour changes (see U3) |
+| `memory/*`, `CHANGELOG.md`, `tests/coverage-baseline.json`, `backend/AGENTS.md`, task file | modify |
+
+## Uncertainties and the defaults I'm taking
+
+- **U1: reaper and the thread.** Doc 08 §2.3 says the reaper appends the failed message to the thread. A crashed run has no text to append (the partial text lived only in the dead process), and an empty AI message in the checkpoint is worse than none. Default: the reaper writes the `failed` read-model row (empty content) and does **not** touch the checkpoint; the next turn sees two user messages in a row, which is valid. Cancel and drain, where the API still has the text, do append it.
+- **U2: assistant message id.** The id is promised in `run_started` and the reaper (a different process) must reuse it. Default: `assistant_message_id = uuid5(run_id, "assistant")`, so the reaper derives it from `active_run_id` with no new column.
+- **U3: `Idempotency-Key` on send.** The spec and `memory/api.md` promise 24 h replay of the original result; there is no storage for it and replaying a *stream* is undefined. Default: header accepted, not honoured; a retry while the run is active gets 409 `RUN_IN_PROGRESS`. **Flagged for the developer**; honouring it needs a table or a spec change.
+- **U4: `runs/resume`** (spec'd) is not built: there are no tools, so no interrupts exist until M4. Excluded from the contract test list with the reason.
+- **U5: `route_selected` event** is not emitted: the router arrives in M7 and the spec says "new messages only" once it exists.
+- **U6: regenerate outcome.** The old assistant row is replaced whatever the outcome (complete, cancelled, failed) because the forked thread no longer contains the old answer; keeping a stale row would desynchronise the read model from the checkpoint.
+- **U7: stricter than the spec.** NUL in `content` and whitespace-only `content` return 422 (Postgres cannot store NUL; an empty prompt is a user error). Same pattern, same documented exclusion, as conversation titles. The spec's `minLength: 1` stays as is unless the developer wants it tightened.
+- **U8: graph construction.** Lazy and cached per `CHAT_MODEL_OVERRIDE` value (the kill switch is read per run and passed as `model_override`). Building at startup would make the whole API fail to boot when `OPENAI_API_KEY` is empty in real mode.
+- **U9: drain and uvicorn.** Uvicorn stops accepting, waits for open requests (streams hold until their run ends), then runs lifespan shutdown. The SIGTERM chain only sets the "refuse new runs" flag early; the real wait is uvicorn's graceful timeout (raised in the Dockerfile CMD, ≥ 100 s) plus `drain()` in lifespan shutdown for runs whose client already left.
+- **U10: scaled-time tests.** "A job that runs longer than 5 min" cannot run for 5 min in a unit test. The property is "job duration » stale threshold while the heartbeat runs", so the test uses a 0.5 s threshold, 0.1 s heartbeat and a 1.5 s job. The production constants (30 s / 2 min) are asserted separately. Said plainly in the task file.
+
+## What Will Be Skipped (and why)
+
+- Moderation, per-user rate limit, USD budgets, `/me/usage`, usage meter: TASK-014 (the `usage_daily` upsert exists, nothing enforces it).
+- Chat UI and `stream.ts`: TASK-013. The generated frontend client only changes if the spec changes (not planned).
+- `runs/resume`, tools, approval, `route_selected`, `extract_memories`, `ingest_file`, `purge_user`, document jobs: later milestones.
+- Real model calls and live Langfuse traces: no API key; every test uses `LLM_MODE=fake`.
+- `make eval`: the harness is TASK-015, so there is still no AI-behaviour regression gate. Noted honestly in the task file.
+
+## Risks
+
+- **Concurrency bugs are invisible in single-threaded tests.** Queue claim, lease acquire and reaper get real two-session/two-worker tests against Postgres, plus mutation checks (drop `SKIP LOCKED`, drop the `locked_by` condition, drop the lease-lost check).
+- **Cancelling an `astream` task** can leave the checkpoint mid-step; tested against the real checkpointer, including a following turn.
+- **Event schema drift:** the contract test validates frames against the spec itself.
+- **SIGTERM chaining** only works on the main thread; guarded, and covered by a unit test with a recorded previous handler.
+- Blast radius: `main.py` lifespan (new services), `conversations.py` delete, `worker.py`. Existing auth/conversation tests must stay green.
+
+## Ready to implement?
+
+Yes (per the developer's instruction); defaults above are flagged for review in the final report (U3 especially).
+
+## Outcome of pass 2 (2026-11-21)
+
+Implemented as planned, TASK-012 first. Resolutions: U1 kept (and doc 08 §2.3 corrected); U2 kept; U3 kept and flagged (Idempotency-Key not honoured); U4/U5 kept; U6 kept; U7 kept (contract exclusions documented); U8 kept (graphs cached per override value); **U9 verified on the real stack** (a stream open at SIGTERM completes, container exits 0 in ~8 s); U10 kept (scaled-time tests with a negative control). Additions: `GET …/messages`, delete-cancels-run, `requeue_stale_jobs` and `cleanup_rate_limits`, `LLM_FAKE_TOKEN_DELAY_S`, spec 1.3.2, and a NUL-in-text fix found by the contract scope.
