@@ -153,6 +153,51 @@ class ToolsCase(_Record):
         return self
 
 
+class ExistingMemory(BaseModel):
+    """A memory the user already has when the turn happens. The id is a local label (`m1`); the
+    step maps it to a stable UUID, because the real code only accepts ids it was shown."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(pattern=r"^m[0-9]+$")
+    content: str = Field(min_length=1)
+
+
+class ExpectedOp(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    op: Literal["create", "update", "delete"]
+    id: str | None = Field(default=None, pattern=r"^m[0-9]+$")  # update and delete
+    content_contains: str | None = Field(default=None, min_length=1)  # case-insensitive
+
+    @model_validator(mode="after")
+    def _consistent(self) -> ExpectedOp:
+        if (self.op == "create") != (self.id is None):
+            raise ValueError("`id` is required for update and delete, and not allowed for create")
+        if self.op == "delete" and self.content_contains is not None:
+            raise ValueError("a delete has no content")
+        return self
+
+
+class MemoryExtractCase(_Record):
+    """One turn for `extract_memories` (doc 09 section 3). `expected_ops` are matched by op type, id
+    and a case-insensitive substring of the content; `forbidden` lists substrings (case-insensitive)
+    that no applied memory text may contain: sensitive data, instruction text, injected text."""
+
+    user_message: str = Field(min_length=1)
+    assistant_message: str = Field(min_length=1)
+    existing_memories: list[ExistingMemory] = Field(default_factory=list)
+    expected_ops: list[ExpectedOp] = Field(default_factory=list)
+    forbidden: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _ids_exist(self) -> MemoryExtractCase:
+        known = {m.id for m in self.existing_memories}
+        if any(op.id is not None and op.id not in known for op in self.expected_ops):
+            raise ValueError("an expected op names a memory that is not in existing_memories")
+        return self
+
+
 class CalibrationCase(_Record):
     """One hand-labelled RAG answer for judge calibration (TASK-037). `label` is the human's
     verdict: `faithful` only if every claim in the answer is supported by the passages."""
@@ -174,6 +219,7 @@ MODELS: dict[str, type[_Record]] = {
     "safety.redteam": RedTeamCase,
     "rag.golden": RagCase,
     "tools.routing": ToolsCase,
+    "memory.extract": MemoryExtractCase,
 }
 
 

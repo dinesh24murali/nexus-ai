@@ -22,7 +22,13 @@ APP_TABLES = {
     "rate_limits",
 }
 LANGGRAPH_TABLES = {"checkpoints", "checkpoint_blobs", "checkpoint_writes", "store"}
-LANGGRAPH_BOOKKEEPING = {"checkpoint_migrations", "store_migrations"}
+# `store_vectors` is the memory store's embedding index (TASK-025).
+LANGGRAPH_BOOKKEEPING = {
+    "checkpoint_migrations",
+    "store_migrations",
+    "store_vectors",
+    "vector_migrations",
+}
 
 
 def libpq(url: str) -> str:
@@ -51,6 +57,7 @@ def test_upgrade_head_creates_app_and_langgraph_tables(empty_db_url: str) -> Non
     names = table_names(empty_db_url)
     assert names >= APP_TABLES
     assert names >= LANGGRAPH_TABLES
+    assert {"store_vectors"} <= names  # the memory index, created with the pgvector extension
 
 
 def test_migrate_is_idempotent(empty_db_url: str) -> None:

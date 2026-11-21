@@ -25,6 +25,7 @@ frontend/
 │   ├── features/                 ← feature folders (conversations/ = TanStack Query hooks; chat/ = ChatView, useChatRun,
 │   │                               MessageList, Composer, Feedback (thumbs), Markdown + CodeBlock + highlight (Shiki), notices, UsageMeter,
 │   │                               ApprovalCard (web-search approve / edit / reject);
+│   │                               ToolCard + toolCalls.ts (tool call cards, live and stored);
 │   │                               Citations (chips + snippet popover); files/ = FilesPage, uploads, chips, paperclip; settings/ to come)
 │   ├── styles/tokens.css, theme.css   ← design tokens + Tailwind 4 @theme (docs/02_outputs/07)
 │   └── config.ts                 ← build-time VITE_* config
@@ -56,6 +57,11 @@ frontend/
 - The approval is read from the conversation (`pending_interrupt`), not kept in run state: a run that ends with an `interrupt` event re-reads the conversation, which is also how a reload restores the card. The card shows only while no run is active; `useChatRun.decide` posts to `/runs/resume` and the resumed run streams like any other
 - A run that is refused before it starts (409 `NO_PENDING_INTERRUPT`) re-reads the conversation as well, so a stale card disappears
 - `ApprovalCard` renders the query as text and limits an edit to 400 characters, the API's limit; an expired approval shows "expired" and no buttons
+
+### Tool cards (TASK-024)
+- `ToolCard` shows one call: what it did in words (`toolCalls.ts::labelOf`: "Searching the web" → "Searched the web", "Web search declined", "… timed out"), the query or sum as the headline, other arguments as `key: value` in the mono face, and the tool's `summary`. Only a running call is `role="status"` (spinner); everything is text, never markup. A tool name this build does not know shows as `name: done` with all its arguments, so a new backend tool never breaks the page
+- Live: `useChatRun` keeps `toolCalls` from `tool_start` (running) and `tool_end` (settled; a missed start still shows, with no arguments). The live calls sit in the live bubble and yield to the stored message's `tool_calls` at the same moment as the answer text, so a call never shows twice. A call that is waiting for approval has no card (`ApprovalCard` covers it), and calls of the part of a turn before an approval show again only in the stored answer
+- A declined call has no `tool_start` (it never started), so its card has no query; a new tool needs a row in `toolCalls.ts::KNOWN` for its words and headline argument
 
 ### Files (TASK-021)
 - `features/files/`: `api.ts` (`useFiles` polls every 2 s only while a file is `pending`/`processing`; `useUploadFile`, `useDeleteFile`), `uploads.ts` (`useAttachments`: at most 5 files at once, one chip per upload), `FilesPage` (`/files`: dropzone, table, `n/50`, inline delete confirm), `AttachButton` (`FilePicker`, the paperclip and the page's button), `UploadChips` (Uploading… → Processing… → Ready / Failed), `messages.ts` (texts for the file error codes). The composer takes the paperclip through its optional `attach` prop; chips are rendered by the page above it

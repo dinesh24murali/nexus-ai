@@ -26,6 +26,7 @@ const running = (over: Partial<ChatRun> = {}): ChatRun => ({
   userMessageId: null,
   assistantMessageId: null,
   replacesMessageId: null,
+  toolCalls: [],
   notice: null,
   ...over,
 })
@@ -101,5 +102,72 @@ describe('MessageList while a run is live', () => {
       'q',
       'Fresh and complete',
     ])
+  })
+})
+
+describe('MessageList tool calls', () => {
+  type Stored = NonNullable<Message['tool_calls']>[number]
+  const call = (over: Partial<Stored> = {}): Stored => ({
+    id: 'call_1',
+    name: 'web_search',
+    args: { query: 'Go release notes' },
+    status: 'completed',
+    summary: '2 results found',
+    ...over,
+  })
+
+  it('shows the stored calls above the answer they belong to', () => {
+    const stored: Message = {
+      ...msg('a1', 'assistant', 'It focuses on tooling [1].'),
+      tool_calls: [call(), call({ id: 'call_2', name: 'calculator', args: { expression: '2+2' } })],
+    }
+    const log = show([msg('u1', 'user', 'news?'), stored], running({ running: false }))
+
+    const reply = log.getByRole('article', { name: 'Nexus reply' })
+    const cards = within(within(reply).getByRole('list', { name: 'Tool calls' })).getAllByRole(
+      'group',
+    )
+    expect(cards.map((c) => c.getAttribute('aria-label'))).toEqual([
+      'Searched the web',
+      'Calculated',
+    ])
+    expect(within(reply).getByText('Go release notes')).toBeInTheDocument()
+    // Cards come first, the answer after them.
+    expect(reply.textContent?.indexOf('Searched the web')).toBeLessThan(
+      reply.textContent?.indexOf('It focuses') ?? -1,
+    )
+  })
+
+  it('shows no list for an answer that used no tools', () => {
+    const log = show(
+      [msg('u1', 'user', 'hi'), msg('a1', 'assistant', 'Hello')],
+      running({ running: false }),
+    )
+    expect(log.queryByRole('list', { name: 'Tool calls' })).toBeNull()
+  })
+
+  it('shows the live calls while the answer is being made', () => {
+    const log = show(
+      [],
+      running({
+        pendingUser: 'news?',
+        toolCalls: [{ ...call(), status: 'running', summary: undefined }],
+      }),
+    )
+    expect(log.getByRole('group', { name: 'Searching the web' })).toBeInTheDocument()
+  })
+
+  it('shows the calls once, from the stored message, when the run hands over', () => {
+    const stored: Message = {
+      ...msg('a1', 'assistant', 'Done'),
+      tool_calls: [call()],
+    }
+    const log = show(
+      [msg('u1', 'user', 'news?'), stored],
+      running({ userMessageId: 'u1', assistantMessageId: 'a1', toolCalls: [call()] }),
+    )
+    expect(
+      log.getByRole('list', { name: 'Tool calls' }).querySelectorAll('[role="group"]'),
+    ).toHaveLength(1)
   })
 })

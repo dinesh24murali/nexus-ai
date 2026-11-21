@@ -312,6 +312,78 @@ describe('streaming', () => {
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull())
   })
 
+  it('shows a tool card that is running, then settled, and the stored one afterwards', async () => {
+    const live = liveStream()
+    const { user, box, server } = await open({ onSend: () => live.response })
+    await user.type(box(), 'news?{Enter}')
+    live.push(runStarted())
+
+    live.push({
+      type: 'tool_start',
+      call_id: 'call_1',
+      name: 'web_search',
+      args: { query: 'Go release notes' },
+    })
+    expect(await screen.findByRole('group', { name: 'Searching the web' })).toHaveTextContent(
+      'Go release notes',
+    )
+
+    live.push({
+      type: 'tool_end',
+      call_id: 'call_1',
+      name: 'web_search',
+      status: 'completed',
+      summary: '2 results found',
+    })
+    expect(await screen.findByRole('group', { name: 'Searched the web' })).toHaveTextContent(
+      '2 results found',
+    )
+    expect(screen.queryByRole('group', { name: 'Searching the web' })).toBeNull()
+
+    live.push(token('It focuses on tooling.'))
+    await seen('It focuses on tooling.')
+    const stored = {
+      ...msg('assistant', 'It focuses on tooling.'),
+      tool_calls: [
+        {
+          id: 'call_1',
+          name: 'web_search' as const,
+          args: { query: 'Go release notes' },
+          status: 'completed' as const,
+          summary: '2 results found',
+        },
+      ],
+    }
+    server.messages.push(msg('user', 'news?'), stored)
+    live.push(done())
+    live.end()
+
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull())
+    expect(screen.getAllByRole('group', { name: 'Searched the web' })).toHaveLength(1)
+  })
+
+  it('shows a declined call as declined, and a call whose start was missed', async () => {
+    const live = liveStream()
+    const { user, box, server } = await open({ onSend: () => live.response })
+    await user.type(box(), 'news?{Enter}')
+    live.push(runStarted())
+
+    live.push({
+      type: 'tool_end',
+      call_id: 'call_9',
+      name: 'web_search',
+      status: 'rejected',
+      summary: 'Declined by you',
+    })
+
+    expect(await screen.findByRole('group', { name: 'Web search declined' })).toHaveTextContent(
+      'Declined by you',
+    )
+    server.messages.push(msg('user', 'news?'), msg('assistant', 'ok'))
+    live.push(done())
+    live.end()
+  })
+
   it('does not allow a second send while one is running', async () => {
     const live = liveStream()
     const { user, box, server } = await open({ onSend: () => live.response })

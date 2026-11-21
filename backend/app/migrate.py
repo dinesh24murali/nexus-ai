@@ -10,6 +10,7 @@ worker from starting against a half-migrated database.
 
 import asyncio
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 import structlog
@@ -21,11 +22,16 @@ from qdrant_client import AsyncQdrantClient
 
 from app.core.config import Settings, get_settings
 from app.core.logging import configure_logging
+from app.memory.store import index_config
 from app.rag.index import QdrantIndex
 
 _BACKEND_DIR = Path(__file__).resolve().parents[1]
 
 _log = structlog.get_logger("nexus.migrate")
+
+
+async def _no_embeddings(texts: Sequence[str]) -> list[list[float]]:
+    raise RuntimeError("the migrate step does not embed")
 
 
 def _libpq(url: str) -> str:
@@ -44,7 +50,11 @@ async def setup_langgraph(database_url: str) -> None:
     conn = _libpq(database_url)
     async with AsyncPostgresSaver.from_conn_string(conn) as saver:
         await saver.setup()
-    async with AsyncPostgresStore.from_conn_string(conn) as store:
+    # The memory store has a vector index; its tables depend on the index config. Setup embeds
+    # nothing, so the embedding function is only a placeholder here.
+    async with AsyncPostgresStore.from_conn_string(
+        conn, index=index_config(_no_embeddings)
+    ) as store:
         await store.setup()
 
 

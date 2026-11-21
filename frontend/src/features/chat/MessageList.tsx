@@ -5,6 +5,8 @@ import type { Message } from './api'
 import { Citations } from './Citations'
 import { Feedback } from './Feedback'
 import { Markdown } from './Markdown'
+import { ToolCalls } from './ToolCard'
+import { toView } from './toolCalls'
 import type { ChatRun } from './useChatRun'
 
 function UserBubble({ text }: { text: string }) {
@@ -45,6 +47,9 @@ function AssistantBubble({ message, isLast, canRetry, onRegenerate }: AssistantP
   const ratable = !failed && message.content !== ''
   return (
     <article aria-label="Nexus reply" className="text-body-lg">
+      {message.tool_calls && message.tool_calls.length > 0 && (
+        <ToolCalls calls={message.tool_calls.map(toView)} className="mb-3" />
+      )}
       {message.content && <Markdown text={message.content} />}
       {message.citations && <Citations citations={message.citations} />}
       {message.status === 'cancelled' && <Label tone="muted">Stopped</Label>}
@@ -134,6 +139,7 @@ export function MessageList({
       {run.pendingUser !== null && !userStored && <UserBubble text={run.pendingUser} />}
       {run.running && !answerStored && (
         <article aria-label="Nexus reply" className="text-body-lg">
+          <ToolCalls calls={run.toolCalls} className="mb-3" />
           {run.streamingText ? (
             <Markdown text={run.streamingText} streaming />
           ) : (

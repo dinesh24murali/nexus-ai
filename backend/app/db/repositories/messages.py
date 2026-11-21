@@ -1,6 +1,7 @@
 """Message read model (the checkpointer is the source of truth). Owner-scoped like every repo."""
 
 import uuid
+from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
@@ -74,6 +75,48 @@ async def first_exchange(
     if len(rows) < 2 or [r.role for r in rows] != ["user", "assistant"]:
         return None
     return rows[0].content, rows[1].content
+
+
+@dataclass(frozen=True)
+class Turn:
+    conversation_id: uuid.UUID
+    user_text: str
+    assistant_text: str
+
+
+async def completed_turn(
+    session: AsyncSession, user_id: uuid.UUID, assistant_message_id: uuid.UUID
+) -> Turn | None:
+    """The answer with this id and the user message it answers (the newest one before it), or
+    None when the answer is not the caller's, not complete, or has no user message before it."""
+    answer = (
+        await session.execute(
+            select(Message).where(
+                Message.id == assistant_message_id,
+                Message.user_id == user_id,
+                Message.role == "assistant",
+                Message.status == "complete",
+            )
+        )
+    ).scalar_one_or_none()
+    if answer is None:
+        return None
+    asked = (
+        await session.execute(
+            select(Message.content)
+            .where(
+                Message.conversation_id == answer.conversation_id,
+                Message.user_id == user_id,
+                Message.role == "user",
+                Message.created_at <= answer.created_at,
+            )
+            .order_by(Message.created_at.desc(), Message.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if asked is None:
+        return None
+    return Turn(answer.conversation_id, asked, answer.content)
 
 
 async def list_page(

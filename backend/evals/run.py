@@ -32,6 +32,7 @@ from app.graph.builder import build_graph
 from app.llm.factory import LLMConfigError, get_model
 from app.llm.prompts import all_prompts, load_prompt
 from app.llm.tracing import Tracer
+from langchain_core.runnables import Runnable
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph.state import CompiledStateGraph
 
@@ -42,6 +43,7 @@ from evals.datasets import (
     ChatCase,
     Dataset,
     DatasetError,
+    MemoryExtractCase,
     PerfCase,
     RagCase,
     RedTeamCase,
@@ -85,6 +87,9 @@ METRIC_KEYS = (
     "tools.unnecessary_call_rate",
     "tools.sequence_accuracy",
     "tools.approval_enforced",
+    "memory.extract_precision",
+    "memory.extract_recall",
+    "memory.sensitive_refusal",
 )
 SUITE_DATASETS = (
     "chat.golden",
@@ -93,6 +98,7 @@ SUITE_DATASETS = (
     "safety.redteam",
     "rag.golden",
     "tools.routing",
+    "memory.extract",
 )
 # The metrics each dataset can produce: a metric is "not measured" only if a dataset that should
 # have produced it ran. (`rag.golden` runs only when a RAG environment is given.)
@@ -112,6 +118,7 @@ METRICS_OF: dict[str, tuple[str, ...]] = {
     ),
     "rag.golden": tuple(k for k in METRIC_KEYS if k.startswith("rag.")),
     "tools.routing": tuple(k for k in METRIC_KEYS if k.startswith("tools.")),
+    "memory.extract": tuple(k for k in METRIC_KEYS if k.startswith("memory.")),
 }
 
 
@@ -346,7 +353,9 @@ def _metrics(scores: Scores, ran: Sequence[str]) -> tuple[dict[str, float], list
         "ops.cost_per_turn_usd": scores.mean("ops.cost_per_turn_usd"),
         "ops.cached_input_ratio": scores.mean("ops.cached_input_ratio"),
     }
-    values.update({k: scores.mean(k) for k in METRIC_KEYS if k.startswith(("rag.", "tools."))})
+    values.update(
+        {k: scores.mean(k) for k in METRIC_KEYS if k.startswith(("rag.", "tools.", "memory."))}
+    )
     metrics = {k: round(v, 6) for k, v in values.items() if v is not None}
     expected = {key for name in ran for key in METRICS_OF[name]}
     skipped = [k for k in METRIC_KEYS if k in expected and k not in metrics]
@@ -382,6 +391,7 @@ async def run_suite(
     concurrency: int = CONCURRENCY,
     rag: RagTarget | None = None,
     tools_graph: GraphFactory | None = None,
+    memory_model: Runnable[Any, Any] | None = None,
 ) -> Report:
     n = runs if runs is not None else RUNS_PER_CASE[suite]
     smoke_only = suite == "smoke"
@@ -391,6 +401,7 @@ async def run_suite(
         if (only is None or name in only)
         and (name != "rag.golden" or rag is not None)
         and (name != "tools.routing" or tools_graph is not None)
+        and (name != "memory.extract" or memory_model is not None)
     ]
     chat = load_dataset("chat.golden", ChatCase, smoke_only=smoke_only, directory=datasets_dir)
     perf = load_dataset("perf.latency", PerfCase, smoke_only=smoke_only, directory=datasets_dir)
@@ -412,6 +423,11 @@ async def run_suite(
     if tools_graph is not None:
         loaded["tools.routing"] = load_dataset(
             "tools.routing", ToolsCase, smoke_only=smoke_only, directory=datasets_dir
+        )
+
+    if memory_model is not None:
+        loaded["memory.extract"] = load_dataset(
+            "memory.extract", MemoryExtractCase, smoke_only=smoke_only, directory=datasets_dir
         )
 
     started = time.perf_counter()
@@ -453,6 +469,13 @@ async def run_suite(
         steps["tools.routing"] = lambda: run_tools_routing(
             state, tools_cases, graph_factory=tools_graph
         )
+    if memory_model is not None:
+        from evals.memory import run_memory_extract  # here: evals.memory imports this module
+
+        memory_cases = loaded["memory.extract"]
+        steps["memory.extract"] = lambda: run_memory_extract(
+            state, memory_cases, model=memory_model
+        )
     # rag.golden before perf.latency: latency runs last, with nothing else using the API.
     order = [n for n in selected if n != "perf.latency"] + [
         n for n in selected if n == "perf.latency"
@@ -493,6 +516,8 @@ async def run_suite(
 def _input_of(case: Any) -> Any:
     if isinstance(case, SummaryCase):
         return [t.model_dump() for t in case.messages]
+    if isinstance(case, MemoryExtractCase):
+        return case.user_message
     return case.input
 
 
@@ -564,6 +589,11 @@ async def main_async(args: argparse.Namespace) -> int:
             recent_files=recent_files,
         )
 
+    memory_model = (
+        get_model("memory_extract", settings=settings)
+        if not args.dataset or "memory.extract" in args.dataset
+        else None
+    )
     tracer = None if fake or args.no_langfuse else Tracer(settings)
     run_name = f"{args.suite}-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}"
     logger = EvalLogger(
@@ -581,6 +611,7 @@ async def main_async(args: argparse.Namespace) -> int:
             only=args.dataset or None,
             rag=rag,
             tools_graph=tools_graph,
+            memory_model=memory_model,
         )
     except DatasetError as exc:
         print(f"error: {exc}", file=sys.stderr)

@@ -37,7 +37,9 @@ backend/
 │   ├── rag/                ← formats.py, parsers.py (PDF/DOCX/TXT/MD), chunker.py (800/120 tokens), embedder.py,
 │   │                         retriever.py (query -> tenant-filtered passages),
 │   │                         index.py (Qdrant: alias `documents`, tenant payload); ingestion job is in jobs/handlers.py
-│   └── (memory/ ...        arrives with M5; layout in docs/02_outputs/03_tech_architecture.md §2)
+│   └── memory/             ← store.py (per-user `AsyncPostgresStore`, namespace built from the user id), policy.py (what may be
+│                             remembered: deny-list + instruction filter, pure), extract.py (plan_ops / apply_plan); nothing reads
+│                             memories into prompts yet (TASK-026)
 ├── evals/                  ← the eval suite (`python -m evals.run`; judge calibration `python -m evals.calibrate`;
 │                             see evals/AGENTS.md); not imported by app/
 ├── prompts/                ← canonical prompt files `<name>.md` (front-matter name + version; ADR-0008)
@@ -81,6 +83,11 @@ backend/
 - A paused run holds no lease: `conversations.pending_interrupt` keeps the approval (24 h) and the checkpoint keeps the thread. `RunService.start_resume` takes the lease and clears the approval in one UPDATE, so a double click resumes once; the resumed run is not a "message sent" in `usage_daily`. A new message abandons a pending approval, and `_repair_thread` answers any tool call the thread left open before the model sees it again
 - `TOOLS_DISABLED` reaches the graph as `config["configurable"]["disabled_tools"]` per run (the graph is built once), so it also stops an approval that was already waiting
 - Tool failures become results the model can read and never carry exception text, URLs or keys. Web results are escaped data (`<web_result>`); only `http(s)` pages are kept
+
+### Memory (TASK-025)
+- Every `MemoryStore` method takes the user id and builds the namespace itself; never pass a namespace or a key from model output. Text in a memory is user data: never log it, never put it in a prompt outside a data tag
+- Anything that writes a memory goes through `memory.policy.check` (sensitive categories, instruction-like text, length) whoever proposed it, and a memory op may only name a memory that was shown to the model (`filter_ops`). The model is never trusted to obey its prompt
+- `extract_memories` re-checks `memory_enabled` and `MEMORY_WRITES_DISABLED` when it runs, and is idempotent (a re-run finds its own creates as duplicates). The store needs a database URL: tests that run a worker with the default job registry must give it the test database (`settings.model_copy(update={"database_url": db_url})`), or the memory job would use the developer's database
 
 ### Limits and moderation
 - A chat send/regenerate passes, in order: drain check, `ratelimit.hit` (atomic), `usage.ensure_within_budgets`, `Moderator.check` (sends only), then the lease. Refusals (`RATE_LIMITED`, `BUDGET_EXCEEDED` with `details.scope`, `MODERATION_FLAGGED`) happen before anything is written. New run-starting endpoints must go through `RunService._admit`

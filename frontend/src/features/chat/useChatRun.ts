@@ -9,6 +9,7 @@ import { useChatKeys } from './api'
 import type { Decision, PendingInterrupt } from './ApprovalCard'
 import { noticeFromError, type Notice } from './notices'
 import { TITLE_REFRESH_DELAYS_MS, TOKEN_BATCH_MS } from './timing'
+import type { ToolCallView } from './toolCalls'
 
 export type ChatRun = {
   running: boolean
@@ -21,6 +22,8 @@ export type ChatRun = {
   assistantMessageId: string | null
   /** The stored answer a regenerate will replace (hidden while the new one streams). */
   replacesMessageId: string | null
+  /** The tool calls of this run so far, in the order they started. */
+  toolCalls: ToolCallView[]
   notice: Notice | null
 }
 
@@ -32,10 +35,28 @@ const IDLE: ChatRun = {
   userMessageId: null,
   assistantMessageId: null,
   replacesMessageId: null,
+  toolCalls: [],
   notice: null,
 }
 
 const DEFAULT_TITLE = 'New chat'
+
+/** Add a call, or replace the one with the same id (a start seen twice shows once). */
+function withCall(calls: ToolCallView[], call: ToolCallView): ToolCallView[] {
+  return calls.some((c) => c.id === call.id)
+    ? calls.map((c) => (c.id === call.id ? call : c))
+    : [...calls, call]
+}
+
+type ToolEnd = { call_id: string; name: string; status: ToolCallView['status']; summary?: string }
+
+/** A call that ended. If its start was never seen, it still shows (with no arguments). */
+function settleCall(calls: ToolCallView[], end: ToolEnd): ToolCallView[] {
+  const settled = { status: end.status, summary: end.summary }
+  return calls.some((c) => c.id === end.call_id)
+    ? calls.map((c) => (c.id === end.call_id ? { ...c, ...settled } : c))
+    : [...calls, { id: end.call_id, name: end.name, args: {}, ...settled }]
+}
 
 type Live = { controller: AbortController; text: string; timer: number | undefined }
 
@@ -131,6 +152,21 @@ export function useChatRun(conversationId: string) {
             } else if (event.type === 'token') {
               run.text += event.delta
               run.timer ??= window.setTimeout(flush, TOKEN_BATCH_MS)
+            } else if (event.type === 'tool_start') {
+              setState((s) => ({
+                ...s,
+                toolCalls: withCall(s.toolCalls, {
+                  id: event.call_id,
+                  name: event.name,
+                  args: event.args,
+                  status: 'running',
+                }),
+              }))
+            } else if (event.type === 'tool_end') {
+              setState((s) => ({
+                ...s,
+                toolCalls: settleCall(s.toolCalls, event),
+              }))
             } else if (event.type === 'error') {
               notice = { kind: 'run_error', message: event.message, retryable: event.retryable }
             }

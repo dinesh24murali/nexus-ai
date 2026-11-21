@@ -25,6 +25,7 @@ async def test_the_first_exchange_gets_a_title_from_the_worker(
     client: TestClient,
     make_user: Any,
     settings: Settings,
+    db_url: str,
     session_factory: async_sessionmaker[AsyncSession],
     db: psycopg.Connection[Any],
     tmp_path: Path,
@@ -40,7 +41,11 @@ async def test_the_first_exchange_gets_a_title_from_the_worker(
             stop,
             heartbeat_path=tmp_path / "alive",
             interval_s=0.05,
-            ctx=JobContext(factory=session_factory, settings=settings),  # real registry, fake LLM
+            # real registry, fake LLM; the memory job (queued by the same send) needs this database
+            ctx=JobContext(
+                factory=session_factory,
+                settings=settings.model_copy(update={"database_url": db_url}),
+            ),
             config=WorkerConfig(poll_interval_s=0.02),
             tasks=[],
             name="e2e",
@@ -57,7 +62,9 @@ async def test_the_first_exchange_gets_a_title_from_the_worker(
         await asyncio.wait_for(worker, timeout=10)
 
     assert title == "Fake title"
-    assert db.execute("SELECT status FROM jobs").fetchone() == ("done",)
+    assert db.execute("SELECT status FROM jobs WHERE kind = 'generate_title'").fetchone() == (
+        "done",
+    )
     # a second turn must not create a second title job (one per conversation)
     client.post(f"{API}/conversations/{cid}/messages", headers=headers, json={"content": "more"})
-    assert db.execute("SELECT count(*) FROM jobs").fetchone() == (1,)
+    assert db.execute("SELECT count(*) FROM jobs WHERE kind = 'generate_title'").fetchone() == (1,)

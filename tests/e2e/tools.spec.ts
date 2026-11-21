@@ -15,6 +15,9 @@ const replies = (page: Page) =>
 const sources = (page: Page) => page.getByRole("list", { name: "Sources" });
 const card = (page: Page) =>
   page.getByRole("group", { name: "Search the web?" });
+/** The tool cards under an answer (TASK-024), not the approval card above. */
+const toolCard = (page: Page, name: string) =>
+  page.getByRole("list", { name: "Tool calls" }).getByRole("group", { name });
 
 const ANSWER =
   "According to the search results, the latest Go release focuses on tooling and runtime improvements [1].";
@@ -95,10 +98,15 @@ test("approve: the search runs, the answer cites the web and the card is gone", 
   );
   await page.keyboard.press("Escape");
 
+  // The search shows as a finished tool card with its query and result count.
+  await expect(toolCard(page, "Searched the web")).toContainText("Go release notes");
+  await expect(toolCard(page, "Searched the web")).toContainText("2 results found");
+
   // What was saved is what comes back, and the approval does not come back.
   await page.reload();
   await expect(replies(page)).toContainText(ANSWER);
   await expect(card(page)).toHaveCount(0);
+  await expect(toolCard(page, "Searched the web")).toContainText("Go release notes");
   await expect(
     sources(page).getByRole("button", { name: /\[1\] Results for: Go release notes/ }),
   ).toBeVisible();
@@ -129,6 +137,12 @@ test("reject: no search is made and the model still answers", async ({ page }) =
   await expect(replies(page)).toBeVisible();
   await expect(card(page)).toHaveCount(0);
   await expect(sources(page)).toHaveCount(0); // nothing was searched, so nothing is cited
+  await expect(toolCard(page, "Web search declined")).toBeVisible();
+  // Reload only once the run has ended: a stream is not replayed, so the answer is read back
+  // from what was saved.
+  await expect(page.getByRole("button", { name: "Stop" })).toHaveCount(0);
+  await page.reload();
+  await expect(toolCard(page, "Web search declined")).toBeVisible(); // and it is kept
 });
 
 test("reload mid-approval: the card comes back and can still be answered", async ({
@@ -168,4 +182,5 @@ test("a calculation needs no approval", async ({ page }) => {
     "17.5% of 2,348,901 is 411057.675.",
   );
   await expect(card(page)).toHaveCount(0);
+  await expect(toolCard(page, "Calculated")).toContainText("0.175 * 2348901");
 });

@@ -7,14 +7,15 @@
   "packages": {
     "backend/app/llm": 97,
     "backend/app/graph": 95,
-    "backend/app/jobs": 96,
+    "backend/app/jobs": 97,
     "backend/app/services": 94,
     "backend/app/core": 96,
     "frontend/src/api": 97,
-    "frontend/src/features/chat": 89,
+    "frontend/src/features/chat": 90,
     "frontend/src/features/files": 94,
-    "backend/evals": 96,
-    "backend/app/rag": 98
+    "backend/evals": 97,
+    "backend/app/rag": 98,
+    "backend/app/memory": 99
   },
   "_measured": "Backend: percent of statements + branches, `pytest --cov=app --cov-branch` over unit and integration tests (needs `make up`). Frontend: percent of statements, `vitest run --coverage` (v8). Gates are floored measurements and only ratchet up."
 }

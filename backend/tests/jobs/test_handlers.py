@@ -198,3 +198,31 @@ def test_every_job_kind_has_a_timeout_and_attempt_limit() -> None:
     spec = handlers.JOBS["generate_title"]
     assert spec.timeout_s == 120
     assert spec.max_attempts == 2  # "1 retry" in docs/02_outputs/08 section 9
+
+
+async def test_the_title_job_is_traced_with_a_hashed_user(
+    session_factory: Factory, settings: Settings, db: psycopg.Connection[Any], user: str
+) -> None:
+    class SpyTracer:
+        def __init__(self) -> None:
+            self.traces: list[Any] = []
+
+        def run_config(self, trace: Any) -> dict[str, Any]:
+            self.traces.append(trace)
+            return {"callbacks": [], "run_name": trace.name, "tags": [], "metadata": {}}
+
+    cid = exchange(db, user)
+    tracer = SpyTracer()
+    context = JobContext(
+        factory=session_factory,
+        settings=settings,
+        tracer=tracer,  # type: ignore[arg-type]
+    )
+
+    await run(context, user, cid)
+
+    (trace,) = tracer.traces
+    assert trace.name == "job.generate_title"
+    assert trace.conversation_id == cid
+    assert user not in trace.user_hash
+    assert title_of(db, cid) == "Fake title"

@@ -60,7 +60,7 @@ from app.core import ratelimit
 from app.core.config import Settings
 from app.core.errors import ApiError
 from app.core.runtime_flags import RuntimeFlags
-from app.db.repositories import conversations, messages
+from app.db.repositories import conversations, messages, users
 from app.db.repositories import usage as usage_repo
 from app.graph.builder import build_graph
 from app.graph.nodes.load_context import RecentFiles
@@ -980,6 +980,27 @@ class RunService:
                 user_id=run.user_id,
                 max_attempts=JOBS["generate_title"].max_attempts,
             )
+            await self._enqueue_memory_extraction(session, run)
+
+    async def _enqueue_memory_extraction(self, session: AsyncSession, run: Run) -> None:
+        """Queue the memory job for a finished turn, in the run's own transaction.
+
+        A send and a resume (the answer that ends a turn paused for approval) are turns; a
+        regenerate answers a message that was already read. Only users with memory on get a job:
+        the job checks again when it runs, as does `MEMORY_WRITES_DISABLED`."""
+        if run.kind == "regenerate":
+            return
+        user = await users.get_by_id(session, run.user_id)
+        if user is None or not user.memory_enabled:
+            return
+        await queue.enqueue(
+            session,
+            "extract_memories",
+            {"assistant_message_id": str(run.assistant_message_id)},
+            f"mem:{run.assistant_message_id}",
+            user_id=run.user_id,
+            max_attempts=JOBS["extract_memories"].max_attempts,
+        )
 
     async def _repair_thread(self, run: Run) -> None:
         """Answer a tool call the thread left open, so the next model call is valid.

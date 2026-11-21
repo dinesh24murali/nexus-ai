@@ -35,7 +35,9 @@ from app.llm.redaction import mask
 
 _log = structlog.get_logger("nexus.llm.tracing")
 
-RunName = Literal["chat.turn", "chat.regenerate", "chat.resume", "job.generate_title"]
+RunName = Literal[
+    "chat.turn", "chat.regenerate", "chat.resume", "job.generate_title", "job.extract_memories"
+]
 TraceMode = Literal["run", "eval"]
 
 FEEDBACK_SCORE_NAME = "user_feedback"

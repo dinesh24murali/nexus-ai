@@ -301,6 +301,7 @@ Tool arguments are validated with Pydantic before execution; validation errors a
 - **Write (explicit, v1.1):** `manage_memory` `save` / `forget` (§2.5). There is no memory-writing tool in `general_chat`, so tool output and file text can never write memory during a turn. In v1 (before M7), "remember X" is picked up by `extract_memories` and "forget X" is done in Settings → Memory.
 - **Filters and dedupe:** both writers apply the sensitive-category deny-list and reject instruction-like content ("always…", "ignore…", "from now on you…"). A `create` op whose embedding similarity to an existing memory is ≥ 0.9 is dropped (the existing memory is kept).
 - **User control:** the memories API lists/edits/deletes the same store items; the 200-item cap evicts the least recently used.
+- **Built in TASK-025 (write side):** the deny-list and the instruction filter are deterministic code (`app/memory/policy.py`) applied to every proposed text, so the model cannot talk its way past them; the *model-based* post-filter classifier named above is **not** built (a second call per op; deferred until a real eval shows leaks, `tasks/deferred.md` D16). `update` and `delete` may only name memories that were shown to the model (the 20 most similar), at most one op per memory per turn. `extract_memories` is queued for a completed send or resume, not for a regenerate (the user message was already read). `last_used_at` is set at write time; TASK-026 refreshes it on read, which is what makes the cap evict the least recently *used*.
 
 ## 8. Streaming Protocol
 

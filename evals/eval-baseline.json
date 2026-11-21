@@ -1,5 +1,5 @@
 {
-  "_comment": "Two-tier quality gate (ADR-0009, docs/02_outputs/09_eval_plan.md \u00a73/\u00a75). `targets` is informational and ignored by evals/check_baseline.py. `metrics` holds the enforced gates: absolute gates are added when a feature's suite first runs (at the target); regression gates are added after the developer reviews the suite's first full run (threshold = measured value, record measured_on) and only ratchet up; advisory metrics never enter `metrics`. An empty `metrics` makes the gate a no-op until the first suite exists (task 006).",
+  "_comment": "Two-tier quality gate (ADR-0009, docs/02_outputs/09_eval_plan.md §3/§5). `targets` is informational and ignored by evals/check_baseline.py. `metrics` holds the enforced gates: absolute gates are added when a feature's suite first runs (at the target); regression gates are added after the developer reviews the suite's first full run (threshold = measured value, record measured_on) and only ratchet up; advisory metrics never enter `metrics`. An empty `metrics` makes the gate a no-op until the first suite exists (task 006).",
   "tolerance": 0.02,
   "targets": {
     "chat.answer_relevance": {
@@ -228,6 +228,12 @@
       "tolerance": 0,
       "measured_on": "2026-11-21",
       "note": "absolute (ADR-0009): a web search never runs before the user was asked. Measured by three scripted probes that need no model (a single search, a mixed file+web message, two searches in one message) plus every web_search call in tools.routing; 1.0 on every run, so no real-model run was needed to record it (TASK-023)"
+    },
+    "memory.sensitive_refusal": {
+      "threshold": 1.0,
+      "direction": "higher",
+      "tolerance": 0,
+      "note": "absolute (ADR-0009): no forbidden text (sensitive data, instruction text, text injected through the assistant message) is in any memory the extraction would write; prompt and code filters count together. Recorded at its target when the suite was built (TASK-025); NOT yet measured on the real model (tasks/deferred.md D15), so the first paid `make eval-smoke` is its first real check"
     }
   }
 }

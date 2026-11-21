@@ -26,6 +26,7 @@ from langchain_core.callbacks import AsyncCallbackManagerForLLMRun, CallbackMana
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage
 from langchain_core.messages.tool import ToolCallChunk
+from langchain_core.output_parsers import PydanticOutputParser
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -35,6 +36,22 @@ FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 _MARKER = re.compile(r"\[\[fixture:([^\]]*)\]\]")
 _ID = re.compile(r"^[a-z][a-z0-9_]*$")
 _WORD = re.compile(r"\S+\s*")
+_USER_BLOCK = re.compile(r"<user_message>\n?(.*?)\n?</user_message>", re.DOTALL)
+_REMEMBER = re.compile(r"\bremember(?: that)?[:,]?\s+(.+)", re.IGNORECASE | re.DOTALL)
+_VERBS = {"have": "has", "do": "does", "go": "goes", "am": "is"}
+
+
+def _third_person(text: str) -> str:
+    """ "I prefer Go" -> "User prefers Go": enough for a scripted model, not a general rewriter."""
+    text = re.sub(r"^I['\u2019]m\b", "User is", text)
+    text = re.sub(
+        r"^I (\w+)",
+        lambda m: "User " + _VERBS.get(m.group(1), m.group(1) + "s"),
+        text,
+    )
+    text = re.sub(r"\b[Mm]y\b", "their", text)
+    return text if text.startswith("User") else f"User: {text}"
+
 
 SUMMARY_TEXT = "FAKE-SUMMARY"
 TITLE_TEXT = "Fake title"
@@ -57,6 +74,9 @@ class Turn(BaseModel):
 class Fixture(BaseModel):
     id: str
     turns: list[Turn]
+    # What the `memory_extract` role returns for a turn whose user message carries this fixture's
+    # marker: operations in the shape of `app.memory.extract.MemoryOp`.
+    memory_ops: list[dict[str, Any]] = Field(default_factory=list)
 
 
 @cache
@@ -65,7 +85,9 @@ def _load(fixture_id: str, directory: Path) -> Fixture:
     if not path.is_file():
         raise FakeModelError(f"unknown fixture: {fixture_id}")
     data = json.loads(path.read_text(encoding="utf-8"))
-    fixture = Fixture(id=fixture_id, turns=data.get("turns", []))
+    fixture = Fixture(
+        id=fixture_id, turns=data.get("turns", []), memory_ops=data.get("memory_ops", [])
+    )
     if not fixture.turns:
         raise FakeModelError(f"fixture {fixture_id}: needs at least one of turns")
     if fixture.turns[-1].tool_calls:
@@ -126,6 +148,9 @@ class FakeChatModel(BaseChatModel):
             return self._plain(SUMMARY_TEXT, input_tokens)
         if self.role == "title":
             return self._plain(TITLE_TEXT, input_tokens)
+        if self.role == "memory_extract":
+            prompt = _text_of(messages[-1]) if messages else ""
+            return self._plain(self._memory_ops(prompt), input_tokens)
 
         last_human = max(
             (i for i, m in enumerate(messages) if isinstance(m, HumanMessage)), default=-1
@@ -153,6 +178,23 @@ class FakeChatModel(BaseChatModel):
         return _Plan(
             text=turn.text, tool_calls=calls, input_tokens=input_tokens, output_tokens=output_tokens
         )
+
+    def _memory_ops(self, prompt: str) -> str:
+        """The scripted extraction: a fixture marker in the user's message names the operations,
+        otherwise "remember (that) X" becomes one `create`, otherwise nothing changes. Only the
+        `<user_message>` block is read, like the real prompt asks of the real model."""
+        block = _USER_BLOCK.search(prompt)
+        user_text = block.group(1) if block else ""
+        marker = _MARKER.search(user_text)
+        if marker:
+            ops = load_fixture(marker.group(1), directory=self.fixtures_dir).memory_ops
+            return json.dumps({"ops": ops})
+        wanted = _REMEMBER.search(user_text)
+        if wanted:
+            content = _third_person(wanted.group(1).strip().rstrip(".!"))
+            op = {"op": "create", "id": None, "content": content, "category": "preference"}
+            return json.dumps({"ops": [op]})
+        return json.dumps({"ops": []})
 
     @staticmethod
     def _plain(text: str, input_tokens: int) -> _Plan:
@@ -237,6 +279,11 @@ class FakeChatModel(BaseChatModel):
 
     def bind_tools(self, tools: Sequence[Any], **kwargs: Any) -> FakeChatModel:
         return self
+
+    def with_structured_output(self, schema: Any, **kwargs: Any) -> Any:
+        """The scripted model answers in JSON text; parse it into `schema` like the real path does
+        (the chat model still runs, so usage callbacks and traces see a model call)."""
+        return self | PydanticOutputParser(pydantic_object=schema)
 
 
 # ---------------------------------------------------------------- moderation (LLM_MODE=fake)
