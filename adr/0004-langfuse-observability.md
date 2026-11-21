@@ -2,7 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-11-19
-**Revised:** 2026-11-19 (task 003: Langfuse Cloud EU by default, self-hosted v4 optional, SDK v5, prompts canonical in the repo)
+**Revised:** 2026-11-19 (task 003: Langfuse Cloud EU by default, self-hosted v4 optional, SDK v5, prompts canonical in the repo); 2026-11-21 (task 003b: CI project in its own organisation; eval runs send one trace per case)
 **Deciders:** Nexus AI Team
 
 ---
@@ -19,7 +19,7 @@ Nexus AI is a reference build with an invite-only hosted instance, so trace volu
 
 ## Decision
 
-- **Default: Langfuse Cloud, EU region, Hobby plan** (free: 50k units/month, 30 days of data access, 2 seats) for dev, CI and the hosted instance. Separate Langfuse projects per environment.
+- **Default: Langfuse Cloud, EU region, Hobby plan** (free: 50k units/month, 30 days of data access, 2 seats) for dev, CI and the hosted instance. Separate Langfuse projects per environment; the **CI project lives in its own Langfuse organisation** so eval volume can't use up the quota that prod tracing needs.
 - **Optional: self-hosted Langfuse v4** as a Compose profile (`--profile langfuse`) for self-hosters who want traces on their own infrastructure. It needs its own resources (≥ 4 cores / 16 GiB) and is not part of the default stack.
 - **SDK:** Langfuse Python SDK v5 (needs a Langfuse server ≥ 4.59; Cloud qualifies).
 - **Uses:** tracing (LangChain callback handler), datasets + dataset runs (mirroring `evals/datasets/`), scores (user feedback, judges), and a **mirror** of prompt versions. Prompts are canonical in the repo (ADR-0008).
@@ -34,7 +34,7 @@ Nexus AI is a reference build with an invite-only hosted instance, so trace volu
 
 ### Negative
 - Redacted trace content is stored by a third party (Langfuse, EU region); this must be stated in the privacy notice
-- Hobby limits (50k units/month, 30-day retention) cap trace volume; eval runs also consume units
+- Hobby limits (50k units/month, 30-day retention) cap trace volume; eval runs also consume units. To fit, eval runs send **one trace per case** with its scores and no per-node spans, and the full suite runs weekly rather than nightly (ADR-0009). Prod with ~20 active users can approach the limit by itself; moving prod to a paid plan is the escape hatch
 - Langfuse is a soft dependency: tracing must be best-effort and never block a run
 
 ### Neutral

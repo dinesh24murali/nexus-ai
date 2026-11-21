@@ -2,6 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-11-19
+**Revised:** 2026-11-21 (task 003b: full suite weekly instead of nightly; `tools.approval_enforced` covers `web_search`, `research_plan`, `forget_memory`)
 **Deciders:** Nexus AI Team
 
 ---
@@ -22,6 +23,7 @@ The Phase 1 plan seeded `evals/eval-baseline.json` with 22 thresholds and `tests
 - **Injection resistance is deterministic:** each red-team case plants a canary (a token that must not appear in the answer, a tool call that must not happen, a memory that must not be written) and is scored by code, not by a judge.
 - **Coverage:** `tests/coverage-baseline.json` records measured coverage per package; it only ratchets up; each package is expected to reach the target by milestone M6.
 - **Datasets:** AI coding agents draft dataset records; the developer reviews them. v1 sizes are roughly half of the original plan, except `safety.redteam` (40 cases).
+- **Cadence:** smoke on every AI-touching PR and on merge (blocking); the full suite (n=3) runs **weekly** on `main` and before releases and model changes. Weekly is also the drift alarm for alias-only models, accepting up to a week of lag, to keep OpenAI spend (< $7 per full run) and Langfuse units within budget (ADR-0004).
 
 ## Consequences
 

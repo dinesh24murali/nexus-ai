@@ -1,6 +1,6 @@
 # Technical Architecture — Nexus AI
 
-**Version:** 1.2 · **Date:** 2026-11-21 (v1.1: routing, documents, schedules; ADR-0010) · previous 1.1 2026-11-19 (task 003) · **Related:** [PRD](01_prd.md), [Functional spec](02_functional_spec.md), [AI system design](08_ai_system_design.md), [Threat model](10_llm_threat_model.md)
+**Version:** 1.3 · **Date:** 2026-11-21 (task 003b: schedules removed, `runtime_flags`, job heartbeat) · previous 1.2 2026-11-21 (v1.1: routing, documents; ADR-0010), 1.1 2026-11-19 (task 003) · **Related:** [PRD](01_prd.md), [Functional spec](02_functional_spec.md), [AI system design](08_ai_system_design.md), [Threat model](10_llm_threat_model.md)
 
 ## 1. System Overview
 
@@ -40,8 +40,8 @@ Langfuse is not part of the default stack: dev, CI and prod send redacted traces
 | Web | React 19, Vite 8, TypeScript 5.9, Tailwind 4, shadcn/ui, TanStack Query 5, React Router 8 (SPA / declarative mode), react-markdown + rehype-sanitize, Shiki; hand-written SSE client | SPA: chat UI, files, settings | Static assets served by Caddy | API |
 | Reverse proxy | Caddy 2.11 | TLS (Let's Encrypt), HTTP/2, gzip, static SPA, `/api/*` → api, SSE without buffering, security headers | :443 | api |
 | API | Python 3.14, FastAPI 0.16x, uvicorn, Pydantic 2, SQLAlchemy 2 (async, **psycopg 3**), Alembic, LangGraph 1.x, langchain-openai 1.x (Responses API), Langfuse SDK v5 | Auth + invites, REST, SSE streaming, graph execution, run lease, rate limits and budgets | `/api/v1/*`, `/healthz`, `/readyz` | Postgres, Qdrant, OpenAI, Tavily, Langfuse |
-| Worker | Same codebase, `python -m app.worker` | Jobs: `ingest_file`, `delete_file_vectors`, `generate_title`, `extract_memories`, `purge_user`, `render_document` (WeasyPrint, v1.1), `run_schedule` (v1.1); periodic: `reap_stale_runs` (30 s), `run_due_schedules` (60 s, v1.1), `cleanup_invites` (daily), `cleanup_documents` (daily, v1.1) | none (pulls jobs) | Postgres, Qdrant, OpenAI, Langfuse |
-| CLI | Same codebase, `python -m app.cli` | Admin: invites, password reset, disable/enable user; `seed`, `dump-thread` | — | Postgres |
+| Worker | Same codebase, `python -m app.worker` | Jobs: `ingest_file`, `delete_file_vectors`, `generate_title`, `extract_memories`, `purge_user`, `render_document` (WeasyPrint, v1.1); periodic: `reap_stale_runs` (30 s), `cleanup_invites` (daily), `cleanup_documents` (daily, v1.1). Running jobs heartbeat every 30 s (ADR-0007) | none (pulls jobs) | Postgres, Qdrant, OpenAI, Langfuse |
+| CLI | Same codebase, `python -m app.cli` | Admin: invites, password reset, disable/enable user, kill switches (`flags set/list`); `seed`, `dump-thread` | — | Postgres |
 | PostgreSQL | 18 (`pgvector/pgvector:pg18` image — the memory store index needs pgvector) | App tables, LangGraph `AsyncPostgresSaver` (checkpoints) and `AsyncPostgresStore` (memories), job queue | :5432 (internal) | — |
 | Qdrant | 1.x (1.20 at time of writing) | Vector search over document chunks with payload filters (`query_points`) | :6333 (internal) | — |
 | Langfuse | Langfuse Cloud, EU region, Hobby plan (optional self-hosted v4 profile) | Tracing, datasets, scores, prompt-version mirror (prompts are canonical in the repo, ADR-0008) | external HTTPS | — |
@@ -49,7 +49,7 @@ Langfuse is not part of the default stack: dev, CI and prod send redacted traces
 | Tavily | Search API | Web search tool | — | — |
 
 **Backend module layout** (`backend/app/`):
-`api/` (routers, deps, SSE) · `core/` (config, security, logging, rate limit, budgets, errors) · `db/` (models, session, repositories) · `graph/` (state, builder, nodes, tools, `router.py`, `intents/` one module per intent subgraph) · `llm/` (model factory, fake model, prompt loader, pricing, moderation, tracing) · `rag/` (parsers, chunker, embedder, retriever) · `documents/` (draft → sanitised HTML → PDF, templates, deny-all URL fetcher) · `schedules/` (cadence → `next_run_at`, timezone handling) · `memory/` (store access, extraction) · `jobs/` (queue, handlers, periodic tasks) · `services/` (runs + lease, files, usage) · `cli.py` · `worker.py` · `main.py`.
+`api/` (routers, deps, SSE) · `core/` (config, runtime flags, security, logging, rate limit, budgets, errors) · `db/` (models, session, repositories) · `graph/` (state, builder, nodes, tools, `commands.py` slash-command parser, `router.py`, `intents/` one module per intent subgraph) · `llm/` (model factory, fake model, prompt loader, pricing, moderation, tracing) · `rag/` (parsers, chunker, embedder, retriever) · `documents/` (draft → sanitised HTML → PDF, templates, deny-all URL fetcher) · `memory/` (store access, extraction) · `jobs/` (queue, handlers, periodic tasks) · `services/` (runs + lease, files, usage) · `cli.py` · `worker.py` · `main.py`.
 
 ## 3. Data Architecture
 
@@ -68,8 +68,6 @@ erDiagram
   JOBS }o--|| USERS : "for (nullable)"
   USERS ||--o{ DOCUMENTS : owns
   MESSAGES |o--o{ DOCUMENTS : creates
-  USERS ||--o{ SCHEDULES : owns
-  SCHEDULES ||--|| CONVERSATIONS : "delivers into"
 ```
 
 ### 3.2 Core models
@@ -79,14 +77,14 @@ erDiagram
 | `users` | `id uuid pk`, `email citext unique`, `password_hash text` (argon2id), `display_name text`, `memory_enabled bool default true`, `status text` (active/disabled/pending_deletion), `created_at timestamptz`, `updated_at timestamptz` |
 | `invites` | `id uuid pk`, `code_hash text unique` (SHA-256 of the code), `note text null`, `expires_at timestamptz`, `used_at timestamptz null`, `used_by uuid null fk users`, `revoked_at timestamptz null`, `created_at` |
 | `refresh_tokens` | `id uuid pk`, `user_id uuid fk`, `family_id uuid`, `token_hash text unique`, `expires_at timestamptz`, `revoked_at timestamptz null`, `created_at` |
-| `conversations` | `id uuid pk`, `user_id uuid fk`, `title text`, `kind text default 'chat'` (chat/scheduled, v1.1), `unread bool default false` (v1.1), `active_run_id uuid null`, `run_heartbeat_at timestamptz null`, `pending_interrupt jsonb null`, `created_at`, `updated_at` |
-| `messages` | `id uuid pk`, `conversation_id uuid fk`, `user_id uuid fk`, `role text` (user/assistant), `content text`, `status text` (complete/cancelled/failed), `finish_reason text null`, `tool_calls jsonb`, `citations jsonb`, `model text`, `prompt_tokens int`, `cached_tokens int`, `completion_tokens int` (includes reasoning tokens), `cost_usd numeric(10,6)`, `trace_id text`, `intent text null` (v1.1), `route_source text null` (router/mode/fallback, v1.1), `created_at` |
+| `conversations` | `id uuid pk`, `user_id uuid fk`, `title text`, `active_run_id uuid null`, `run_heartbeat_at timestamptz null`, `pending_interrupt jsonb null`, `created_at`, `updated_at` |
+| `messages` | `id uuid pk`, `conversation_id uuid fk`, `user_id uuid fk`, `role text` (user/assistant), `content text`, `status text` (complete/cancelled/failed), `finish_reason text null`, `tool_calls jsonb`, `citations jsonb`, `model text`, `prompt_tokens int`, `cached_tokens int`, `completion_tokens int` (includes reasoning tokens), `cost_usd numeric(10,6)`, `trace_id text`, `intent text null` (v1.1), `route_source text null` (router/command/fallback, v1.1), `created_at` |
 | `files` | `id uuid pk`, `user_id uuid fk`, `filename text`, `mime_type text`, `size_bytes int`, `sha256 char(64)`, `storage_path text`, `status text`, `error text null`, `page_count int`, `chunk_count int`, `created_at`, `updated_at` |
-| `documents` (v1.1) | `id uuid pk`, `user_id uuid fk`, `conversation_id uuid null fk (on delete set null)`, `message_id uuid null fk (on delete set null)`, `kind text` (thread_summary/news_brief/research_report), `title text`, `draft jsonb` (`DocumentDraft`), `status text` (pending/ready/failed), `storage_path text null`, `page_count int null`, `size_bytes int null`, `error text null`, `created_at`, `updated_at` |
-| `schedules` (v1.1) | `id uuid pk`, `user_id uuid fk`, `conversation_id uuid fk unique (on delete cascade)`, `spec jsonb` (`ScheduleSpec`, incl. the approved `query`), `status text` (active/paused), `paused_reason text null`, `next_run_at timestamptz null`, `last_run_at timestamptz null`, `last_run_status text null`, `consecutive_failures int default 0`, `created_at`, `updated_at` |
+| `documents` (v1.1) | `id uuid pk`, `user_id uuid fk`, `conversation_id uuid null fk (on delete set null)`, `message_id uuid null fk (on delete set null)`, `kind text` (thread_summary/answer/news_brief/research_report; `last_answer` gives `research_report` when the answer was a research report, else `answer`), `title text`, `draft jsonb` (`DocumentDraft`), `status text` (pending/ready/failed), `storage_path text null`, `page_count int null`, `size_bytes int null`, `error text null`, `created_at`, `updated_at` |
 | `feedback` | `id uuid pk`, `message_id uuid fk unique(message_id,user_id)`, `user_id uuid fk`, `score smallint` (−1/1), `comment text null`, `created_at` |
 | `usage_daily` | `user_id uuid`, `day date`, `prompt_tokens bigint`, `completion_tokens bigint`, `cost_usd numeric(12,6)`, `requests int`, pk(`user_id`,`day`) |
-| `jobs` | `id bigserial pk`, `kind text`, `payload jsonb`, `idempotency_key text unique`, `status text` (queued/running/done/failed/cancelled), `attempts int`, `max_attempts int default 3`, `run_after timestamptz`, `locked_at timestamptz`, `locked_by text`, `last_error text`, `user_id uuid null`, `created_at` |
+| `jobs` | `id bigserial pk`, `kind text`, `payload jsonb`, `idempotency_key text unique`, `status text` (queued/running/done/failed/cancelled), `attempts int`, `max_attempts int default 3`, `run_after timestamptz`, `locked_at timestamptz` (heartbeat: refreshed every 30 s while running), `locked_by text`, `last_error text`, `user_id uuid null`, `created_at` |
+| `runtime_flags` | `name text pk` (e.g. `ROUTER_DISABLED`, `TOOLS_DISABLED`), `value text`, `updated_at timestamptz`, `updated_by text` (CLI user) |
 
 **Managed by LangGraph:** `checkpoints`, `checkpoint_blobs`, `checkpoint_writes` (thread_id = conversation id), `store` (namespace `("memories", user_id)`).
 
@@ -103,8 +101,7 @@ erDiagram
 - `messages (conversation_id, created_at, id)` — history pagination
 - `files (user_id, created_at desc)`, unique `files (user_id, sha256)`
 - `documents (user_id, created_at desc)`; `documents (user_id, created_at)` also serves the 10/day count (v1.1)
-- `schedules (next_run_at) where status='active'` (partial index for `run_due_schedules`); `schedules (user_id)` (v1.1)
-- `jobs (status, run_after) where status='queued'` — partial index for the dequeue query
+- `jobs (status, run_after) where status='queued'` — partial index for the dequeue query; `jobs (locked_at) where status='running'` — stale-job requeue
 - `refresh_tokens (user_id)`, `refresh_tokens (family_id)`
 
 ### 3.4 Migration strategy
@@ -158,10 +155,10 @@ There is no staging VM: CI runs the whole stack the way prod does, and prod depl
 
 ## 7. Observability
 
-- **LLM tracing:** Langfuse Cloud (EU) — one trace per run (`chat.turn`, `chat.resume`, `schedule.run`, `job.ingest_file`, `job.render_document`, …), tagged with `intent:<intent>` (v1.1), spans for nodes/tools/retrieval, generations with tokens and cost. Tags: `env`, `feature`, prompt name+version; `user_id` = HMAC-SHA256(user id). Content passes through the `mask` redaction function before export. Best-effort: tracing failures never fail a run.
+- **LLM tracing:** Langfuse Cloud (EU) — one trace per run (`chat.turn`, `chat.resume`, `job.ingest_file`, `job.render_document`, …), tagged with `intent:<intent>` (v1.1), spans for nodes/tools/retrieval, generations with tokens and cost. Tags: `env`, `feature`, prompt name+version; `user_id` = HMAC-SHA256(user id). Content passes through the `mask` redaction function before export. Best-effort: tracing failures never fail a run.
 - **Logs:** structlog JSON to stdout → Docker log driver (local rotation, 14 days). Fields: `ts`, `level`, `request_id`, `trace_id`, `user_hash`, `route`, `latency_ms`. Never message content.
 - **Metrics:** deferred (no Prometheus in v1). Queue depth, active runs and spend are queryable with SQL and visible in Langfuse.
-- **Alerting (no SLO):** one external uptime check on `/readyz`; a daily-spend alert when global spend reaches 80% of the global cap; the nightly eval workflow alerts on failure.
+- **Alerting (no SLO):** one external uptime check on `/readyz`; a daily-spend alert when global spend reaches 80% of the global cap; the weekly full-eval workflow alerts on failure.
 
 ## 8. Security Considerations
 
@@ -172,6 +169,7 @@ There is no staging VM: CI runs the whole stack the way prod does, and prod depl
 - CORS: same-origin in prod (SPA and API behind one Caddy host); dev allows `http://localhost:5173` only.
 - Headers via Caddy: strict CSP (`default-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'`), HSTS, `X-Content-Type-Options`, `Referrer-Policy: no-referrer`.
 - Model output rendered with `rehype-sanitize`; no raw HTML; links `rel="noopener noreferrer nofollow"`.
+- Kill switches are rows in `runtime_flags`, set with `python -m app.cli flags set <NAME>=<value>` and read by the API and worker through a 60 s cache; env values only provide boot defaults (doc 10 §3). No restart or drain is needed to flip one.
 - Generated PDFs (v1.1): rendered in the worker from sanitised HTML with a deny-all URL fetcher (bundled CSS/fonts only); served only through the authenticated download endpoint with `Content-Disposition: attachment` and `X-Content-Type-Options: nosniff`.
 - Dependencies: Dependabot + `pip-audit` + `npm audit` in CI; images scanned by Trivy.
 

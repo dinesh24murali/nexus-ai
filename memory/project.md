@@ -45,7 +45,8 @@ Docs name major versions; exact pins live in the lockfiles (versions checked 202
 | SSE streaming + run lease | ADR-0006 | Typed `StreamEvent` union; hand-written client; lease + reaper + graceful drain |
 | Postgres job queue | ADR-0007 | SKIP LOCKED worker + periodic tasks; no broker |
 | Repo-canonical prompts | ADR-0008 | `backend/prompts/` is the source; CI mirrors to Langfuse |
-| Two-tier quality gates | ADR-0009 | Targets vs. measured gates that ratchet up; absolute safety gates |
+| Two-tier quality gates | ADR-0009 | Targets vs. measured gates that ratchet up; absolute safety gates; full suite weekly |
+| Intent router (v1.1) | ADR-0010 | Router over 4 intents + deterministic slash commands; tuned confidence threshold; schedules in the backlog |
 
 ## Environments
 
@@ -79,3 +80,4 @@ Docs name major versions; exact pins live in the lockfiles (versions checked 202
 - Production domain (TBD)
 - Chat model decided by the M2 bake-off (TASK-036): `gpt-6.1-terra` vs `gpt-5.4-mini-2026-03-17`
 - Plan revised 2026-11-19 after a grilling session (task 003); remaining intake defaults accepted
+- v1.1 scope (M7) revised 2026-11-21 after a second grilling session (task 003b): router + memory by chat + PDFs + deep research; schedules and the small-talk fast path cut; `remember_fact` removed from v1; kill switches in a `runtime_flags` table

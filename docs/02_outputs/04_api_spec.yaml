@@ -1,7 +1,7 @@
 openapi: "3.1.0"
 info:
   title: Nexus AI API
-  version: "1.2.0"
+  version: "1.3.0"
   description: |
     REST + Server-Sent Events API for Nexus AI, a self-hostable ChatGPT-style assistant.
 
@@ -12,8 +12,10 @@ info:
     * Lists use cursor pagination: `?limit=&cursor=` → `{items, next_cursor}`.
     * Streaming endpoints return `text/event-stream`. Each SSE frame has `event: <type>` and `data: <JSON>`; the payload
       schemas are the `*Event` components (see `StreamEvent`). A `: ping` comment is sent every 15 s.
-    * v1.2.0 (v1.1 product scope): intent routing (`mode` on send, `route_selected` event), generated PDF documents,
-      deep research (`research_plan` approval, `progress` events) and scheduled tasks.
+    * v1.2.0 (v1.1 product scope): intent routing (`route_selected` event), generated PDF documents and
+      deep research (`research_plan` approval, `progress` events).
+    * v1.3.0: scheduled tasks removed (backlog); `mode`/`client_timezone` removed from sends (slash commands are parsed
+      from `content`); `remember_fact` removed; `forget_memory` approval; `answer` document kind.
 servers:
   - url: http://localhost:8000/api/v1
     description: Local development
@@ -38,8 +40,6 @@ tags:
     description: Ratings on assistant messages
   - name: documents
     description: Generated PDF documents (created through chat)
-  - name: schedules
-    description: Recurring tasks (created through chat with approval; listed, paused and deleted here)
   - name: health
     description: Liveness and readiness probes
 
@@ -336,7 +336,7 @@ paths:
     post:
       tags: [chat]
       operationId: regenerate
-      summary: Regenerate the latest assistant message and stream the new run
+      summary: Regenerate the latest assistant message and stream the new run (general_chat answers only; others return 409 REGENERATE_NOT_SUPPORTED)
       responses:
         "200": { $ref: "#/components/responses/EventStream" }
         "401": { $ref: "#/components/responses/Unauthorized" }
@@ -533,53 +533,6 @@ paths:
         "409": { $ref: "#/components/responses/Conflict" }
         "500": { $ref: "#/components/responses/InternalError" }
 
-  /schedules:
-    get:
-      tags: [schedules]
-      operationId: listSchedules
-      summary: List the user's schedules (at most 5 active, plus paused ones)
-      responses:
-        "200":
-          description: Schedules
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/ScheduleList" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "500": { $ref: "#/components/responses/InternalError" }
-
-  /schedules/{scheduleId}:
-    parameters:
-      - $ref: "#/components/parameters/ScheduleId"
-    patch:
-      tags: [schedules]
-      operationId: updateSchedule
-      summary: Pause or resume a schedule (content changes go through chat, with approval)
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/UpdateScheduleRequest" }
-      responses:
-        "200":
-          description: Updated schedule
-          content:
-            application/json:
-              schema: { $ref: "#/components/schemas/Schedule" }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "404": { $ref: "#/components/responses/NotFound" }
-        "409": { $ref: "#/components/responses/Conflict" }
-        "422": { $ref: "#/components/responses/ValidationError" }
-        "500": { $ref: "#/components/responses/InternalError" }
-    delete:
-      tags: [schedules]
-      operationId: deleteSchedule
-      summary: Delete a schedule (its conversation is kept)
-      responses:
-        "204": { description: Deleted }
-        "401": { $ref: "#/components/responses/Unauthorized" }
-        "404": { $ref: "#/components/responses/NotFound" }
-        "500": { $ref: "#/components/responses/InternalError" }
-
   /memories:
     get:
       tags: [memories]
@@ -742,12 +695,6 @@ components:
       required: true
       description: Generated document id
       schema: { type: string, format: uuid }
-    ScheduleId:
-      name: scheduleId
-      in: path
-      required: true
-      description: Schedule id
-      schema: { type: string, format: uuid }
     MemoryId:
       name: memoryId
       in: path
@@ -785,7 +732,7 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     Conflict:
-      description: Conflicts with current state (e.g. EMAIL_TAKEN, RUN_IN_PROGRESS, FILE_DUPLICATE, NO_PENDING_INTERRUPT, DOCUMENT_NOT_READY, SCHEDULE_LIMIT)
+      description: Conflicts with current state (e.g. EMAIL_TAKEN, RUN_IN_PROGRESS, FILE_DUPLICATE, NO_PENDING_INTERRUPT, DOCUMENT_NOT_READY, REGENERATE_NOT_SUPPORTED)
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -952,9 +899,6 @@ components:
         id: { type: string, format: uuid, description: Conversation id (also the LangGraph thread id) }
         title: { type: string, description: Title (auto-generated or user-set) }
         has_active_run: { type: boolean, description: Whether a run is currently streaming }
-        kind: { type: string, enum: [chat, scheduled], description: "`scheduled` conversations receive a schedule's results" }
-        schedule_id: { type: [string, "null"], format: uuid, description: Schedule that writes into this conversation }
-        unread: { type: boolean, description: "True when a scheduled run delivered a message the user hasn't opened yet" }
         pending_interrupt:
           description: Pending tool approval, if the last run is paused
           oneOf:
@@ -994,7 +938,7 @@ components:
       required: [interrupt_id, tool, args, created_at, expires_at]
       properties:
         interrupt_id: { type: string, description: Id to pass to /runs/resume }
-        tool: { type: string, enum: [web_search, remember_fact, research_plan, create_schedule], description: "Step awaiting approval: web_search always; remember_fact only when the turn already read file passages or web results; research_plan (args topic, queries) once per deep-research run; create_schedule (args = the parsed schedule incl. the exact query) always" }
+        tool: { type: string, enum: [web_search, research_plan, forget_memory], description: "Step awaiting approval: web_search (args query) every call; research_plan (args topic, queries) once per deep-research run; forget_memory (args candidates [{memory_id, content}], 1–3) before any memory is deleted by chat" }
         args: { type: object, description: Proposed tool arguments, additionalProperties: true }
         created_at: { type: string, format: date-time, description: When the run paused }
         expires_at: { type: string, format: date-time, description: When the approval expires (24 h) }
@@ -1015,7 +959,7 @@ components:
         citations: { type: array, description: Sources cited, items: { $ref: "#/components/schemas/Citation" } }
         feedback: { type: [integer, "null"], enum: [-1, 1, null], description: "The user's rating, if any" }
         usage: { $ref: "#/components/schemas/MessageUsage" }
-        intent: { type: [string, "null"], enum: [general_chat, smalltalk_help, manage_memory, generate_document, deep_research, schedule_task, null], description: Pipeline that produced the message (assistant messages) }
+        intent: { type: [string, "null"], enum: [general_chat, manage_memory, generate_document, deep_research, null], description: "Pipeline that produced the message (assistant messages); Regenerate is offered only for general_chat" }
         documents: { type: array, description: Documents generated by this message, items: { $ref: "#/components/schemas/DocumentObject" } }
         created_at: { type: string, format: date-time, description: Creation time }
       example: { id: 5b6c7d8e-1a2b-4c3d-9e8f-0a1b2c3d4e5f, conversation_id: 3f2a1b0c-9d8e-4f7a-b6c5-d4e3f2a1b0c9, role: assistant, content: "Churn fell to 3.1% in Q3 [1].", status: complete, tool_calls: [], citations: [], feedback: null, created_at: "2026-11-19T10:05:00Z" }
@@ -1046,7 +990,7 @@ components:
       required: [id, name, args, status]
       properties:
         id: { type: string, description: Tool call id }
-        name: { type: string, enum: [search_my_files, web_search, calculator, remember_fact], description: Tool name }
+        name: { type: string, enum: [search_my_files, web_search, calculator], description: Tool name }
         args: { type: object, description: Arguments, additionalProperties: true }
         status: { type: string, enum: [completed, failed, rejected, timed_out], description: Outcome }
         summary: { type: string, description: Short human-readable result summary }
@@ -1071,13 +1015,7 @@ components:
       description: New user message
       required: [content]
       properties:
-        content: { type: string, minLength: 1, maxLength: 16000, description: Message text }
-        mode:
-          type: string
-          enum: [auto, chat, document, research, schedule, memory]
-          default: auto
-          description: "auto = the intent router decides; any other value forces that pipeline (set by slash commands /pdf, /research, /schedule, /memory)"
-        client_timezone: { type: string, maxLength: 64, description: "IANA timezone from the browser (e.g. Asia/Kolkata); the default for new schedules" }
+        content: { type: string, minLength: 1, maxLength: 16000, description: "Message text. A slash command at the very start (/pdf, /pdf last, /brief <topic>, /research <question>, /memory, /memory remember <text>, /memory forget <text>, /help) is parsed by the server and skips the intent router; a malformed command gets a usage reply" }
       example: { content: "What does my Q3 report say about churn?" }
 
     ResumeRunRequest:
@@ -1092,14 +1030,13 @@ components:
           description: Replacement args when decision is "edit"
           properties:
             query: { type: string, minLength: 1, maxLength: 400, description: Edited search query (web_search) }
-            content: { type: string, minLength: 1, maxLength: 500, description: Edited memory text (remember_fact) }
             queries:
               type: array
               minItems: 1
               maxItems: 6
               description: Edited research plan (research_plan)
               items: { type: string, minLength: 1, maxLength: 400 }
-            schedule: { $ref: "#/components/schemas/ScheduleSpec" }
+            memory_id: { type: string, format: uuid, description: "forget_memory: the chosen candidate; send with decision approve (required when there are several candidates)" }
       example: { interrupt_id: int_9a8b7c, decision: edit, edited_args: { query: Go 1.24 release notes generics } }
 
     FeedbackRequest:
@@ -1162,7 +1099,7 @@ components:
       properties:
         id: { type: string, format: uuid, description: Document id }
         title: { type: string, description: Document title }
-        kind: { type: string, enum: [thread_summary, news_brief, research_report], description: What the document contains }
+        kind: { type: string, enum: [thread_summary, answer, news_brief, research_report], description: "What the document contains: the conversation, the last answer as written, a topic news brief, or a research report" }
         status: { type: string, enum: [pending, ready, failed], description: Render status }
         conversation_id: { type: [string, "null"], format: uuid, description: Conversation it was created in (null after that conversation is deleted) }
         message_id: { type: [string, "null"], format: uuid, description: Assistant message that created it }
@@ -1181,53 +1118,6 @@ components:
         next_cursor: { type: [string, "null"], description: Cursor for the next page }
       example: { items: [], next_cursor: null }
 
-    ScheduleSpec:
-      type: object
-      description: What a schedule runs and when
-      required: [task_kind, topic, cadence, time_local, timezone, output, query]
-      properties:
-        task_kind: { type: string, enum: [news_brief, research], description: What each run produces }
-        topic: { type: string, minLength: 1, maxLength: 200, description: Topic }
-        cadence: { type: string, enum: [daily, weekly], description: How often (never more than daily) }
-        weekday: { type: [string, "null"], enum: [mon, tue, wed, thu, fri, sat, sun, null], description: Required when cadence is weekly }
-        time_local: { type: string, pattern: "^([01][0-9]|2[0-3]):[0-5][0-9]$", description: Local time HH:MM }
-        timezone: { type: string, maxLength: 64, description: IANA timezone }
-        output: { type: string, enum: [chat, pdf], description: Delivered as a chat message or a PDF }
-        query: { type: string, minLength: 1, maxLength: 400, description: Exact web query every run sends (news brief) or the topic anchor (research) }
-      example: { task_kind: news_brief, topic: Rust, cadence: weekly, weekday: mon, time_local: "08:00", timezone: Asia/Kolkata, output: pdf, query: Rust programming language news this week }
-
-    Schedule:
-      type: object
-      description: A recurring task
-      required: [id, spec, status, conversation_id, next_run_at, created_at]
-      properties:
-        id: { type: string, format: uuid, description: Schedule id }
-        spec: { $ref: "#/components/schemas/ScheduleSpec" }
-        status: { type: string, enum: [active, paused], description: Paused by the user or after 3 consecutive failures }
-        paused_reason: { type: [string, "null"], enum: [user, failures, null], description: Why it is paused }
-        conversation_id: { type: string, format: uuid, description: Conversation that receives the results }
-        next_run_at: { type: [string, "null"], format: date-time, description: Next run (null while paused) }
-        last_run_at: { type: [string, "null"], format: date-time, description: Last run }
-        last_run_status: { type: [string, "null"], enum: [ok, failed, skipped_budget, null], description: Outcome of the last run }
-        created_at: { type: string, format: date-time, description: Creation time }
-      example: { id: 2a3b4c5d-6e7f-4a8b-9c0d-1e2f3a4b5c6d, spec: { task_kind: news_brief, topic: Rust, cadence: weekly, weekday: mon, time_local: "08:00", timezone: Asia/Kolkata, output: pdf, query: Rust programming language news this week }, status: active, paused_reason: null, conversation_id: 9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d, next_run_at: "2026-11-23T02:30:00Z", last_run_at: null, last_run_status: null, created_at: "2026-11-21T10:00:00Z" }
-
-    ScheduleList:
-      type: object
-      description: The user's schedules
-      required: [items]
-      properties:
-        items: { type: array, description: Schedules, items: { $ref: "#/components/schemas/Schedule" } }
-      example: { items: [] }
-
-    UpdateScheduleRequest:
-      type: object
-      description: Pause or resume
-      required: [status]
-      properties:
-        status: { type: string, enum: [active, paused], description: "New status; resuming fails with 409 SCHEDULE_LIMIT if 5 are already active" }
-      example: { status: paused }
-
     Memory:
       type: object
       description: A long-term memory about the user
@@ -1235,7 +1125,7 @@ components:
       properties:
         id: { type: string, format: uuid, description: Memory id }
         content: { type: string, description: The remembered fact }
-        source: { type: string, enum: [extracted, tool, manual], description: How it was created }
+        source: { type: string, enum: [extracted, chat, manual], description: "How it was created: background extraction, a memory command in chat, or Settings" }
         conversation_id: { type: [string, "null"], format: uuid, description: Conversation it came from }
         created_at: { type: string, format: date-time, description: Creation time }
         updated_at: { type: string, format: date-time, description: Last update }
@@ -1309,8 +1199,8 @@ components:
       required: [type, intent, source]
       properties:
         type: { type: string, const: route_selected, description: Event type }
-        intent: { type: string, enum: [general_chat, smalltalk_help, manage_memory, generate_document, deep_research, schedule_task], description: Selected pipeline }
-        source: { type: string, enum: [router, mode, fallback], description: "router = classified; mode = forced by the request; fallback = low confidence or router failure" }
+        intent: { type: string, enum: [general_chat, manage_memory, generate_document, deep_research], description: Selected pipeline }
+        source: { type: string, enum: [router, command, fallback], description: "router = classified; command = forced by a slash command; fallback = low confidence or router failure" }
         confidence: { type: [number, "null"], description: Router confidence (null unless source is router or fallback) }
       example: { type: route_selected, intent: generate_document, source: router, confidence: 0.94 }
 
@@ -1386,7 +1276,7 @@ components:
 
     MemoryUpdatedEvent:
       type: object
-      description: The remember_fact tool changed memories during this run
+      description: Memories changed during this run (memory by chat)
       required: [type, action, content]
       properties:
         type: { type: string, const: memory_updated, description: Event type }

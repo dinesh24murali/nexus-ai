@@ -2,7 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-11-19
-**Revised:** 2026-11-19 (task 003: GPT-5/6 model roles, reasoning effort instead of temperature, Responses API with `store=false`, `LLM_MODE=fake`)
+**Revised:** 2026-11-19 (task 003: GPT-5/6 model roles, reasoning effort instead of temperature, Responses API with `store=false`, `LLM_MODE=fake`); 2026-11-21 (task 003b: drift alarm is the weekly full eval)
 **Deciders:** Nexus AI Team
 
 ---
@@ -42,7 +42,7 @@ All chat/embedding/moderation clients are created by `backend/app/llm/factory.py
 - Model swaps are config + `make eval`, not code changes; a provider swap is a factory change
 
 ### Negative
-- Alias-only GPT-6 models can change behaviour silently; mitigated by nightly full evals and a drift alert (LLM-T13)
+- Alias-only GPT-6 models can change behaviour silently; mitigated by weekly full evals and a drift alert (LLM-T13)
 - Model names and prices must be re-checked at the M2 bake-off
 
 ### Neutral

@@ -1,6 +1,6 @@
 # Developer Setup Guide — Nexus AI
 
-**Version:** 1.1 · **Date:** 2026-11-19 (revised, task 003)
+**Version:** 1.2 · **Date:** 2026-11-21 (task 003b: weekly full evals, eval budgets, kill-switch CLI) · previous 1.1 2026-11-19 (task 003)
 
 > **Note:** This guide describes the target setup. Commands that depend on code from implementation-plan TASK-001/002 (Compose stack, uv project, Vite app) work once those tasks land. Goal G8: a fresh clone reaches a working stack in ≤ 15 minutes by following this guide.
 
@@ -112,8 +112,8 @@ cd backend && uv run pytest -m integration           # needs postgres + qdrant r
 cd backend && uv run pytest --cov=app --cov-report=term-missing
 cd frontend && npm test -- --coverage
 make verify                                 # Playwright e2e + DOM checks (stack must be up with LLM_MODE=fake)
-make eval-smoke                             # small eval set with real models (budget < $0.50)
-make eval                                   # full eval set (budget < $5)
+make eval-smoke                             # small eval set with real models (budget < $0.75)
+make eval                                   # full eval set (budget < $7)
 ```
 
 Coverage and eval gates live in `tests/coverage-baseline.json` and `evals/eval-baseline.json`. Both files hold **targets** (informational) and **gates** (measured baselines that only ratchet up, plus absolute safety gates) — see ADR-0009.
@@ -132,6 +132,8 @@ Coverage and eval gates live in `tests/coverage-baseline.json` and `evals/eval-b
 3. Add `tests/e2e/<feature>.spec.ts`; run `make verify`.
 
 **Add or change a prompt / tool / model** — follow `AGENTS.md` §3.8: edit `backend/prompts/<name>.md` (bump `version` in its front-matter), run `make eval`, update `memory/ai.md`. CI pushes merged prompt changes to Langfuse; never edit prompts in the Langfuse UI except for throwaway experiments (ADR-0008).
+
+**Flip a kill switch:** `uv run python -m app.cli flags set TOOLS_DISABLED=web_search` (`flags list` shows them; on the VM: `docker compose exec api python -m app.cli …`). Takes effect within 60 s, no restart.
 
 **Invite someone:** `uv run python -m app.cli invite create --expires 7d --note "Priya"` (on the VM: `docker compose exec api python -m app.cli …`).
 
@@ -161,7 +163,7 @@ There is no staging VM: CI runs the full stack the way prod does and acts as sta
 
 - **On PR:** lint (ruff, eslint), type-check (mypy, tsc), unit + integration tests (Postgres/Qdrant service containers), contract tests (schemathesis), full-stack Playwright smoke with `LLM_MODE=fake`, coverage gate, security scans, Docker build. `eval-smoke` runs when the PR has the `ai-change` label or touches `backend/app/{graph,llm,rag,memory}/`, `backend/prompts/` or `evals/`.
 - **On merge to `main`:** all of the above + `eval-smoke`; push images to GHCR; push changed prompts to Langfuse.
-- **Nightly:** full `make eval` on `main` (alerts on failure; also catches silent changes in alias-only models).
+- **Weekly:** full `make eval` on `main` (alerts on failure; also catches silent changes in alias-only models). Also run it before a release and after any model change.
 - **Status:** GitHub → Actions tab, or `gh run list --branch main`.
 
 ## 9. Deployment
@@ -176,4 +178,4 @@ ssh deploy@<prod-host> 'cd /opt/nexus-ai && docker compose -f compose.yml -f com
 
 In-flight answers drain for up to 90 s during a deploy; anything still running is saved as "Interrupted" and the conversation unlocks automatically.
 
-> **Warning:** CI uses its own OpenAI project key (hard monthly cap) and its own Langfuse project. Never point CI or dev at production data.
+> **Warning:** CI uses its own OpenAI project key (hard monthly cap) and its own Langfuse project in a separate Langfuse organisation, so eval traces can't use up the prod quota. Eval runs send one trace per case (no per-node spans). Never point CI or dev at production data.

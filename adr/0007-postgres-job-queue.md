@@ -2,7 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-11-19
-**Revised:** 2026-11-19 (task 003: periodic `reap_stale_runs` job, psycopg 3)
+**Revised:** 2026-11-19 (task 003: periodic `reap_stale_runs` job, psycopg 3); 2026-11-21 (task 003b: job heartbeat and per-kind timeouts replace the fixed 5-minute visibility timeout)
 **Deciders:** Nexus AI Team
 
 ---
@@ -13,7 +13,7 @@ Ingestion, title generation, memory extraction and account purges must run off t
 
 ## Decision
 
-Implement a `jobs` table in Postgres consumed by a worker process using `SELECT … FOR UPDATE SKIP LOCKED`, with `idempotency_key` uniqueness, `attempts/max_attempts`, exponential backoff via `run_after`, a 5-minute visibility timeout for stale `running` jobs, and graceful shutdown. The worker also runs a small set of periodic tasks on fixed intervals (first: `reap_stale_runs` every 30 s, ADR-0006). Driver: psycopg 3.
+Implement a `jobs` table in Postgres consumed by a worker process using `SELECT … FOR UPDATE SKIP LOCKED`, with `idempotency_key` uniqueness, `attempts/max_attempts`, exponential backoff via `run_after`, a **job heartbeat** (the worker refreshes `locked_at` every 30 s while a job runs; a `running` job with no heartbeat for 2 min is requeued), a hard timeout per job kind enforced in the worker (e.g. ingestion 5 min, PDF render 60 s), and graceful shutdown. A fixed visibility timeout was rejected because a job that runs longer than it is picked up a second time while still running, duplicating memory ops, PDFs or model spend. The worker also runs a small set of periodic tasks on fixed intervals (first: `reap_stale_runs` every 30 s, ADR-0006). Driver: psycopg 3.
 
 ## Consequences
 
@@ -23,7 +23,7 @@ Implement a `jobs` table in Postgres consumed by a worker process using `SELECT 
 
 ### Negative
 - Polling latency (≈ 1 s) and lower throughput than a dedicated broker
-- We own the queue code (small, but must be well-tested for concurrency)
+- We own the queue code (small, but must be well-tested for concurrency, including a job that outlives the old 5-minute window)
 
 ### Neutral
 - Can migrate to arq/Redis or a managed queue later behind the same `enqueue()` interface

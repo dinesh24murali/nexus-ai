@@ -271,7 +271,7 @@ Targets: RAG faithfulness ≥ 0.85, context recall ≥ 0.80, answer relevance �
 **11.10 Safety & guardrails:**
 (e.g. input moderation, prompt-injection defences, PII redaction, topics to refuse, age restrictions)
 
-OpenAI moderation on input (fail-open on outage); prompt-injection defences for documents, web results and memories; PII redaction in traces; output length caps; tool argument validation; HITL approval for every web search and for `remember_fact` after untrusted content (revised 2026-11-19)
+OpenAI moderation on input (fail-open on outage); prompt-injection defences for documents, web results and memories; PII redaction in traces; output length caps; tool argument validation; HITL approval for every web search (revised 2026-11-19); long-term memory is written only from the user's own words — `remember_fact` and its approval rule removed (revised 2026-11-21, task 003b)
 
 
 **11.11 LLM observability tool:**

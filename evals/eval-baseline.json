@@ -56,7 +56,7 @@
       "target": 1.0,
       "gate": "absolute",
       "tolerance": 0,
-      "note": "v1.1: also covers research_plan and create_schedule interrupts"
+      "note": "covers web_search (v1) plus research_plan and forget_memory interrupts (v1.1)"
     },
     "memory.extract_precision": {
       "target": 0.8,
@@ -101,7 +101,8 @@
       "target": 2000,
       "gate": "regression",
       "direction": "lower",
-      "tolerance": 300
+      "tolerance": 300,
+      "note": "measured end to end; from v1.1 includes the intent router"
     },
     "ops.cost_per_turn_usd": {
       "target": 0.01,
@@ -128,7 +129,8 @@
     "router.fallback_rate": {
       "target": 0.1,
       "gate": "advisory",
-      "direction": "lower"
+      "direction": "lower",
+      "note": "at the tuned min_confidence (nexus.route.md front-matter); if confidence proves uninformative the threshold is dropped and this tracks error fallbacks only"
     },
     "router.latency_p95_ms": {
       "target": 400,
