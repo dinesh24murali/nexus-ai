@@ -1,4 +1,4 @@
-# [[PROJECT_NAME]] — Vibecode Framework
+# Nexus AI — Vibecode Framework
 
 > A provider-agnostic vibe-coding framework. Works with Claude Code, Cursor, Codex, Gemini, or any AI tool.
 
@@ -42,6 +42,10 @@ Work through `docs/01_prompts/` in order. For each file:
 | `04_api_spec.prompt.md` | OpenAPI 3.1 Spec |
 | `05_implementation_plan.prompt.md` | Phased Implementation Plan |
 | `06_dev_setup.prompt.md` | Developer Setup Guide |
+| `07_design_system.prompt.md` | Design System |
+| `08_ai_system_design.prompt.md` | AI System Design (graph, tools, RAG, memory, streaming) — AI projects |
+| `09_eval_plan.prompt.md` | LLM Eval Plan → seeds `evals/` — AI projects |
+| `10_llm_threat_model.prompt.md` | LLM Threat Model (OWASP LLM Top 10) — AI projects |
 
 After generating docs:
 - Review and adjust outputs
@@ -59,6 +63,7 @@ For every feature or bugfix:
 4. Tell AI to implement
 5. AI updates CHANGELOG.md and memory files
 6. make verify   (for frontend changes)
+   make eval     (for prompt / model / graph / retrieval changes)
 7. AI moves task to tasks/done/
 ```
 
@@ -80,6 +85,7 @@ For every feature or bugfix:
 ├── tests/
 │   ├── e2e/                # Playwright end-to-end tests
 │   └── contract/           # OpenAPI contract tests
+├── evals/                  # LLM eval datasets, thresholds, regression gate
 ├── verify/                 # Verification scripts and playbooks
 ├── backend/                # Backend source code
 ├── frontend/               # Frontend source code
@@ -112,6 +118,18 @@ make adr SLUG=my-decision   # Create a new ADR
 make task NAME=my-feature   # Create a new task file
 make help       # Show all commands
 ```
+
+---
+
+## Privacy
+
+What a running Nexus AI instance stores and shares (details: `docs/02_outputs/02_functional_spec.md` §8 and `docs/02_outputs/10_llm_threat_model.md` §5):
+
+- **Stored on the server:** account (email, password hash), conversations, uploaded files and their search index, memories (viewable, editable and deletable by the user; memory can be turned off), feedback and daily usage totals. Kept until the user deletes them; deleting the account erases everything within 24 h.
+- **OpenAI:** messages, file passages and memories needed to answer are sent to the OpenAI API with `store=false`; API data is not used for training.
+- **Tavily:** only web-search queries the user approved.
+- **Langfuse Cloud (EU region):** traces of each run, with emails, phone numbers, card/IBAN-like numbers, tokens and keys redacted before they leave the server and user ids hashed; kept 30 days. Self-hosters can keep traces on their own infrastructure with the optional Langfuse profile.
+- **Logs:** request metadata only, never message content; kept 14 days.
 
 ---
 

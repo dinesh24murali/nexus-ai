@@ -6,6 +6,9 @@
 | File | Domain | Summary |
 |------|--------|---------|
 | `memory/project.md` | project | Stack, environments, key decisions, open questions |
+| `memory/ai.md` | ai | Models, prompt registry, orchestration graph, retrieval & memory settings, budgets, eval status |
+| `memory/api.md` | api | API conventions: errors, pagination, SSE, 404 policy, rate limits |
+| `memory/auth.md` | auth | Invite-only registration, JWT + rotating refresh tokens, token families, owner-based authorization |
 
 ---
 

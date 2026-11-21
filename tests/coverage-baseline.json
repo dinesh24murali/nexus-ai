@@ -1,4 +1,8 @@
 {
-  "_comment": "Add per-package coverage thresholds here as packages are built. AI tools: never let actual coverage fall below these values.",
+  "_comment": "Two-tier coverage gate (ADR-0009). `targets` are the goals every package must reach by milestone M6. `packages` holds per-package gates = measured coverage (percent), added when a package is created and only ever raised. AI tools: never let actual coverage fall below a package gate; document unavoidable exceptions (e.g. generated code) here.",
+  "targets": {
+    "backend": 80,
+    "frontend": 70
+  },
   "packages": {}
 }

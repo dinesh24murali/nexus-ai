@@ -1,8 +1,8 @@
 # ADR-0001: Use Vibecode Framework Structure
 
 **Status:** Accepted
-**Date:** [[PROJECT_START_DATE]]
-**Deciders:** [[TEAM_NAME]]
+**Date:** 2026-11-18
+**Deciders:** Nexus AI Team
 
 ---
 

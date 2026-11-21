@@ -1,0 +1,1315 @@
+openapi: "3.1.0"
+info:
+  title: Nexus AI API
+  version: "1.3.0"
+  description: |
+    REST + Server-Sent Events API for Nexus AI, a self-hostable ChatGPT-style assistant.
+
+    * All endpoints except `/auth/register`, `/auth/login`, `/auth/refresh`, `/healthz` and `/readyz` require a Bearer access token.
+    * Registration requires an invite code when the server runs with `REGISTRATION_MODE=invite` (the default).
+    * During a deploy, run-starting endpoints may return **503** `SERVICE_RESTARTING` (retryable).
+    * Resources owned by another user return **404**, never 403.
+    * Lists use cursor pagination: `?limit=&cursor=` → `{items, next_cursor}`.
+    * Streaming endpoints return `text/event-stream`. Each SSE frame has `event: <type>` and `data: <JSON>`; the payload
+      schemas are the `*Event` components (see `StreamEvent`). A `: ping` comment is sent every 15 s.
+    * v1.2.0 (v1.1 product scope): intent routing (`route_selected` event), generated PDF documents and
+      deep research (`research_plan` approval, `progress` events).
+    * v1.3.0: scheduled tasks removed (backlog); `mode`/`client_timezone` removed from sends (slash commands are parsed
+      from `content`); `remember_fact` removed; `forget_memory` approval; `answer` document kind.
+servers:
+  - url: http://localhost:8000/api/v1
+    description: Local development
+  - url: https://app.example.com/api/v1
+    description: Hosted instance (domain TBD)
+security:
+  - BearerAuth: []
+tags:
+  - name: auth
+    description: Registration, login and token refresh
+  - name: account
+    description: Current user profile, usage and deletion
+  - name: conversations
+    description: Conversation threads
+  - name: chat
+    description: Streaming chat runs (send, regenerate, resume, cancel)
+  - name: files
+    description: File upload for retrieval-augmented generation
+  - name: memories
+    description: Long-term user memories
+  - name: feedback
+    description: Ratings on assistant messages
+  - name: documents
+    description: Generated PDF documents (created through chat)
+  - name: health
+    description: Liveness and readiness probes
+
+paths:
+  /auth/register:
+    post:
+      tags: [auth]
+      operationId: register
+      summary: Create an account and sign in
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RegisterRequest" }
+      responses:
+        "201":
+          description: Account created; refresh cookie set
+          headers:
+            Set-Cookie: { $ref: "#/components/headers/RefreshCookie" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /auth/login:
+    post:
+      tags: [auth]
+      operationId: login
+      summary: Sign in with email and password
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LoginRequest" }
+      responses:
+        "200":
+          description: Signed in; refresh cookie set
+          headers:
+            Set-Cookie: { $ref: "#/components/headers/RefreshCookie" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /auth/refresh:
+    post:
+      tags: [auth]
+      operationId: refreshToken
+      summary: Rotate the refresh cookie and get a new access token
+      security: []
+      parameters:
+        - in: cookie
+          name: nexus_refresh
+          required: true
+          description: Refresh token cookie
+          schema: { type: string }
+      responses:
+        "200":
+          description: New access token; refresh cookie rotated
+          headers:
+            Set-Cookie: { $ref: "#/components/headers/RefreshCookie" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /auth/logout:
+    post:
+      tags: [auth]
+      operationId: logout
+      summary: Revoke the current refresh token
+      responses:
+        "204": { description: Logged out; refresh cookie cleared }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /me:
+    get:
+      tags: [account]
+      operationId: getMe
+      summary: Get the current user
+      responses:
+        "200":
+          description: Current user
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    patch:
+      tags: [account]
+      operationId: updateMe
+      summary: Update profile and settings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateMeRequest" }
+      responses:
+        "200":
+          description: Updated user
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    delete:
+      tags: [account]
+      operationId: deleteMe
+      summary: Delete the account and all data (purged within 24 h)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DeleteAccountRequest" }
+      responses:
+        "202": { description: Deletion scheduled; all sessions revoked }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /me/password:
+    post:
+      tags: [account]
+      operationId: changePassword
+      summary: Change password (revokes other sessions)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChangePasswordRequest" }
+      responses:
+        "204": { description: Password changed }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /me/usage:
+    get:
+      tags: [account]
+      operationId: getUsage
+      summary: Spend, tokens and messages for the current UTC day
+      responses:
+        "200":
+          description: Usage
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Usage" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /conversations:
+    get:
+      tags: [conversations]
+      operationId: listConversations
+      summary: List conversations, most recently updated first
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Page of conversations
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ConversationPage" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    post:
+      tags: [conversations]
+      operationId: createConversation
+      summary: Create an empty conversation
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateConversationRequest" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Conversation" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /conversations/{conversationId}:
+    parameters:
+      - $ref: "#/components/parameters/ConversationId"
+    get:
+      tags: [conversations]
+      operationId: getConversation
+      summary: Get a conversation (includes any pending approval)
+      responses:
+        "200":
+          description: Conversation
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Conversation" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    patch:
+      tags: [conversations]
+      operationId: updateConversation
+      summary: Rename a conversation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateConversationRequest" }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Conversation" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    delete:
+      tags: [conversations]
+      operationId: deleteConversation
+      summary: Delete a conversation, its messages and checkpoints (cancels any active run)
+      responses:
+        "204": { description: Deleted }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /conversations/{conversationId}/messages:
+    parameters:
+      - $ref: "#/components/parameters/ConversationId"
+    get:
+      tags: [conversations]
+      operationId: listMessages
+      summary: List messages, newest first
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Page of messages
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MessagePage" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    post:
+      tags: [chat]
+      operationId: sendMessage
+      summary: Send a user message and stream the assistant run
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SendMessageRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/EventStream" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /conversations/{conversationId}/regenerate:
+    parameters:
+      - $ref: "#/components/parameters/ConversationId"
+    post:
+      tags: [chat]
+      operationId: regenerate
+      summary: Regenerate the latest assistant message and stream the new run (general_chat answers only; others return 409 REGENERATE_NOT_SUPPORTED)
+      responses:
+        "200": { $ref: "#/components/responses/EventStream" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /conversations/{conversationId}/runs/resume:
+    parameters:
+      - $ref: "#/components/parameters/ConversationId"
+    post:
+      tags: [chat]
+      operationId: resumeRun
+      summary: Answer a pending tool approval and stream the resumed run
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ResumeRunRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/EventStream" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "500": { $ref: "#/components/responses/InternalError" }
+        "503": { $ref: "#/components/responses/ServiceUnavailable" }
+
+  /conversations/{conversationId}/runs/cancel:
+    parameters:
+      - $ref: "#/components/parameters/ConversationId"
+    post:
+      tags: [chat]
+      operationId: cancelRun
+      summary: Cancel the active run; the partial answer is kept with status cancelled
+      responses:
+        "202": { description: Cancellation requested }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /messages/{messageId}/feedback:
+    parameters:
+      - $ref: "#/components/parameters/MessageId"
+    put:
+      tags: [feedback]
+      operationId: putFeedback
+      summary: Rate an assistant message (overwrites a previous rating)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/FeedbackRequest" }
+      responses:
+        "200":
+          description: Saved
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Feedback" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /files:
+    get:
+      tags: [files]
+      operationId: listFiles
+      summary: List uploaded files, newest first
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Page of files
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FilePage" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    post:
+      tags: [files]
+      operationId: uploadFile
+      summary: Upload a file; processing happens asynchronously
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema: { $ref: "#/components/schemas/UploadFileRequest" }
+      responses:
+        "202":
+          description: Accepted; status is `pending`
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FileObject" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /files/{fileId}:
+    parameters:
+      - $ref: "#/components/parameters/FileId"
+    get:
+      tags: [files]
+      operationId: getFile
+      summary: Get file metadata and processing status
+      responses:
+        "200":
+          description: File
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FileObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    delete:
+      tags: [files]
+      operationId: deleteFile
+      summary: Delete a file and remove it from search
+      responses:
+        "204": { description: Deleted (vectors removed before responding) }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /documents:
+    get:
+      tags: [documents]
+      operationId: listDocuments
+      summary: List generated documents, newest first
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Page of documents
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DocumentPage" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /documents/{documentId}:
+    parameters:
+      - $ref: "#/components/parameters/DocumentId"
+    get:
+      tags: [documents]
+      operationId: getDocument
+      summary: Get document metadata and render status
+      responses:
+        "200":
+          description: Document
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DocumentObject" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    delete:
+      tags: [documents]
+      operationId: deleteDocument
+      summary: Delete a document and its PDF
+      responses:
+        "204": { description: Deleted }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /documents/{documentId}/download:
+    parameters:
+      - $ref: "#/components/parameters/DocumentId"
+    get:
+      tags: [documents]
+      operationId: downloadDocument
+      summary: Download the PDF (the client fetches it with the Bearer token and saves the blob)
+      responses:
+        "200":
+          description: PDF file, sent with `Content-Disposition attachment`
+          content:
+            application/pdf:
+              schema: { type: string, format: binary }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /memories:
+    get:
+      tags: [memories]
+      operationId: listMemories
+      summary: List the user's memories
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Page of memories
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MemoryPage" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    post:
+      tags: [memories]
+      operationId: createMemory
+      summary: Add a memory manually
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MemoryInput" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Memory" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    delete:
+      tags: [memories]
+      operationId: clearMemories
+      summary: Delete all memories
+      responses:
+        "204": { description: All memories deleted }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /memories/{memoryId}:
+    parameters:
+      - $ref: "#/components/parameters/MemoryId"
+    patch:
+      tags: [memories]
+      operationId: updateMemory
+      summary: Edit a memory
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MemoryInput" }
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Memory" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
+        "500": { $ref: "#/components/responses/InternalError" }
+    delete:
+      tags: [memories]
+      operationId: deleteMemory
+      summary: Delete a memory
+      responses:
+        "204": { description: Deleted }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/InternalError" }
+
+  /healthz:
+    get:
+      tags: [health]
+      operationId: healthz
+      summary: Liveness probe
+      security: []
+      responses:
+        "200":
+          description: Process is alive
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+  /readyz:
+    get:
+      tags: [health]
+      operationId: readyz
+      summary: Readiness probe (Postgres, Qdrant reachable; Langfuse optional)
+      security: []
+      responses:
+        "200":
+          description: Ready
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+        "503":
+          description: A required dependency is unavailable
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: 15-minute access token from /auth/login, /auth/register or /auth/refresh
+
+  headers:
+    RefreshCookie:
+      description: "`nexus_refresh=<token>; HttpOnly; Secure; SameSite=Strict; Path=/api/v1/auth; Max-Age=604800`"
+      schema: { type: string }
+
+  parameters:
+    Limit:
+      name: limit
+      in: query
+      required: false
+      description: Page size
+      schema: { type: integer, minimum: 1, maximum: 100, default: 30 }
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      description: Opaque cursor from a previous page's `next_cursor`
+      schema: { type: string }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: Client-generated UUID; repeats within 24 h return the original result
+      schema: { type: string, format: uuid }
+    ConversationId:
+      name: conversationId
+      in: path
+      required: true
+      description: Conversation id
+      schema: { type: string, format: uuid }
+    MessageId:
+      name: messageId
+      in: path
+      required: true
+      description: Message id
+      schema: { type: string, format: uuid }
+    FileId:
+      name: fileId
+      in: path
+      required: true
+      description: File id
+      schema: { type: string, format: uuid }
+    DocumentId:
+      name: documentId
+      in: path
+      required: true
+      description: Generated document id
+      schema: { type: string, format: uuid }
+    MemoryId:
+      name: memoryId
+      in: path
+      required: true
+      description: Memory id
+      schema: { type: string, format: uuid }
+
+  responses:
+    EventStream:
+      description: |
+        Server-Sent Events stream. Event order: `run_started`, then `route_selected` (new messages only), then any of
+        `token`, `tool_start`, `tool_end`, `citation`, `memory_updated`, `progress`, `document_created`; then either `interrupt` (stream ends, awaiting approval) or `usage` + `done`;
+        `error` may occur at any point and ends the stream.
+      content:
+        text/event-stream:
+          schema: { $ref: "#/components/schemas/StreamEvent" }
+    BadRequest:
+      description: Malformed request
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: Missing, invalid or expired credentials
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Forbidden:
+      description: "Not allowed: INVITE_INVALID (registration; same response for unknown, used, revoked or expired codes) or ACCOUNT_DISABLED (login, only after a correct password)"
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: Resource does not exist or belongs to another user
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Conflict:
+      description: Conflicts with current state (e.g. EMAIL_TAKEN, RUN_IN_PROGRESS, FILE_DUPLICATE, NO_PENDING_INTERRUPT, DOCUMENT_NOT_READY, REGENERATE_NOT_SUPPORTED)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    PayloadTooLarge:
+      description: File exceeds 20 MB
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    UnsupportedMediaType:
+      description: File type not supported
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    ValidationError:
+      description: Request body failed validation
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    TooManyRequests:
+      description: "Rate limit or daily spend budget exceeded (RATE_LIMITED, BUDGET_EXCEEDED). For BUDGET_EXCEEDED, `details.scope` is `user` (your daily budget) or `global` (the instance's daily cap)."
+      headers:
+        Retry-After:
+          description: Seconds until retry is allowed
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    InternalError:
+      description: Unexpected server error
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    ServiceUnavailable:
+      description: The server is restarting and not accepting new runs (SERVICE_RESTARTING); retry after the Retry-After delay
+      headers:
+        Retry-After:
+          description: Seconds until retry is likely to succeed
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Error:
+      type: object
+      description: Error envelope
+      required: [error]
+      properties:
+        error:
+          type: object
+          description: Error details
+          required: [code, message, request_id]
+          properties:
+            code: { type: string, description: "Machine-readable code, e.g. VALIDATION_FAILED, NOT_FOUND, BUDGET_EXCEEDED" }
+            message: { type: string, description: Human-readable message safe to show users }
+            details: { type: object, description: Optional structured details (e.g. field errors), additionalProperties: true }
+            request_id: { type: string, description: Request id for support and log correlation }
+      example:
+        error: { code: NOT_FOUND, message: Conversation not found., request_id: req_01JD3Y7Q }
+
+    Health:
+      type: object
+      description: Health probe result
+      required: [status]
+      properties:
+        status: { type: string, enum: [ok, degraded, unavailable], description: Overall status }
+        checks:
+          type: object
+          description: Per-dependency status
+          additionalProperties: { type: string, enum: [ok, unavailable] }
+      example: { status: ok, checks: { postgres: ok, qdrant: ok, langfuse: ok } }
+
+    RegisterRequest:
+      type: object
+      description: New account
+      required: [email, password, display_name]
+      properties:
+        invite_code: { type: string, minLength: 16, maxLength: 64, description: "Single-use invite code; required when the server runs with REGISTRATION_MODE=invite (the default)" }
+        email: { type: string, format: email, maxLength: 254, description: Email address (case-insensitive) }
+        password: { type: string, minLength: 10, maxLength: 128, description: Password }
+        display_name: { type: string, minLength: 1, maxLength: 60, description: Name shown in the UI }
+      example: { invite_code: nx_4f9c2a7e1b8d3c6a5e0f, email: marco@example.com, password: correct-horse-battery, display_name: Marco }
+
+    LoginRequest:
+      type: object
+      description: Credentials
+      required: [email, password]
+      properties:
+        email: { type: string, format: email, description: Email address }
+        password: { type: string, description: Password }
+      example: { email: marco@example.com, password: correct-horse-battery }
+
+    AuthResponse:
+      type: object
+      description: Access token and user
+      required: [access_token, token_type, expires_in, user]
+      properties:
+        access_token: { type: string, description: JWT access token }
+        token_type: { type: string, const: bearer, description: Always "bearer" }
+        expires_in: { type: integer, description: Seconds until the access token expires }
+        user: { $ref: "#/components/schemas/User" }
+      example:
+        access_token: eyJhbGciOiJIUzI1NiJ9.e30.sig
+        token_type: bearer
+        expires_in: 900
+        user: { id: 7c1e2f0a-3b4d-4e5f-8a9b-0c1d2e3f4a5b, email: marco@example.com, display_name: Marco, memory_enabled: true, created_at: "2026-11-19T10:00:00Z" }
+
+    User:
+      type: object
+      description: Current user
+      required: [id, email, display_name, memory_enabled, created_at]
+      properties:
+        id: { type: string, format: uuid, description: User id }
+        email: { type: string, format: email, description: Email address }
+        display_name: { type: string, description: Display name }
+        memory_enabled: { type: boolean, description: Whether long-term memory is on }
+        created_at: { type: string, format: date-time, description: Creation time (UTC) }
+      example: { id: 7c1e2f0a-3b4d-4e5f-8a9b-0c1d2e3f4a5b, email: marco@example.com, display_name: Marco, memory_enabled: true, created_at: "2026-11-19T10:00:00Z" }
+
+    UpdateMeRequest:
+      type: object
+      description: Fields to update (all optional)
+      properties:
+        display_name: { type: string, minLength: 1, maxLength: 60, description: Display name }
+        memory_enabled: { type: boolean, description: Turn long-term memory on or off }
+      example: { memory_enabled: false }
+
+    ChangePasswordRequest:
+      type: object
+      description: Password change
+      required: [current_password, new_password]
+      properties:
+        current_password: { type: string, description: Current password }
+        new_password: { type: string, minLength: 10, maxLength: 128, description: New password }
+      example: { current_password: correct-horse-battery, new_password: another-long-passphrase }
+
+    DeleteAccountRequest:
+      type: object
+      description: Confirmation for account deletion
+      required: [confirm_email]
+      properties:
+        confirm_email: { type: string, format: email, description: Must equal the account email }
+      example: { confirm_email: marco@example.com }
+
+    Usage:
+      type: object
+      description: Usage for the current UTC day
+      required: [day, spend_usd, budget_usd, tokens_used, messages, global_cap_reached, resets_at]
+      properties:
+        day: { type: string, format: date, description: UTC date }
+        spend_usd: { type: number, description: "Estimated spend today in USD (chat runs plus background jobs such as titles and memory extraction)" }
+        budget_usd: { type: number, description: Your daily spend budget in USD }
+        tokens_used: { type: integer, description: "Input + output tokens used today (output includes reasoning tokens)" }
+        messages: { type: integer, description: Messages sent today }
+        global_cap_reached: { type: boolean, description: "Whether the instance-wide daily cap has been reached (new runs are blocked for everyone)" }
+        resets_at: { type: string, format: date-time, description: When the budgets reset }
+      example: { day: "2026-11-19", spend_usd: 0.142, budget_usd: 0.5, tokens_used: 41230, messages: 18, global_cap_reached: false, resets_at: "2026-11-20T00:00:00Z" }
+
+    Conversation:
+      type: object
+      description: Conversation thread
+      required: [id, title, created_at, updated_at, has_active_run]
+      properties:
+        id: { type: string, format: uuid, description: Conversation id (also the LangGraph thread id) }
+        title: { type: string, description: Title (auto-generated or user-set) }
+        has_active_run: { type: boolean, description: Whether a run is currently streaming }
+        pending_interrupt:
+          description: Pending tool approval, if the last run is paused
+          oneOf:
+            - $ref: "#/components/schemas/PendingInterrupt"
+            - type: "null"
+        created_at: { type: string, format: date-time, description: Creation time }
+        updated_at: { type: string, format: date-time, description: Last activity time }
+      example: { id: 3f2a1b0c-9d8e-4f7a-b6c5-d4e3f2a1b0c9, title: Go error handling patterns, has_active_run: false, pending_interrupt: null, created_at: "2026-11-19T10:01:00Z", updated_at: "2026-11-19T10:05:00Z" }
+
+    ConversationPage:
+      type: object
+      description: Page of conversations
+      required: [items, next_cursor]
+      properties:
+        items: { type: array, description: Conversations, items: { $ref: "#/components/schemas/Conversation" } }
+        next_cursor: { type: [string, "null"], description: "Cursor for the next page, null at the end" }
+      example: { items: [], next_cursor: null }
+
+    CreateConversationRequest:
+      type: object
+      description: Optional initial values
+      properties:
+        title: { type: string, minLength: 1, maxLength: 100, description: Initial title (default "New chat") }
+      example: { title: Trip planning }
+
+    UpdateConversationRequest:
+      type: object
+      description: Rename
+      required: [title]
+      properties:
+        title: { type: string, minLength: 1, maxLength: 100, description: New title }
+      example: { title: Q3 churn analysis }
+
+    PendingInterrupt:
+      type: object
+      description: A tool call waiting for user approval
+      required: [interrupt_id, tool, args, created_at, expires_at]
+      properties:
+        interrupt_id: { type: string, description: Id to pass to /runs/resume }
+        tool: { type: string, enum: [web_search, research_plan, forget_memory], description: "Step awaiting approval: web_search (args query) every call; research_plan (args topic, queries) once per deep-research run; forget_memory (args candidates [{memory_id, content}], 1–3) before any memory is deleted by chat" }
+        args: { type: object, description: Proposed tool arguments, additionalProperties: true }
+        created_at: { type: string, format: date-time, description: When the run paused }
+        expires_at: { type: string, format: date-time, description: When the approval expires (24 h) }
+      example: { interrupt_id: int_9a8b7c, tool: web_search, args: { query: "Go 1.24 release notes" }, created_at: "2026-11-19T10:04:00Z", expires_at: "2026-11-20T10:04:00Z" }
+
+    Message:
+      type: object
+      description: A message in a conversation
+      required: [id, conversation_id, role, content, status, created_at]
+      properties:
+        id: { type: string, format: uuid, description: Message id }
+        conversation_id: { type: string, format: uuid, description: Conversation id }
+        role: { type: string, enum: [user, assistant], description: Author role }
+        content: { type: string, description: Markdown content }
+        status: { type: string, enum: [complete, cancelled, failed], description: Final status }
+        finish_reason: { type: [string, "null"], enum: [stop, length, cancelled, tool_limit, error, server_restart, null], description: "Why the run ended (assistant messages only); server_restart means the run was interrupted by a deploy or crash and reaped" }
+        tool_calls: { type: array, description: Tools used to produce this message, items: { $ref: "#/components/schemas/ToolCall" } }
+        citations: { type: array, description: Sources cited, items: { $ref: "#/components/schemas/Citation" } }
+        feedback: { type: [integer, "null"], enum: [-1, 1, null], description: "The user's rating, if any" }
+        usage: { $ref: "#/components/schemas/MessageUsage" }
+        intent: { type: [string, "null"], enum: [general_chat, manage_memory, generate_document, deep_research, null], description: "Pipeline that produced the message (assistant messages); Regenerate is offered only for general_chat" }
+        documents: { type: array, description: Documents generated by this message, items: { $ref: "#/components/schemas/DocumentObject" } }
+        created_at: { type: string, format: date-time, description: Creation time }
+      example: { id: 5b6c7d8e-1a2b-4c3d-9e8f-0a1b2c3d4e5f, conversation_id: 3f2a1b0c-9d8e-4f7a-b6c5-d4e3f2a1b0c9, role: assistant, content: "Churn fell to 3.1% in Q3 [1].", status: complete, tool_calls: [], citations: [], feedback: null, created_at: "2026-11-19T10:05:00Z" }
+
+    MessagePage:
+      type: object
+      description: Page of messages
+      required: [items, next_cursor]
+      properties:
+        items: { type: array, description: "Messages, newest first", items: { $ref: "#/components/schemas/Message" } }
+        next_cursor: { type: [string, "null"], description: "Cursor for older messages, null at the start" }
+      example: { items: [], next_cursor: null }
+
+    MessageUsage:
+      type: object
+      description: Token usage and cost for an assistant message
+      properties:
+        model: { type: string, description: Model that produced the answer }
+        prompt_tokens: { type: integer, description: Input tokens (all LLM calls in the run) }
+        cached_tokens: { type: integer, description: Input tokens served from the provider's prompt cache (billed at the cached rate) }
+        completion_tokens: { type: integer, description: "Output tokens, including reasoning tokens" }
+        cost_usd: { type: number, description: Estimated cost in USD }
+      example: { model: gpt-6.1-terra, prompt_tokens: 9820, cached_tokens: 7680, completion_tokens: 410, cost_usd: 0.0045 }
+
+    ToolCall:
+      type: object
+      description: A tool invocation
+      required: [id, name, args, status]
+      properties:
+        id: { type: string, description: Tool call id }
+        name: { type: string, enum: [search_my_files, web_search, calculator], description: Tool name }
+        args: { type: object, description: Arguments, additionalProperties: true }
+        status: { type: string, enum: [completed, failed, rejected, timed_out], description: Outcome }
+        summary: { type: string, description: Short human-readable result summary }
+      example: { id: call_1, name: search_my_files, args: { query: Q3 churn }, status: completed, summary: 4 passages found }
+
+    Citation:
+      type: object
+      description: A cited source
+      required: [index, source_type, title]
+      properties:
+        index: { type: integer, description: "Marker number used in the answer, e.g. [1]" }
+        source_type: { type: string, enum: [file, web], description: Source kind }
+        title: { type: string, description: File name or page title }
+        file_id: { type: [string, "null"], format: uuid, description: File id for file sources }
+        page: { type: [integer, "null"], description: Page number (PDF) }
+        url: { type: [string, "null"], format: uri, description: URL for web sources }
+        snippet: { type: string, description: Supporting excerpt (≤ 300 chars) }
+      example: { index: 1, source_type: file, title: q3-report.pdf, file_id: 1d2e3f4a-5b6c-4d7e-8f9a-0b1c2d3e4f5a, page: 4, url: null, snippet: "Monthly churn decreased from 3.8% to 3.1%..." }
+
+    SendMessageRequest:
+      type: object
+      description: New user message
+      required: [content]
+      properties:
+        content: { type: string, minLength: 1, maxLength: 16000, description: "Message text. A slash command at the very start (/pdf, /pdf last, /brief <topic>, /research <question>, /memory, /memory remember <text>, /memory forget <text>, /help) is parsed by the server and skips the intent router; a malformed command gets a usage reply" }
+      example: { content: "What does my Q3 report say about churn?" }
+
+    ResumeRunRequest:
+      type: object
+      description: Decision on a pending tool approval
+      required: [interrupt_id, decision]
+      properties:
+        interrupt_id: { type: string, description: From PendingInterrupt / interrupt event }
+        decision: { type: string, enum: [approve, edit, reject], description: User decision }
+        edited_args:
+          type: object
+          description: Replacement args when decision is "edit"
+          properties:
+            query: { type: string, minLength: 1, maxLength: 400, description: Edited search query (web_search) }
+            queries:
+              type: array
+              minItems: 1
+              maxItems: 6
+              description: Edited research plan (research_plan)
+              items: { type: string, minLength: 1, maxLength: 400 }
+            memory_id: { type: string, format: uuid, description: "forget_memory: the chosen candidate; send with decision approve (required when there are several candidates)" }
+      example: { interrupt_id: int_9a8b7c, decision: edit, edited_args: { query: Go 1.24 release notes generics } }
+
+    FeedbackRequest:
+      type: object
+      description: Rating
+      required: [score]
+      properties:
+        score: { type: integer, enum: [-1, 1], description: Thumbs down (-1) or up (1) }
+        comment: { type: string, maxLength: 1000, description: Optional comment }
+      example: { score: -1, comment: The number in the second paragraph is wrong. }
+
+    Feedback:
+      type: object
+      description: Stored rating
+      required: [message_id, score, created_at]
+      properties:
+        message_id: { type: string, format: uuid, description: Rated message }
+        score: { type: integer, enum: [-1, 1], description: Rating }
+        comment: { type: [string, "null"], description: Comment }
+        created_at: { type: string, format: date-time, description: When rated }
+      example: { message_id: 5b6c7d8e-1a2b-4c3d-9e8f-0a1b2c3d4e5f, score: 1, comment: null, created_at: "2026-11-19T10:06:00Z" }
+
+    UploadFileRequest:
+      type: object
+      description: Multipart upload (PDF, DOCX, TXT, MD; ≤ 20 MB)
+      required: [file]
+      properties:
+        file: { type: string, format: binary, description: File contents }
+      example: { file: "(binary)" }
+
+    FileObject:
+      type: object
+      description: Uploaded file metadata
+      required: [id, filename, mime_type, size_bytes, status, created_at]
+      properties:
+        id: { type: string, format: uuid, description: File id }
+        filename: { type: string, description: Original file name }
+        mime_type: { type: string, description: Detected MIME type }
+        size_bytes: { type: integer, description: Size in bytes }
+        status: { type: string, enum: [pending, processing, ready, failed], description: Processing status }
+        error: { type: [string, "null"], description: Failure reason when status is failed }
+        page_count: { type: [integer, "null"], description: Pages (PDF/DOCX) }
+        chunk_count: { type: [integer, "null"], description: Indexed chunks }
+        created_at: { type: string, format: date-time, description: Upload time }
+      example: { id: 1d2e3f4a-5b6c-4d7e-8f9a-0b1c2d3e4f5a, filename: q3-report.pdf, mime_type: application/pdf, size_bytes: 482113, status: ready, error: null, page_count: 12, chunk_count: 37, created_at: "2026-11-19T09:58:00Z" }
+
+    FilePage:
+      type: object
+      description: Page of files
+      required: [items, next_cursor]
+      properties:
+        items: { type: array, description: Files, items: { $ref: "#/components/schemas/FileObject" } }
+        next_cursor: { type: [string, "null"], description: Cursor for the next page }
+      example: { items: [], next_cursor: null }
+
+    DocumentObject:
+      type: object
+      description: A generated PDF document
+      required: [id, title, kind, status, created_at]
+      properties:
+        id: { type: string, format: uuid, description: Document id }
+        title: { type: string, description: Document title }
+        kind: { type: string, enum: [thread_summary, answer, news_brief, research_report], description: "What the document contains: the conversation, the last answer as written, a topic news brief, or a research report" }
+        status: { type: string, enum: [pending, ready, failed], description: Render status }
+        conversation_id: { type: [string, "null"], format: uuid, description: Conversation it was created in (null after that conversation is deleted) }
+        message_id: { type: [string, "null"], format: uuid, description: Assistant message that created it }
+        page_count: { type: [integer, "null"], description: Pages once rendered }
+        size_bytes: { type: [integer, "null"], description: PDF size once rendered }
+        error: { type: [string, "null"], description: Failure reason when status is failed }
+        created_at: { type: string, format: date-time, description: Creation time }
+      example: { id: 7e8f9a0b-1c2d-4e3f-8a9b-0c1d2e3f4a5b, title: "Rust news brief — 21 Nov 2026", kind: news_brief, status: ready, conversation_id: 3f2a1b0c-9d8e-4f7a-b6c5-d4e3f2a1b0c9, message_id: 5b6c7d8e-1a2b-4c3d-9e8f-0a1b2c3d4e5f, page_count: 3, size_bytes: 84211, error: null, created_at: "2026-11-21T08:00:12Z" }
+
+    DocumentPage:
+      type: object
+      description: Page of documents
+      required: [items, next_cursor]
+      properties:
+        items: { type: array, description: Documents, items: { $ref: "#/components/schemas/DocumentObject" } }
+        next_cursor: { type: [string, "null"], description: Cursor for the next page }
+      example: { items: [], next_cursor: null }
+
+    Memory:
+      type: object
+      description: A long-term memory about the user
+      required: [id, content, source, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid, description: Memory id }
+        content: { type: string, description: The remembered fact }
+        source: { type: string, enum: [extracted, chat, manual], description: "How it was created: background extraction, a memory command in chat, or Settings" }
+        conversation_id: { type: [string, "null"], format: uuid, description: Conversation it came from }
+        created_at: { type: string, format: date-time, description: Creation time }
+        updated_at: { type: string, format: date-time, description: Last update }
+      example: { id: 8e9f0a1b-2c3d-4e5f-a6b7-c8d9e0f1a2b3, content: Prefers concise answers and writes Go., source: extracted, conversation_id: 3f2a1b0c-9d8e-4f7a-b6c5-d4e3f2a1b0c9, created_at: "2026-11-19T10:06:00Z", updated_at: "2026-11-19T10:06:00Z" }
+
+    MemoryPage:
+      type: object
+      description: Page of memories
+      required: [items, next_cursor]
+      properties:
+        items: { type: array, description: Memories, items: { $ref: "#/components/schemas/Memory" } }
+        next_cursor: { type: [string, "null"], description: Cursor for the next page }
+      example: { items: [], next_cursor: null }
+
+    MemoryInput:
+      type: object
+      description: Memory text
+      required: [content]
+      properties:
+        content: { type: string, minLength: 1, maxLength: 500, description: The fact to remember }
+      example: { content: Lives in Berlin (CET). }
+
+    # ---------- Stream events (text/event-stream payloads) ----------
+    StreamEvent:
+      description: Any SSE event payload; the SSE `event:` field equals `type`
+      oneOf:
+        - $ref: "#/components/schemas/RunStartedEvent"
+        - $ref: "#/components/schemas/RouteSelectedEvent"
+        - $ref: "#/components/schemas/ProgressEvent"
+        - $ref: "#/components/schemas/DocumentCreatedEvent"
+        - $ref: "#/components/schemas/TokenEvent"
+        - $ref: "#/components/schemas/ToolStartEvent"
+        - $ref: "#/components/schemas/ToolEndEvent"
+        - $ref: "#/components/schemas/CitationEvent"
+        - $ref: "#/components/schemas/InterruptEvent"
+        - $ref: "#/components/schemas/MemoryUpdatedEvent"
+        - $ref: "#/components/schemas/UsageEvent"
+        - $ref: "#/components/schemas/DoneEvent"
+        - $ref: "#/components/schemas/ErrorEvent"
+      discriminator:
+        propertyName: type
+        mapping:
+          run_started: "#/components/schemas/RunStartedEvent"
+          route_selected: "#/components/schemas/RouteSelectedEvent"
+          progress: "#/components/schemas/ProgressEvent"
+          document_created: "#/components/schemas/DocumentCreatedEvent"
+          token: "#/components/schemas/TokenEvent"
+          tool_start: "#/components/schemas/ToolStartEvent"
+          tool_end: "#/components/schemas/ToolEndEvent"
+          citation: "#/components/schemas/CitationEvent"
+          interrupt: "#/components/schemas/InterruptEvent"
+          memory_updated: "#/components/schemas/MemoryUpdatedEvent"
+          usage: "#/components/schemas/UsageEvent"
+          done: "#/components/schemas/DoneEvent"
+          error: "#/components/schemas/ErrorEvent"
+
+    RunStartedEvent:
+      type: object
+      description: First event of every stream
+      required: [type, run_id, user_message_id, assistant_message_id]
+      properties:
+        type: { type: string, const: run_started, description: Event type }
+        run_id: { type: string, format: uuid, description: Run id (used for tracing) }
+        user_message_id: { type: [string, "null"], format: uuid, description: Persisted user message (null for regenerate/resume) }
+        assistant_message_id: { type: string, format: uuid, description: Id the assistant message will have }
+      example: { type: run_started, run_id: 0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d, user_message_id: 6c7d8e9f-0a1b-4c2d-8e3f-4a5b6c7d8e9f, assistant_message_id: 5b6c7d8e-1a2b-4c3d-9e8f-0a1b2c3d4e5f }
+
+    RouteSelectedEvent:
+      type: object
+      description: Which pipeline handles this message (new messages only, not resumes)
+      required: [type, intent, source]
+      properties:
+        type: { type: string, const: route_selected, description: Event type }
+        intent: { type: string, enum: [general_chat, manage_memory, generate_document, deep_research], description: Selected pipeline }
+        source: { type: string, enum: [router, command, fallback], description: "router = classified; command = forced by a slash command; fallback = low confidence or router failure" }
+        confidence: { type: [number, "null"], description: Router confidence (null unless source is router or fallback) }
+      example: { type: route_selected, intent: generate_document, source: router, confidence: 0.94 }
+
+    ProgressEvent:
+      type: object
+      description: Progress of a long-running pipeline (research, documents)
+      required: [type, stage]
+      properties:
+        type: { type: string, const: progress, description: Event type }
+        stage: { type: string, enum: [planning, searching, writing, rendering], description: Current stage }
+        done: { type: [integer, "null"], description: Completed steps in this stage }
+        total: { type: [integer, "null"], description: Total steps in this stage }
+      example: { type: progress, stage: searching, done: 3, total: 5 }
+
+    DocumentCreatedEvent:
+      type: object
+      description: A document was created (usually still pending render; poll GET /documents/{id})
+      required: [type, document]
+      properties:
+        type: { type: string, const: document_created, description: Event type }
+        document: { $ref: "#/components/schemas/DocumentObject" }
+      example: { type: document_created, document: { id: 7e8f9a0b-1c2d-4e3f-8a9b-0c1d2e3f4a5b, title: "Chat summary — Q3 churn analysis", kind: thread_summary, status: pending, created_at: "2026-11-21T10:05:00Z" } }
+
+    TokenEvent:
+      type: object
+      description: Incremental assistant text
+      required: [type, delta]
+      properties:
+        type: { type: string, const: token, description: Event type }
+        delta: { type: string, description: Text to append }
+      example: { type: token, delta: "Churn fell" }
+
+    ToolStartEvent:
+      type: object
+      description: A tool call started
+      required: [type, call_id, name, args]
+      properties:
+        type: { type: string, const: tool_start, description: Event type }
+        call_id: { type: string, description: Tool call id }
+        name: { type: string, description: Tool name }
+        args: { type: object, description: Tool arguments, additionalProperties: true }
+      example: { type: tool_start, call_id: call_1, name: search_my_files, args: { query: Q3 churn } }
+
+    ToolEndEvent:
+      type: object
+      description: A tool call finished
+      required: [type, call_id, name, status]
+      properties:
+        type: { type: string, const: tool_end, description: Event type }
+        call_id: { type: string, description: Tool call id }
+        name: { type: string, description: Tool name }
+        status: { type: string, enum: [completed, failed, rejected, timed_out], description: Outcome }
+        summary: { type: string, description: Short result summary }
+      example: { type: tool_end, call_id: call_1, name: search_my_files, status: completed, summary: 4 passages found }
+
+    CitationEvent:
+      type: object
+      description: A source the answer may cite
+      required: [type, citation]
+      properties:
+        type: { type: string, const: citation, description: Event type }
+        citation: { $ref: "#/components/schemas/Citation" }
+      example: { type: citation, citation: { index: 1, source_type: file, title: q3-report.pdf, file_id: 1d2e3f4a-5b6c-4d7e-8f9a-0b1c2d3e4f5a, page: 4, url: null, snippet: "Monthly churn decreased..." } }
+
+    InterruptEvent:
+      type: object
+      description: Run paused for approval; the stream ends after this event
+      required: [type, interrupt]
+      properties:
+        type: { type: string, const: interrupt, description: Event type }
+        interrupt: { $ref: "#/components/schemas/PendingInterrupt" }
+      example: { type: interrupt, interrupt: { interrupt_id: int_9a8b7c, tool: web_search, args: { query: Go 1.24 release notes }, created_at: "2026-11-19T10:04:00Z", expires_at: "2026-11-20T10:04:00Z" } }
+
+    MemoryUpdatedEvent:
+      type: object
+      description: Memories changed during this run (memory by chat)
+      required: [type, action, content]
+      properties:
+        type: { type: string, const: memory_updated, description: Event type }
+        action: { type: string, enum: [created, updated, deleted], description: What changed }
+        content: { type: string, description: Memory text }
+      example: { type: memory_updated, action: created, content: Prefers metric units. }
+
+    UsageEvent:
+      type: object
+      description: Token usage for the run
+      required: [type, usage]
+      properties:
+        type: { type: string, const: usage, description: Event type }
+        usage: { $ref: "#/components/schemas/MessageUsage" }
+      example: { type: usage, usage: { model: gpt-6.1-terra, prompt_tokens: 9820, cached_tokens: 7680, completion_tokens: 410, cost_usd: 0.0045 } }
+
+    DoneEvent:
+      type: object
+      description: Final event of a completed or cancelled run
+      required: [type, message_id, finish_reason]
+      properties:
+        type: { type: string, const: done, description: Event type }
+        message_id: { type: string, format: uuid, description: Persisted assistant message id }
+        finish_reason: { type: string, enum: [stop, length, cancelled, tool_limit], description: Why the run ended }
+      example: { type: done, message_id: 5b6c7d8e-1a2b-4c3d-9e8f-0a1b2c3d4e5f, finish_reason: stop }
+
+    ErrorEvent:
+      type: object
+      description: Error during the run; the stream ends after this event
+      required: [type, code, message, retryable]
+      properties:
+        type: { type: string, const: error, description: Event type }
+        code: { type: string, enum: [MODERATION_FLAGGED, BUDGET_EXCEEDED, LLM_UNAVAILABLE, CONTEXT_TOO_LONG, INTERNAL], description: Error code }
+        message: { type: string, description: User-safe message }
+        retryable: { type: boolean, description: Whether retrying may succeed }
+      example: { type: error, code: LLM_UNAVAILABLE, message: The model is unavailable right now. Try again., retryable: true }

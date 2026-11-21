@@ -2,10 +2,10 @@
 
 ## Stack
 
-- **Language:** `[[BACKEND_LANG]]`
-- **Framework:** `[[BACKEND_FRAMEWORK]]`
-- **Database:** `[[DATABASE]]`
-- **Auth:** `[[AUTH_STRATEGY]]`
+- **Language:** `Python 3.14`
+- **Framework:** `FastAPI`
+- **Database:** `PostgreSQL 18` via psycopg 3 (`postgresql+psycopg://`) — the only Postgres driver
+- **Auth:** `JWT (access token + rotating refresh cookie)`
 
 > Replace these placeholders with your actual stack after cloning.
 
@@ -56,7 +56,7 @@
 ## Running Locally
 
 ```bash
-# Fill in with actual commands for [[BACKEND_LANG]]
+# Fill in with actual commands for Python 3.14
 # Example for Go:
 # cd backend && go run ./cmd/server
 ```
@@ -77,3 +77,11 @@
 - The OpenAPI spec at `docs/02_outputs/04_api_spec.yaml` is the contract — do not add undocumented endpoints
 - All new endpoints must have a corresponding entry in the API spec and a contract test in `tests/contract/`
 - Run backend tests before marking any backend task as done
+
+## AI Code Rules (if the backend has LLM features)
+
+- Read `memory/ai.md` and `docs/02_outputs/08_ai_system_design.md` before touching prompts, graph, tools or retrieval
+- Follow `AGENTS.md` §3.8: no inline prompts, everything traced, tenant-filtered retrieval, fake LLM in unit tests
+- Model clients are created only through a single factory (timeouts, retries, fallback, tracing callbacks set there) — never instantiate a provider client ad hoc
+- Long-running AI work (ingestion, embedding, memory extraction, titles) runs in background jobs, not on the request path
+- After any AI behaviour change, run `make eval` and record results in the task file

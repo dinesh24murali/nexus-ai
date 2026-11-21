@@ -21,6 +21,15 @@
 |------|--------|-------|
 | | create / modify / delete | |
 
+## AI Impact & Eval Plan
+
+<!-- Skip with "none" if no prompt/model/graph/retrieval/memory changes. -->
+
+- Prompts / models / tools changed:
+- Which eval datasets will be run (`make eval` / `make eval-smoke`) and expected metric movement:
+- New dataset records to add:
+- Tracing: new spans/tags added? Any PII risk in traces?
+
 ## Uncertainties
 
 <!-- What do you need to verify before or during implementation? What might change your plan? -->
