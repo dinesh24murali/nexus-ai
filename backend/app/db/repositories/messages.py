@@ -3,6 +3,7 @@
 import uuid
 from datetime import datetime
 from decimal import Decimal
+from typing import Any
 
 from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,6 +34,8 @@ async def add(
     completion_tokens: int = 0,
     cost_usd: Decimal = Decimal(0),
     trace_id: str | None = None,
+    tool_calls: list[Any] | None = None,
+    citations: list[Any] | None = None,
 ) -> Message:
     message = Message(
         conversation_id=conversation_id,
@@ -47,6 +50,8 @@ async def add(
         completion_tokens=completion_tokens,
         cost_usd=cost_usd,
         trace_id=trace_id,
+        tool_calls=tool_calls or [],
+        citations=citations or [],
     )
     if id is not None:
         message.id = id

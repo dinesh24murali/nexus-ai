@@ -16,6 +16,7 @@ from collections.abc import Sequence
 
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 
+from app.graph.state import RecentFile
 from app.llm.prompts import load_prompt
 
 NONE_TEXT = "(none)"
@@ -25,6 +26,14 @@ def _bullets(items: Sequence[str]) -> str:
     return "\n".join(f"- {item}" for item in items) if items else NONE_TEXT
 
 
+def _files_block(files: Sequence[RecentFile]) -> str:
+    """One line per file: `id | name | date`. Names are user-supplied: the block sits inside the
+    `<context>` data wrapper, which `nexus.system` tells the model never to obey."""
+    return (
+        "\n".join(f"{f['id']} | {f['filename']} | {f['uploaded_at']}" for f in files) or NONE_TEXT
+    )
+
+
 def build_request(
     messages: Sequence[BaseMessage],
     *,
@@ -32,6 +41,7 @@ def build_request(
     memories: Sequence[str],
     today: str,
     user_display_name: str,
+    recent_files: Sequence[RecentFile] = (),
 ) -> list[BaseMessage]:
     request: list[BaseMessage] = [SystemMessage(load_prompt("nexus.system").render())]
     if summary:
@@ -42,7 +52,7 @@ def build_request(
             today=today,
             user_display_name=user_display_name,
             memories_block=_bullets(memories),
-            recent_files_block=NONE_TEXT,  # ready files arrive with M3 (RAG)
+            recent_files_block=_files_block(recent_files),
         )
     )
     newest_user = max(

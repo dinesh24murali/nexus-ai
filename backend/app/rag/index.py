@@ -8,6 +8,7 @@ build `documents_v2` and switch the alias in one atomic step. Every point carrie
 
 import uuid
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 from qdrant_client import AsyncQdrantClient, models
 
@@ -24,6 +25,16 @@ def point_id(file_id: uuid.UUID, chunk_index: int) -> uuid.UUID:
 
 def _eq(key: str, value: uuid.UUID) -> models.FieldCondition:
     return models.FieldCondition(key=key, match=models.MatchValue(value=str(value)))
+
+
+@dataclass(frozen=True)
+class Hit:
+    file_id: uuid.UUID
+    filename: str
+    page: int | None
+    chunk_index: int
+    text: str
+    score: float
 
 
 class QdrantIndex:
@@ -121,3 +132,42 @@ class QdrantIndex:
             ),
             wait=True,
         )
+
+    async def search(
+        self,
+        *,
+        user_id: uuid.UUID,
+        vector: Sequence[float],
+        file_ids: Sequence[uuid.UUID] | None = None,
+        limit: int,
+        score_threshold: float,
+    ) -> list[Hit]:
+        """Nearest chunks of ONE user's files. The `user_id` condition is mandatory and added
+        here, so no caller can search without it (LLM-T05); `file_ids` only narrows further."""
+        must: list[models.Condition] = [_eq("user_id", user_id)]
+        if file_ids:
+            must.append(
+                models.FieldCondition(
+                    key="file_id", match=models.MatchAny(any=[str(f) for f in file_ids])
+                )
+            )
+        response = await self.client.query_points(
+            self.alias,
+            query=list(vector),
+            query_filter=models.Filter(must=must),
+            limit=limit,
+            score_threshold=score_threshold,
+            with_payload=True,
+        )
+        return [
+            Hit(
+                file_id=uuid.UUID(str(point.payload["file_id"])),
+                filename=str(point.payload["filename"]),
+                page=point.payload["page"],
+                chunk_index=int(point.payload["chunk_index"]),
+                text=str(point.payload["text"]),
+                score=float(point.score),
+            )
+            for point in response.points
+            if point.payload
+        ]

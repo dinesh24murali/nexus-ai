@@ -11,7 +11,16 @@ import httpx2
 import openai
 import psycopg
 import pytest
-from app.api.sse import DoneEvent, ErrorEvent, RunStartedEvent, TokenEvent, UsageEvent
+from app.api.sse import (
+    CitationEvent,
+    DoneEvent,
+    ErrorEvent,
+    RunStartedEvent,
+    TokenEvent,
+    ToolEndEvent,
+    ToolStartEvent,
+    UsageEvent,
+)
 from app.core.config import Settings
 from app.core.errors import ApiError
 from app.db.repositories.messages import assistant_message_id
@@ -82,6 +91,7 @@ async def make_env(
         heartbeat_s: float = 0.05,
         flags: Any = None,
         tracer: Any = None,
+        retriever: Any = None,
     ) -> Env:
         user = UUID(make_user())
         row = db.execute(
@@ -99,6 +109,7 @@ async def make_env(
                 checkpointer=saver,
                 chat_model=chat or FakeChatModel(role="chat", token_delay_s=token_delay_s),
                 summarize_model=FakeChatModel(role="summarize"),
+                retriever=retriever,
             )
 
         service = RunService(
@@ -518,3 +529,105 @@ async def test_without_tracing_no_trace_id_is_stored(make_env: Callable[..., Any
         "SELECT trace_id FROM messages WHERE id = %s", (run.assistant_message_id,)
     ).fetchone()
     assert row == (None,)
+
+
+# --- tool calls, citations and the tool limit ---
+
+
+def rag_env_kwargs(fixtures: str | None = None) -> dict[str, Any]:
+    from pathlib import Path
+
+    from tests.graph.retrieval_support import StubRetriever
+
+    kwargs: dict[str, Any] = {"retriever": StubRetriever()}
+    if fixtures:
+        kwargs["chat"] = FakeChatModel(role="chat", fixtures_dir=Path(fixtures))
+    return kwargs
+
+
+async def test_a_search_streams_its_events_and_stores_tool_calls_and_citations(
+    make_env: Any, db: psycopg.Connection[Any]
+) -> None:
+    env: Env = await make_env(**rag_env_kwargs())
+
+    events = await collect(await env.send("[[fixture:rag]] what about churn?"))
+
+    kinds = types(events)
+    assert kinds[0] == "run_started" and kinds[-2:] == ["usage", "done"]
+    assert kinds.index("tool_start") < kinds.index("citation") < kinds.index("tool_end")
+    assert kinds.index("tool_end") < kinds.index("token")
+    assert "spend" not in kinds  # an internal event: never sent to the client
+    start = next(e for e in events if isinstance(e, ToolStartEvent))
+    end = next(e for e in events if isinstance(e, ToolEndEvent))
+    assert (start.name, start.args) == ("search_my_files", {"query": "churn"})
+    assert (end.call_id, end.status, end.summary) == (start.call_id, "completed", "1 passage found")
+    assert next(e for e in events if isinstance(e, CitationEvent)).citation.index == 1
+
+    row = db.execute(
+        "SELECT content, tool_calls, citations, finish_reason FROM messages"
+        " WHERE role = 'assistant'"
+    ).fetchone()
+    assert row
+    assert row[0].endswith("[1].")
+    assert row[1] == [
+        {
+            "id": start.call_id,
+            "name": "search_my_files",
+            "args": {"query": "churn"},
+            "status": "completed",
+            "summary": "1 passage found",
+        }
+    ]
+    assert [c["index"] for c in row[2]] == [1] and row[2][0]["source_type"] == "file"
+    assert row[3] == "stop"
+
+
+async def test_only_the_answer_after_the_search_is_the_stored_text(
+    make_env: Any, db: psycopg.Connection[Any]
+) -> None:
+    env: Env = await make_env(**rag_env_kwargs())
+    events = await collect(await env.send("[[fixture:rag]] churn?"))
+
+    streamed = "".join(e.delta for e in events if isinstance(e, TokenEvent))
+    stored = db.execute("SELECT content FROM messages WHERE role = 'assistant'").fetchone()
+    assert stored and stored[0] == streamed
+
+
+async def test_the_query_embedding_is_billed_to_the_run(
+    make_env: Any, db: psycopg.Connection[Any]
+) -> None:
+    from tests.graph.retrieval_support import StubRetriever
+
+    # 10 million embedding tokens at $0.02 per million = $0.20, far above the fake chat cost.
+    env: Env = await make_env(retriever=StubRetriever(embedding_tokens=10_000_000))
+
+    events = await collect(await env.send("[[fixture:rag]] churn?"))
+
+    stored = db.execute("SELECT cost_usd FROM messages WHERE role = 'assistant'").fetchone()
+    daily = db.execute(
+        "SELECT cost_usd FROM usage_daily WHERE user_id = %s", (env.user,)
+    ).fetchone()
+    usage = next(e for e in events if isinstance(e, UsageEvent))
+    assert stored and daily
+    assert Decimal("0.20") <= stored[0] < Decimal("0.21")
+    assert daily[0] == stored[0]
+    assert usage.usage.cost_usd == stored[0]
+
+
+async def test_running_out_of_tool_calls_ends_the_run_with_tool_limit(
+    make_env: Any, db: psycopg.Connection[Any]
+) -> None:
+    from pathlib import Path
+
+    fixtures = str(Path(__file__).parents[1] / "graph" / "fixtures")
+    env: Env = await make_env(**rag_env_kwargs(fixtures))
+
+    events = await collect(await env.send("[[fixture:cap]] search everything"))
+
+    done = events[-1]
+    assert isinstance(done, DoneEvent) and done.finish_reason == "tool_limit"
+    assert len([e for e in events if isinstance(e, ToolStartEvent)]) == 6
+    stored = db.execute(
+        "SELECT finish_reason, status, content FROM messages WHERE role = 'assistant'"
+    ).fetchone()
+    assert stored == ("tool_limit", "complete", "Done with what I could find.")

@@ -1,9 +1,14 @@
 """Reading Qdrant directly, so tests can check what the index really stored."""
 
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from app.llm.fake import FakeEmbeddingsClient
+from app.llm.tokens import count_text
+from app.rag.chunker import Chunk
+from app.rag.embedder import Embedder
 from app.rag.index import QdrantIndex
 from qdrant_client import models
 
@@ -46,3 +51,33 @@ async def points_of(index: QdrantIndex, file_id: uuid.UUID) -> list[StoredPoint]
 
 async def drop(index: QdrantIndex) -> None:
     await index.client.delete_collection(index.collection)  # takes its alias with it
+
+
+ALICE = uuid.uuid4()
+BOB = uuid.uuid4()
+
+
+def embedder() -> Embedder:
+    return Embedder(FakeEmbeddingsClient(), "fake")
+
+
+async def ingest(
+    index: QdrantIndex,
+    user_id: uuid.UUID,
+    texts: list[str],
+    *,
+    filename: str = "a.pdf",
+    pages: Sequence[int | None] | None = None,
+    file_id: uuid.UUID | None = None,
+) -> uuid.UUID:
+    file_id = file_id or uuid.uuid4()
+    page_of: Sequence[int | None] = pages or [1] * len(texts)
+    chunks = [
+        Chunk(index=i, page=page_of[i], text=t, tokens=count_text(t)) for i, t in enumerate(texts)
+    ]
+    vectors = (await embedder().embed(texts)).vectors
+    await index.ensure_collection()
+    await index.upsert(
+        user_id=user_id, file_id=file_id, filename=filename, chunks=chunks, vectors=vectors
+    )
+    return file_id

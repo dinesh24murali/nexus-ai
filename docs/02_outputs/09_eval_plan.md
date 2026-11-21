@@ -22,7 +22,7 @@ All in `evals/datasets/*.jsonl`, mirrored to Langfuse datasets of the same name;
 | Dataset | Purpose | Full / smoke size | Record schema | Built from |
 |---------|---------|-------------------|---------------|-----------|
 | `chat.golden` | General answers, formatting, refusals | 30 / 8 | `{id, input, expect: {must_include?, must_not_include?, should_refuse}, smoke}` | hand-written |
-| `rag.golden` | Q&A over fixture corpus (`evals/fixtures/docs/`, 8 docs: report PDF, policy DOCX, README MD…) | 40 / 10 | `{id, input, reference_answer, reference_chunks: [{file, page}], answerable: bool, smoke}` | AI-drafted from chunks + developer-reviewed |
+| `rag.golden` | Q&A over fixture corpus (`evals/fixtures/docs/`, 8 docs: report PDF, policy DOCX, README MD…) | 40 / 10 | `{id, input, kind, reference_answer, reference_chunks: [{file, page}], evidence?, key_facts?, answerable: bool, smoke}` (`kind` = fact \| multi \| whole_doc \| unanswerable; `evidence` = phrases that must be on the referenced pages, checked against the real parser by a test; `key_facts` = what a correct answer contains). Built 2026-11-21: 23 fact, 6 multi, 4 whole_doc, 7 unanswerable; the smoke 10 include all whole_doc cases (they answer the per-file synopsis question, doc 08 §5). Corpus: `evals/fixtures/docs/` (sources + `manifest.json`; PDF/DOCX built at run time) | AI-drafted from chunks + developer-reviewed (**review pending**) |
 | `tools.routing` | Correct tool or no tool, valid args, approval interrupt, multi-step order (§9) | 30 / 10 | `{id, input, setup?: {docs?}, expected_tool: name\|null, expected_args_contains?, expect_interrupt: bool, expected_sequence?: [name], smoke}` | hand-written |
 | `memory.extract` | Extraction ops from a single turn | 25 / 6 | `{id, user_message, assistant_message, existing_memories, expected_ops: [...], forbidden: [...], smoke}` | hand-written |
 | `memory.e2e` | Memory saved in convo A used in convo B; v1.1: memory commands, including confirmed forget | 8 / 2 | `{id, turns_a: [...], probe_b, expect_in_answer, smoke}` | hand-written |
@@ -77,6 +77,9 @@ Every metric has a **target** (the number below) and a **gate type** (ADR-0009):
 | `rag.faithfulness` | RAG | judge `eval.judge.faithfulness` over answer vs retrieved context | ≥ 0.85 | advisory → **regression** once the judge is calibrated (TASK-037) |
 | `rag.citation_accuracy` | RAG | every `[n]` maps to a passage that supports the sentence (judge on the pair) | ≥ 0.90 | advisory |
 | `rag.unanswerable_accuracy` | RAG | answerable=false → says not found (judge) | ≥ 0.90 | advisory |
+| `rag.answer_correctness` (+ `.whole_doc`) | RAG | `eval.judge.facts` over the case's `key_facts` (added 2026-11-21; `.whole_doc` = whole-document questions only, the evidence for the synopsis decision) | — | advisory |
+| `rag.citation_validity` | RAG | deterministic: `[n]` markers that point at a returned passage; no marker scores 0 (added 2026-11-21; the judged `rag.citation_accuracy` above is not built yet) | — | advisory |
+| `rag.search_rate` | RAG | share of answerable questions where the model searched at all (informational: separates "did not look" from "looked and missed") | — | advisory |
 | `tools.selection_accuracy` | Tools | exact on first tool call name (or none) | ≥ 0.90 | regression |
 | `tools.arg_validity` | Tools | Pydantic validation passes + expected_args_contains | ≥ 0.98 | regression |
 | `tools.unnecessary_call_rate` | Tools | expected none but called (lower is better) | ≤ 0.10 | regression |

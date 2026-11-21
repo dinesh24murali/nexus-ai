@@ -30,6 +30,7 @@ __all__ = [
     "mark_failed",
     "mark_processing",
     "mark_ready",
+    "recent_ready",
 ]
 
 
@@ -101,6 +102,17 @@ async def list_page(
     items = rows[:limit]
     next_cursor = encode_cursor(items[-1].created_at, items[-1].id) if len(rows) > limit else None
     return items, next_cursor
+
+
+async def recent_ready(session: AsyncSession, user_id: uuid.UUID, *, limit: int) -> list[File]:
+    """The caller's newest files that can be searched (status `ready`)."""
+    stmt = (
+        select(File)
+        .where(File.user_id == user_id, File.status == "ready")
+        .order_by(File.created_at.desc(), File.id.asc())
+        .limit(limit)
+    )
+    return list((await session.execute(stmt)).scalars())
 
 
 async def _set(

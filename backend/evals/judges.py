@@ -20,7 +20,13 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 _log = structlog.get_logger("nexus.evals.judges")
 _FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
 
-JUDGE_PROMPTS = ("eval.judge.relevance", "eval.judge.refusal", "eval.judge.facts")
+JUDGE_PROMPTS = (
+    "eval.judge.relevance",
+    "eval.judge.refusal",
+    "eval.judge.facts",
+    "eval.judge.faithfulness",
+    "eval.judge.notfound",
+)
 
 
 class _Relevance(BaseModel):
@@ -45,6 +51,24 @@ class _Facts(BaseModel):
     model_config = ConfigDict(extra="ignore", strict=True)
 
     facts: list[_FactVerdict]
+
+
+class _ClaimVerdict(BaseModel):
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+    supported: bool
+
+
+class _NotFound(BaseModel):
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+    not_found: bool
+
+
+class _Claims(BaseModel):
+    model_config = ConfigDict(extra="ignore", strict=True)
+
+    claims: list[_ClaimVerdict]
 
 
 def parse_json(text: str) -> Any:
@@ -99,3 +123,29 @@ class Judges:
                 _log.warning("judge_fact_count_mismatch")
             return None
         return sum(f.present for f in verdict.facts) / len(key_facts)
+
+    async def faithfulness(
+        self, question: str, passages: Sequence[str], answer: str
+    ) -> float | None:
+        """Share of the answer's claims the passages support. None when the judge failed or found
+        no claim to check: such an answer is left out of the metric, not scored as faithful."""
+        numbered = "\n".join(
+            f'<passage index="{i}">\n{text}\n</passage>' for i, text in enumerate(passages, 1)
+        )
+        prompt = load_prompt("eval.judge.faithfulness").render(
+            question=question, passages=numbered, answer=answer
+        )
+        verdict = await self._ask(prompt, _Claims)
+        if verdict is None:
+            return None
+        if not verdict.claims:
+            self.failures += 1
+            _log.warning("judge_found_no_claims")
+            return None
+        return sum(c.supported for c in verdict.claims) / len(verdict.claims)
+
+    async def not_found(self, question: str, answer: str) -> bool | None:
+        """Does the answer correctly say the files do not contain what was asked?"""
+        prompt = load_prompt("eval.judge.notfound").render(question=question, answer=answer)
+        verdict = await self._ask(prompt, _NotFound)
+        return verdict.not_found if verdict else None

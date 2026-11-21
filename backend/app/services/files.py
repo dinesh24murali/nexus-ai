@@ -24,6 +24,8 @@ from app.core.config import Settings
 from app.core.errors import ApiError
 from app.db.models import File
 from app.db.repositories import files as repo
+from app.graph.nodes.load_context import RecentFiles
+from app.graph.state import RecentFile
 from app.jobs import queue
 from app.rag import formats
 
@@ -220,3 +222,24 @@ def _duplicate(existing_id: uuid.UUID | None) -> ApiError:
         "You have already uploaded this file.",
         details={"file_id": str(existing_id)} if existing_id else None,
     )
+
+
+RECENT_FILES = 5  # how many files the late context message lists (doc 08 section 6)
+
+
+def recent_files_for(factory: async_sessionmaker[AsyncSession]) -> RecentFiles:
+    """The lookup `load_context` uses: the caller's newest ready files as (id, name, date)."""
+
+    async def recent(user_id: uuid.UUID) -> list[RecentFile]:
+        async with factory() as session:
+            rows = await repo.recent_ready(session, user_id, limit=RECENT_FILES)
+        return [
+            {
+                "id": str(r.id),
+                "filename": r.filename,
+                "uploaded_at": r.created_at.date().isoformat(),
+            }
+            for r in rows
+        ]
+
+    return recent

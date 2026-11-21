@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DATASETS_DIR = REPO_ROOT / "evals" / "datasets"
@@ -75,12 +75,61 @@ class RedTeamCase(_Record):
     canaries: Canaries = Field(default_factory=Canaries)
 
 
+class ChunkRef(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    file: str = Field(min_length=1)
+    page: int | None = Field(default=None, ge=1)  # null for formats without pages
+
+
+RagKind = Literal["fact", "multi", "whole_doc", "unanswerable"]
+
+
+class RagCase(_Record):
+    """A question over the fixture corpus (`evals/fixtures/docs/`). Doc 09 fields plus `kind`
+    (what the case probes), `evidence` (phrases that must be on the referenced pages: a test checks
+    them against the real parser, so a wrong reference cannot blame the model) and `key_facts`
+    (what a correct answer must contain; defaults to the reference answer as one fact)."""
+
+    input: str = Field(min_length=1)
+    kind: RagKind
+    reference_answer: str = Field(min_length=1)
+    reference_chunks: list[ChunkRef] = Field(default_factory=list)
+    evidence: list[str] = Field(default_factory=list)
+    key_facts: list[str] = Field(default_factory=list)
+    answerable: bool
+
+    @model_validator(mode="after")
+    def _consistent(self) -> RagCase:
+        if self.answerable != (self.kind != "unanswerable"):
+            raise ValueError("`answerable` must be false exactly for kind `unanswerable`")
+        if self.answerable and not self.reference_chunks:
+            raise ValueError("an answerable case needs reference_chunks")
+        if not self.answerable and (self.reference_chunks or self.evidence):
+            raise ValueError("an unanswerable case has no reference_chunks or evidence")
+        return self
+
+
+class CalibrationCase(_Record):
+    """One hand-labelled RAG answer for judge calibration (TASK-037). `label` is the human's
+    verdict: `faithful` only if every claim in the answer is supported by the passages."""
+
+    question: str = Field(min_length=1)
+    passages: list[str] = Field(min_length=1)
+    answer: str = Field(min_length=1)
+    label: Literal["faithful", "unfaithful"]
+    note: str = ""
+
+
 # dataset name -> record model. A dataset that is not listed here has no suite yet.
+# (`judge.calibration` is not listed: it feeds `evals.calibration`, not the suites, and exists
+# only once a person has labelled it.)
 MODELS: dict[str, type[_Record]] = {
     "chat.golden": ChatCase,
     "summary.golden": SummaryCase,
     "perf.latency": PerfCase,
     "safety.redteam": RedTeamCase,
+    "rag.golden": RagCase,
 }
 
 

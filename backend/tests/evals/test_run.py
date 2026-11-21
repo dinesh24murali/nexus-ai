@@ -176,6 +176,9 @@ def test_a_fake_run_never_writes_the_file_the_gate_reads(fake_settings: Settings
 def test_argument_parsing() -> None:
     args = parse_args(["--suite", "full", "--runs", "2", "--dataset", "chat.golden"])
     assert (args.suite, args.runs, args.dataset) == ("full", 2, ["chat.golden"])
+    assert args.no_rag is False
+    assert parse_args(["--suite", "smoke", "--no-rag"]).no_rag is True
+    assert parse_args(["--suite", "smoke", "--dataset", "rag.golden"]).dataset == ["rag.golden"]
     with pytest.raises(SystemExit):
         parse_args(["--suite", "full", "--runs", "0"])
     with pytest.raises(SystemExit):
@@ -187,7 +190,7 @@ def test_main_in_fake_mode_writes_a_fake_results_file(
 ) -> None:
     monkeypatch.setattr(run_module, "get_settings", lambda: fake_settings)
     out = tmp_path / "r.json"
-    assert run_module.main(["--suite", "smoke", "--out", str(out)]) == 0
+    assert run_module.main(["--suite", "smoke", "--no-rag", "--out", str(out)]) == 0
     assert json.loads(out.read_text())["run"]["mode"] == "fake"
     assert "not measured: chat.refusal_accuracy" in capsys.readouterr().out
 
@@ -225,3 +228,50 @@ async def test_a_provider_block_on_a_refusal_case_counts_as_a_refusal(
     assert report.run["errors"] == 1
     assert report.metrics["chat.refusal_accuracy"] == 1.0
     assert "safety.system_prompt_leaks" not in report.metrics  # nothing was measured, not "0"
+
+
+# --- rag.golden ---
+
+
+def rag_target() -> Any:
+    import uuid
+
+    from evals.runner import RagTarget
+
+    from tests.graph.retrieval_support import StubRetriever, passage
+
+    rag_graph = build_graph(
+        checkpointer=None,
+        chat_model=FakeChatModel(),
+        summarize_model=FakeChatModel(role="summarize"),
+        retriever=StubRetriever([passage(filename="q3-business-review.pdf", page=2)]),
+    )
+    return RagTarget(graph=rag_graph, user_id=uuid.uuid4())
+
+
+async def test_the_rag_dataset_runs_only_when_a_rag_target_is_given(
+    fake_settings: Settings,
+) -> None:
+    without = await suite(fake_settings)
+    assert "rag.golden" not in without.run["datasets"]
+    assert not any(k.startswith("rag.") for k in without.run["skipped_metrics"])
+
+    report = await suite(fake_settings, rag=rag_target(), only=["rag.golden"])
+    assert report.run["datasets"]["rag.golden"]["cases"] == 10  # the smoke subset
+    assert report.run["case_runs"] == 10
+    # No judge: the deterministic metrics are measured, the judged ones are listed as skipped.
+    assert {"rag.context_recall", "rag.search_rate", "rag.citation_validity"} <= set(report.metrics)
+    assert {"rag.faithfulness", "rag.answer_correctness", "rag.unanswerable_accuracy"} <= set(
+        report.run["skipped_metrics"]
+    )
+
+
+async def test_the_rag_metrics_are_all_listed_when_the_suite_runs_with_a_judge(
+    fake_settings: Settings,
+) -> None:
+    from tests.evals.test_rag_step import judges
+
+    report = await suite(fake_settings, rag=rag_target(), judges=judges(), only=["rag.golden"])
+    # The fake model never searches, so nothing was returned for faithfulness to be judged against.
+    assert report.run["skipped_metrics"] == ["rag.faithfulness"]
+    assert "rag.answer_correctness.whole_doc" in report.metrics

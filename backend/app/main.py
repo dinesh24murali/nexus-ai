@@ -17,8 +17,9 @@ from app.core.runtime_flags import RuntimeFlags
 from app.core.shutdown import chain_sigterm
 from app.db.session import create_engine, create_session_factory
 from app.llm.tracing import Tracer
+from app.rag.retriever import lazy_retriever
 from app.services.feedback import FeedbackService
-from app.services.files import FileService
+from app.services.files import FileService, recent_files_for
 from app.services.runs import DRAIN_TIMEOUT_S, RunService, graph_factory_for
 
 _log = structlog.get_logger("nexus.app")
@@ -51,7 +52,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         runs = RunService(
             factory=app.state.session_factory,
             settings=settings,
-            graph_factory=graph_factory_for(settings, AsyncPostgresSaver(pool)),  # type: ignore[arg-type]
+            graph_factory=graph_factory_for(
+                settings,
+                AsyncPostgresSaver(pool),  # type: ignore[arg-type]
+                retriever=lazy_retriever(settings),
+                recent_files=recent_files_for(app.state.session_factory),
+            ),
             flags=app.state.flags,
             tracer=tracer,
         )

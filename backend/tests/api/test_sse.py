@@ -63,6 +63,23 @@ def test_every_event_we_emit_matches_the_spec(stream_event_validator: Any) -> No
         ),
         sse.DoneEvent(message_id=uuid4(), finish_reason="stop"),
         sse.DoneEvent(message_id=uuid4(), finish_reason="cancelled"),
+        sse.DoneEvent(message_id=uuid4(), finish_reason="tool_limit"),
+        sse.ToolStartEvent(call_id="call_1", name="search_my_files", args={"query": "churn"}),
+        sse.ToolEndEvent(
+            call_id="call_1", name="search_my_files", status="completed", summary="1 passage found"
+        ),
+        sse.ToolEndEvent(call_id="call_2", name="search_my_files", status="timed_out"),
+        sse.CitationEvent(
+            citation=sse.Citation(
+                index=1,
+                source_type="file",
+                title="q3-report.pdf",
+                file_id=uuid4(),
+                page=4,
+                url=None,
+                snippet="Churn fell.",
+            )
+        ),
         sse.ErrorEvent(code="LLM_UNAVAILABLE", message="try again", retryable=True),
     ]
     for event in events:

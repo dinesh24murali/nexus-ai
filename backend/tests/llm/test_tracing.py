@@ -128,7 +128,10 @@ def test_run_config_carries_the_documented_trace_fields(tracer: Tracer) -> None:
     assert meta["langfuse_trace_name"] == "chat.turn"
     assert meta["run_id"] == "run-1"
     assert meta["assistant_message_id"] == "msg-9"
-    assert meta["prompt_versions"] == {"nexus.system": 1, "nexus.summarize": 1}
+    assert meta["prompt_versions"] == {
+        "nexus.system": load_prompt("nexus.system").version,
+        "nexus.summarize": load_prompt("nexus.summarize").version,
+    }
     assert {"env:test", "feature:chat"} <= set(config["tags"])
     assert "langfuse_tags" not in meta  # plain LangChain `tags` already reach the trace
 
@@ -149,8 +152,8 @@ async def test_trace_reaches_langfuse_with_user_session_name_and_tags(
     assert a["langfuse.trace.name"] == "chat.turn"
     assert "env:test" in a["langfuse.trace.tags"]
     assert json.loads(a["langfuse.trace.metadata.prompt_versions"]) == {
-        "nexus.system": 1,
-        "nexus.summarize": 1,
+        "nexus.system": load_prompt("nexus.system").version,
+        "nexus.summarize": load_prompt("nexus.summarize").version,
     }
 
 

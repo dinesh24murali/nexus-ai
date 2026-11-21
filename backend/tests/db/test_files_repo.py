@@ -167,3 +167,37 @@ async def test_ready_clears_an_earlier_error(session_factory: Factory, make_user
         row = await files.get(session, user, file_id)
 
     assert row is not None and row.error is None
+
+
+async def make_ready(factory: Factory, user: UUID, name: str) -> UUID:
+    file_id = await add(factory, user, name=name)
+    async with factory() as session, session.begin():
+        await files.mark_ready(session, user, file_id, chunk_count=1, page_count=1)
+    return file_id
+
+
+async def test_recent_ready_lists_only_ready_files_newest_first_up_to_the_limit(
+    session_factory: Factory, make_user: Any
+) -> None:
+    user = UUID(make_user())
+    ready = [await make_ready(session_factory, user, f"r{i}.pdf") for i in range(6)]
+    await add(session_factory, user, name="still-pending.pdf")
+    failed = await add(session_factory, user, name="failed.pdf")
+    async with session_factory() as session, session.begin():
+        await files.mark_failed(session, user, failed, "bad")
+
+    async with session_factory() as session:
+        recent = await files.recent_ready(session, user, limit=5)
+
+    assert [f.id for f in recent] == list(reversed(ready))[:5]
+
+
+async def test_recent_ready_never_lists_another_users_files(
+    session_factory: Factory, make_user: Any
+) -> None:
+    mine = UUID(make_user())
+    other = UUID(make_user("other@example.com"))
+    await make_ready(session_factory, other, "theirs.pdf")
+
+    async with session_factory() as session:
+        assert await files.recent_ready(session, mine, limit=5) == []

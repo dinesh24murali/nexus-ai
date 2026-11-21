@@ -6,9 +6,9 @@
   },
   "packages": {
     "backend/app/llm": 97,
-    "backend/app/graph": 91,
+    "backend/app/graph": 94,
     "backend/app/jobs": 96,
-    "backend/app/services": 91,
+    "backend/app/services": 93,
     "backend/app/core": 96,
     "frontend/src/api": 97,
     "frontend/src/features/chat": 88,

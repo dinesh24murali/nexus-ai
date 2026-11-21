@@ -1,0 +1,7 @@
+{
+  "turns": [
+    {"text": "", "tool_calls": [{"name": "search_my_files", "args": {"query": "first"}}]},
+    {"text": "", "tool_calls": [{"name": "search_my_files", "args": {"query": "second"}}]},
+    {"text": "Both searches answered [1] [2]."}
+  ]
+}

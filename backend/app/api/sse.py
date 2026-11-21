@@ -8,7 +8,7 @@ so one `data:` line is always enough.
 
 import uuid
 from decimal import Decimal
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, field_serializer
 
@@ -30,6 +30,40 @@ class RunStartedEvent(_Event):
 class TokenEvent(_Event):
     type: Literal["token"] = "token"
     delta: str
+
+
+class ToolStartEvent(_Event):
+    type: Literal["tool_start"] = "tool_start"
+    call_id: str
+    name: str
+    args: dict[str, Any]
+
+
+class ToolEndEvent(_Event):
+    type: Literal["tool_end"] = "tool_end"
+    call_id: str
+    name: str
+    status: Literal["completed", "failed", "rejected", "timed_out"]
+    summary: str = ""
+
+
+class Citation(BaseModel):
+    """A source the answer may cite as `[index]` (the API's `Citation` schema)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    index: int
+    source_type: Literal["file", "web"]
+    title: str
+    file_id: uuid.UUID | None = None
+    page: int | None = None
+    url: str | None = None
+    snippet: str = ""
+
+
+class CitationEvent(_Event):
+    type: Literal["citation"] = "citation"
+    citation: Citation
 
 
 class Usage(BaseModel):
@@ -64,7 +98,16 @@ class ErrorEvent(_Event):
     retryable: bool
 
 
-Event = RunStartedEvent | TokenEvent | UsageEvent | DoneEvent | ErrorEvent
+Event = (
+    RunStartedEvent
+    | TokenEvent
+    | ToolStartEvent
+    | ToolEndEvent
+    | CitationEvent
+    | UsageEvent
+    | DoneEvent
+    | ErrorEvent
+)
 
 TERMINAL_TYPES = frozenset({"done", "error"})  # the stream ends after one of these
 

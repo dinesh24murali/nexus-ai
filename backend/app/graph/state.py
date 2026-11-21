@@ -1,13 +1,28 @@
 """Graph state (docs/02_outputs/08 section 2.1), the v1 subset.
 
-`citations` (tools, M3) and `route` (intent router, M7) join when their features land; added keys
-are optional, so existing checkpoints stay readable.
+`route` (intent router, M7) joins when its feature lands; added keys are optional, so existing
+checkpoints stay readable.
 """
 
-from typing import Annotated, NotRequired, TypedDict
+from typing import Annotated, Literal, NotRequired, TypedDict
 
 from langchain_core.messages import AnyMessage
 from langgraph.graph.message import add_messages
+
+# The most individual tool calls one turn may make (doc 08 section 2.2).
+MAX_TOOL_CALLS = 6
+
+
+class Citation(TypedDict):
+    """A source the answer may cite as `[index]`; the same shape as the API's `Citation`."""
+
+    index: int
+    source_type: Literal["file", "web"]
+    title: str
+    file_id: str | None
+    page: int | None
+    url: str | None
+    snippet: str
 
 
 class ChatState(TypedDict):
@@ -18,5 +33,17 @@ class ChatState(TypedDict):
     summary: NotRequired[str | None]
     # Loaded per run by `load_context` and rendered into the late context message.
     memories: NotRequired[list[str]]
-    # Individual tool calls made in the current turn (capped at 6 when tools arrive).
+    # The user's most recent ready files, listed in the late context message so the model can
+    # target one with `file_ids`. Reset by `load_context` on every run.
+    recent_files: NotRequired[list[RecentFile]]
+    # Sources gathered by tools in this run, numbered from 1. Reset by `load_context`; a plain
+    # list (not an appending reducer) because a reducer cannot reset.
+    citations: NotRequired[list[Citation]]
+    # Individual tool calls made in the current turn, capped at MAX_TOOL_CALLS.
     tool_calls_this_turn: NotRequired[int]
+
+
+class RecentFile(TypedDict):
+    id: str
+    filename: str
+    uploaded_at: str

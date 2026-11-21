@@ -10,7 +10,8 @@ Task files track units of work. They are the AI agent's contract with the develo
 tasks/
 ├── _template.md       ← Copy this to create a new task
 ├── active/            ← In-progress tasks and scratch files
-└── done/              ← Completed tasks (archive)
+├── done/              ← Completed tasks (archive)
+└── deferred.md        ← Work skipped on purpose so later tasks are not blocked (what, why, what unblocks it)
 ```
 
 ## Workflow
@@ -55,3 +56,4 @@ The developer reviews the scratch file before implementation begins. Do not skip
 - Keep task files updated as work progresses (check off criteria as they're met)
 - If a task grows significantly larger than expected, split it and create sub-tasks
 - Reference ADR numbers in task files when implementing architectural decisions
+- Work that is skipped on purpose goes into `tasks/deferred.md` (mark the criterion `[-]` and name the item), so nothing is silently dropped and nothing blocks the next task

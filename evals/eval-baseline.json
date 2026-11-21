@@ -25,7 +25,7 @@
     "rag.faithfulness": {
       "target": 0.85,
       "gate": "advisory",
-      "note": "becomes regression once eval.judge.faithfulness reaches kappa >= 0.7 (TASK-037)"
+      "note": "eval.judge.faithfulness calibrated 2026-11-21 (TASK-037): kappa 1.00 on 30 constructed labels (>= 0.7), pending developer review of the labels; stays advisory until the first reviewed RAG run measures a value to record as a regression gate (ADR-0009)"
     },
     "rag.citation_accuracy": {
       "target": 0.9,
@@ -177,6 +177,21 @@
       "gate": "regression",
       "direction": "lower",
       "tolerance": 0.005
+    },
+    "rag.answer_correctness": {
+      "target": 0.8,
+      "gate": "advisory",
+      "note": "added with rag.golden (2026-11-21); also reported as rag.answer_correctness.whole_doc"
+    },
+    "rag.citation_validity": {
+      "target": 0.9,
+      "gate": "advisory",
+      "note": "deterministic [n] marker check; added with rag.golden"
+    },
+    "rag.search_rate": {
+      "target": 0.9,
+      "gate": "advisory",
+      "note": "informational: share of answerable questions where the model searched"
     }
   },
   "metrics": {

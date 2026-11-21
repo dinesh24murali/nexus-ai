@@ -36,11 +36,15 @@ from langgraph.types import StateSnapshot
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.api.sse import (
+    Citation,
+    CitationEvent,
     DoneEvent,
     ErrorEvent,
     Event,
     RunStartedEvent,
     TokenEvent,
+    ToolEndEvent,
+    ToolStartEvent,
     Usage,
     UsageEvent,
 )
@@ -51,6 +55,8 @@ from app.core.runtime_flags import RuntimeFlags
 from app.db.repositories import conversations, messages
 from app.db.repositories import usage as usage_repo
 from app.graph.builder import build_graph
+from app.graph.nodes.load_context import RecentFiles
+from app.graph.state import MAX_TOOL_CALLS
 from app.jobs import queue
 from app.jobs.handlers import JOBS
 from app.llm.factory import LLMConfigError, get_model
@@ -59,6 +65,7 @@ from app.llm.prompts import load_prompt
 from app.llm.redaction import hash_user_id
 from app.llm.tracing import RunTrace, Tracer
 from app.llm.usage import UsageCollector
+from app.rag.retriever import Retriever
 from app.services import usage as usage_service
 
 _log = structlog.get_logger("nexus.runs")
@@ -91,7 +98,10 @@ class Run:
     default_model: str
     events: asyncio.Queue[Event | None] = field(default_factory=asyncio.Queue)  # None ends it
     done: asyncio.Event = field(default_factory=asyncio.Event)
-    partial: list[str] = field(default_factory=list)  # text streamed so far
+    partial: list[str] = field(default_factory=list)  # answer text streamed so far
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)  # finished calls, API shape
+    citations: list[dict[str, Any]] = field(default_factory=list)
+    _calls_in_flight: dict[str, ToolStartEvent] = field(default_factory=dict)
     trace_tags: tuple[str, ...] = ()  # e.g. `moderation:skipped`
     persisted: bool = False  # the outcome was written (so spend changed)
     stop_reason: StopReason | None = None
@@ -112,12 +122,26 @@ class _Result:
     finish_reason: FinishReason
 
 
-def graph_factory_for(settings: Settings, checkpointer: BaseCheckpointSaver[Any]) -> GraphFactory:
-    """The production graph: factory-built models, the Postgres checkpointer."""
+def graph_factory_for(
+    settings: Settings,
+    checkpointer: BaseCheckpointSaver[Any],
+    *,
+    retriever: Callable[[], Retriever] | None = None,
+    recent_files: RecentFiles | None = None,
+) -> GraphFactory:
+    """The production graph: factory-built models, the Postgres checkpointer and, when a
+    retriever is given, the file-search tool. The retriever is built on first use, so a missing
+    API key fails the run (like the chat model) and not the start of the API."""
 
     def build(model_override: str | None) -> Graph:
         chat = get_model("chat", settings=settings, model_override=model_override)
-        return build_graph(checkpointer=checkpointer, chat_model=chat, settings=settings)
+        return build_graph(
+            checkpointer=checkpointer,
+            chat_model=chat,
+            retriever=retriever() if retriever else None,
+            recent_files=recent_files,
+            settings=settings,
+        )
 
     return build
 
@@ -583,7 +607,13 @@ class RunService:
     ) -> _Result:
         graph = self._graph(override)
         config = self._config(run, display_name, checkpoint_id, trace_name)
-        async for chunk, meta in graph.astream(graph_input, config, stream_mode="messages"):
+        stream = graph.astream(graph_input, config, stream_mode=["messages", "custom"])
+        async for item in stream:
+            mode, payload = cast("tuple[str, Any]", item)
+            if mode == "custom":
+                self._on_custom(run, payload)
+                continue
+            chunk, meta = payload
             # The summariser is tagged `nostream`; the node filter is the second line of defence.
             if not isinstance(meta, dict) or meta.get("langgraph_node") != "agent":
                 continue
@@ -600,7 +630,52 @@ class RunService:
         if not run.partial and final.text:  # a model that did not stream: send it in one piece
             run.partial.append(final.text)
             run.events.put_nowait(TokenEvent(delta=final.text))
-        return _Result(text=final.text, finish_reason=_finish_reason(final))
+        out_of_calls = state.values.get("tool_calls_this_turn", 0) >= MAX_TOOL_CALLS
+        reason = _finish_reason(final)
+        return _Result(
+            text=final.text,
+            finish_reason="tool_limit" if out_of_calls and reason == "stop" else reason,
+        )
+
+    def _on_custom(self, run: Run, payload: Any) -> None:
+        """Turn the tools node's custom events into SSE events and the stored read model."""
+        if not isinstance(payload, dict):
+            return
+        match payload.get("kind"):
+            case "tool_start":
+                event = ToolStartEvent(
+                    call_id=payload["call_id"], name=payload["name"], args=payload["args"]
+                )
+                run._calls_in_flight[event.call_id] = event
+                # Text streamed before a tool call is not the answer: keep only what follows it.
+                run.partial.clear()
+                run.events.put_nowait(event)
+            case "citation":
+                citation = Citation.model_validate(payload["citation"])
+                run.citations.append(citation.model_dump(mode="json"))
+                run.events.put_nowait(CitationEvent(citation=citation))
+            case "tool_end":
+                end = ToolEndEvent(
+                    call_id=payload["call_id"],
+                    name=payload["name"],
+                    status=payload["status"],
+                    summary=payload.get("summary") or "",
+                )
+                started = run._calls_in_flight.pop(end.call_id, None)
+                run.tool_calls.append(
+                    {
+                        "id": end.call_id,
+                        "name": end.name,
+                        "args": started.args if started else {},
+                        "status": end.status,
+                        **({"summary": end.summary} if end.summary else {}),
+                    }
+                )
+                run.events.put_nowait(end)
+            case "spend":  # internal: the query embedding is paid for, but the client never sees it
+                run.collector.add_embedding(
+                    self._settings.llm_embedding_model, int(payload["embedding_tokens"])
+                )
 
     # ---------------------------------------------------------------- internals: finishing
 
@@ -692,6 +767,8 @@ class RunService:
             trace_id=(
                 self._tracer.trace_id_for(str(run.assistant_message_id)) if self._tracer else None
             ),
+            tool_calls=run.tool_calls,
+            citations=run.citations,
         )
         await usage_repo.add(
             session,

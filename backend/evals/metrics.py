@@ -1,6 +1,7 @@
 """Scoring functions that need no model: plain data in, numbers out."""
 
 import math
+import re
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
 
@@ -13,6 +14,34 @@ def format_compliance(
     return all(s.casefold() in text for s in must_include) and not any(
         s.casefold() in text for s in must_not_include
     )
+
+
+def context_recall(
+    references: Sequence[tuple[str, int | None]], retrieved: Iterable[tuple[str, int | None]]
+) -> float:
+    """Share of the reference (file, page) pairs among the retrieved ones. A reference without a
+    page (DOCX, TXT, MD) is met by any retrieved passage of that file. A turn where the model never
+    searched retrieved nothing, so it scores 0: skipping the search is a retrieval failure too."""
+    if not references:
+        raise ValueError("a case needs at least one reference")
+    got = list(retrieved)
+    files = {name for name, _ in got}
+    found = sum((ref in got) if ref[1] is not None else (ref[0] in files) for ref in references)
+    return found / len(references)
+
+
+_MARKER = re.compile(r"\[(\d+)\]")
+
+
+def citation_validity(answer: str, available: Iterable[int]) -> float:
+    """Share of the answer's `[n]` markers that point at a passage the tool returned. No marker
+    scores 0: an answer built from the files has to cite them. (Whether the cited passage supports
+    the sentence is the judged `rag.citation_accuracy`, which is not built.)"""
+    markers = [int(m) for m in _MARKER.findall(answer)]
+    if not markers:
+        return 0.0
+    valid = set(available)
+    return sum(m in valid for m in markers) / len(markers)
 
 
 def mean(values: Sequence[float]) -> float | None:

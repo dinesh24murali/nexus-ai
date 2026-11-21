@@ -11,11 +11,12 @@ evals/
 ├── eval-baseline.json   ← `targets` (informational) + `metrics` (gates); `make eval` fails if a result misses a gate
 ├── check_baseline.py    ← Stack-agnostic gate: compares results/latest.json to the baseline
 ├── datasets/            ← Versioned golden datasets (*.jsonl), one record per line
+├── fixtures/docs/       ← The fictional RAG corpus (source text + manifest.json; PDF/DOCX are built at run time)
 └── results/             ← Eval run outputs (gitignored); the suite writes results/latest.json
                            (LLM_MODE=fake writes latest.fake.json instead, which the gate never reads)
 ```
 
-The eval **suite** itself (the code that runs the app against datasets and scores outputs) lives in `backend/evals/` (`run.py` CLI, `datasets.py` record schemas, `metrics.py`, `judges.py`, `canaries.py`, `runner.py`, `langfuse_log.py`; tests in `backend/tests/evals/`) and is invoked via `EVAL_COMMAND` / `EVAL_SMOKE_COMMAND` in the `Makefile`. `make eval` needs `OPENAI_API_KEY`. A dataset needs a record model in `backend/evals/datasets.py` (unknown fields are rejected) and a step in `evals/run.py`. A metric with no samples is left out of the results, so a gated metric that could not be measured fails the gate. It must write `evals/results/latest.json`:
+The eval **suite** itself (the code that runs the app against datasets and scores outputs) lives in `backend/evals/` (`run.py` CLI, `datasets.py` record schemas, `metrics.py`, `judges.py`, `canaries.py`, `runner.py`, `langfuse_log.py`, `calibration.py` (`python -m evals.calibrate`: Cohen's κ of the faithfulness judge against hand labels in `datasets/judge.calibration.jsonl`); tests in `backend/tests/evals/`) and is invoked via `EVAL_COMMAND` / `EVAL_SMOKE_COMMAND` in the `Makefile`. `make eval` needs `OPENAI_API_KEY`. `rag.golden` ingests the fixture corpus into a throwaway Qdrant collection, so **a run that includes it needs Qdrant** (`make up` / `docker compose up -d qdrant`); `--no-rag` skips it, `--dataset rag.golden` runs only it. A dataset needs a record model in `backend/evals/datasets.py` (unknown fields are rejected) and a step in `evals/run.py`. A metric with no samples is left out of the results, so a gated metric that could not be measured fails the gate. It must write `evals/results/latest.json`:
 
 ```json
 {"metrics": {"rag.faithfulness": 0.91, "tools.selection_accuracy": 0.95}}

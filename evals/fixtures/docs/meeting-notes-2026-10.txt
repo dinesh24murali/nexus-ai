@@ -1,0 +1,11 @@
+Product Council, 14 October 2026
+Attendees: Priya Nair (chair), Tomas Weber, Aiko Tanaka, Luis Ortega.
+
+Decisions
+1. Analytics Pro launches on 3 November at 49 euros per seat per month.
+2. The legacy export API will be switched off on 31 January 2027. Tomas Weber owns the customer notice, which is due on 15 November.
+3. The Singapore support rota starts on 1 December with Aiko Tanaka as lead.
+
+Open items
+Pricing for annual plans is still undecided. Luis Ortega will bring a proposal on 28 October.
+The budget for the user conference in Lisbon was approved at 60,000 euros.

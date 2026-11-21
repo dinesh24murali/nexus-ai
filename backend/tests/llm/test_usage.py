@@ -71,3 +71,11 @@ def test_the_main_model_is_the_one_that_produced_the_most_output() -> None:
     collector.on_llm_end(result(meta(100, 400), model_name="gpt-6.1-terra"))  # answer
 
     assert collector.main_model == "gpt-6.1-terra"
+
+
+def test_embedding_spend_adds_to_the_cost_but_not_to_the_token_totals() -> None:
+    collector = UsageCollector(default_model="gpt-6.1-terra")
+    collector.add_embedding("text-embedding-3-small", 5_000_000)  # $0.02 per million input tokens
+
+    assert collector.cost_usd == Decimal("0.10")
+    assert collector.total.prompt_tokens == 0

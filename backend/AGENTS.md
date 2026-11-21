@@ -31,11 +31,14 @@ backend/
 │   │                         prompts.py + prompt_sync.py, tracing.py, redaction.py, pricing.py, tokens.py,
 │   │                         moderation.py (input moderation, fail-open),
 │   │                         usage.py (per-run token + cost collector)
-│   ├── graph/              ← state.py, prompting.py (cache-friendly request layout), builder.py, nodes/
+│   ├── graph/              ← state.py, prompting.py (cache-friendly request layout), builder.py, nodes/ (agent,
+│   │                         load_context, summarize, tools = the tool loop + cap), tools/ (search_my_files)
 │   ├── rag/                ← formats.py, parsers.py (PDF/DOCX/TXT/MD), chunker.py (800/120 tokens), embedder.py,
+│   │                         retriever.py (query -> tenant-filtered passages),
 │   │                         index.py (Qdrant: alias `documents`, tenant payload); ingestion job is in jobs/handlers.py
 │   └── (memory/ ...        arrives with M5; layout in docs/02_outputs/03_tech_architecture.md §2)
-├── evals/                  ← the eval suite (`python -m evals.run`; see evals/AGENTS.md); not imported by app/
+├── evals/                  ← the eval suite (`python -m evals.run`; judge calibration `python -m evals.calibrate`;
+│                             see evals/AGENTS.md); not imported by app/
 ├── prompts/                ← canonical prompt files `<name>.md` (front-matter name + version; ADR-0008)
 ├── alembic/                ← async env, forward-only migrations in versions/
 ├── tests/                  ← unit + integration (marker `integration`), contract/ (schemathesis)

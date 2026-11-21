@@ -1,0 +1,16 @@
+{
+  "turns": [
+    {"text": "", "tool_calls": [
+      {"name": "search_my_files", "args": {"query": "q1"}},
+      {"name": "search_my_files", "args": {"query": "q2"}},
+      {"name": "search_my_files", "args": {"query": "q3"}},
+      {"name": "search_my_files", "args": {"query": "q4"}}
+    ]},
+    {"text": "", "tool_calls": [
+      {"name": "search_my_files", "args": {"query": "q5"}},
+      {"name": "search_my_files", "args": {"query": "q6"}},
+      {"name": "search_my_files", "args": {"query": "q7"}}
+    ]},
+    {"text": "Done with what I could find."}
+  ]
+}

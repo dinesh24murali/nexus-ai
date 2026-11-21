@@ -1,0 +1,9 @@
+{
+  "turns": [
+    {"text": "", "tool_calls": [
+      {"name": "nonexistent_tool", "args": {"x": 1}},
+      {"name": "search_my_files", "args": {"query": ""}}
+    ]},
+    {"text": "Sorry, that did not work."}
+  ]
+}

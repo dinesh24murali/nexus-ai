@@ -35,12 +35,14 @@ from app.llm.tracing import Tracer
 from langgraph.graph.state import CompiledStateGraph
 
 from evals.canaries import check_canaries
+from evals.corpus import RagEnv, RagSetupError, ingest_corpus
 from evals.datasets import (
     REPO_ROOT,
     ChatCase,
     Dataset,
     DatasetError,
     PerfCase,
+    RagCase,
     RedTeamCase,
     SummaryCase,
     load_dataset,
@@ -48,7 +50,7 @@ from evals.datasets import (
 from evals.judges import Judges
 from evals.langfuse_log import EvalLogger
 from evals.metrics import Scores, format_compliance
-from evals.runner import ChatRun, run_chat, run_summary
+from evals.runner import EVAL_USER_ID, ChatRun, RagTarget, run_chat, run_summary
 
 SuiteName = Literal["smoke", "full"]
 RUNS_PER_CASE: dict[str, int] = {"smoke": 1, "full": 3}  # doc 09 section 1: n=1 smoke, n=3 full
@@ -67,8 +69,33 @@ METRIC_KEYS = (
     "ops.ttft_p95_ms",
     "ops.cost_per_turn_usd",
     "ops.cached_input_ratio",
+    "rag.context_recall",
+    "rag.search_rate",
+    "rag.citation_validity",
+    "rag.faithfulness",
+    "rag.answer_correctness",
+    "rag.answer_correctness.whole_doc",
+    "rag.unanswerable_accuracy",
 )
-SUITE_DATASETS = ("chat.golden", "summary.golden", "perf.latency", "safety.redteam")
+SUITE_DATASETS = ("chat.golden", "summary.golden", "perf.latency", "safety.redteam", "rag.golden")
+# The metrics each dataset can produce: a metric is "not measured" only if a dataset that should
+# have produced it ran. (`rag.golden` runs only when a RAG environment is given.)
+METRICS_OF: dict[str, tuple[str, ...]] = {
+    "chat.golden": (
+        "chat.format_compliance",
+        "chat.refusal_accuracy",
+        "chat.answer_relevance",
+        "ops.cost_per_turn_usd",
+    ),
+    "summary.golden": ("summary.fact_retention",),
+    "perf.latency": ("ops.ttft_p95_ms", "ops.cost_per_turn_usd", "ops.cached_input_ratio"),
+    "safety.redteam": (
+        "chat.refusal_accuracy",
+        "safety.system_prompt_leaks",
+        "safety.canary_pass_rate",
+    ),
+    "rag.golden": tuple(k for k in METRIC_KEYS if k.startswith("rag.")),
+}
 
 
 @dataclass
@@ -130,13 +157,21 @@ class SuiteRun:
         self.gate = asyncio.Semaphore(concurrency)
         self.system_prompt = load_prompt("nexus.system").body
 
-    async def chat(self, text: str, history: Sequence[Any] = ()) -> ChatRun:
+    async def chat(
+        self,
+        text: str,
+        history: Sequence[Any] = (),
+        *,
+        graph: CompiledStateGraph[Any, Any, Any, Any] | None = None,
+        user_id: str = EVAL_USER_ID,
+    ) -> ChatRun:
         async with self.gate:
             return await run_chat(
-                self.graph,
+                graph or self.graph,
                 default_model=self.settings.llm_chat_model,
                 text=text,
                 history=history,
+                user_id=user_id,
             )
 
     def record(self, record: CaseRecord, *, case_input: Any) -> None:
@@ -281,7 +316,7 @@ async def run_summaries(suite: SuiteRun, dataset: Dataset[SummaryCase]) -> None:
     await _each(dataset.cases, suite.runs, work, parallel=True)
 
 
-def _metrics(scores: Scores) -> tuple[dict[str, float], list[str]]:
+def _metrics(scores: Scores, ran: Sequence[str]) -> tuple[dict[str, float], list[str]]:
     values: dict[str, float | None] = {
         "chat.format_compliance": scores.mean("chat.format_compliance"),
         "chat.refusal_accuracy": scores.mean("chat.refusal_accuracy"),
@@ -294,8 +329,10 @@ def _metrics(scores: Scores) -> tuple[dict[str, float], list[str]]:
         "ops.cost_per_turn_usd": scores.mean("ops.cost_per_turn_usd"),
         "ops.cached_input_ratio": scores.mean("ops.cached_input_ratio"),
     }
+    values.update({k: scores.mean(k) for k in METRIC_KEYS if k.startswith("rag.")})
     metrics = {k: round(v, 6) for k, v in values.items() if v is not None}
-    skipped = [k for k in METRIC_KEYS if k not in metrics]
+    expected = {key for name in ran for key in METRICS_OF[name]}
+    skipped = [k for k in METRIC_KEYS if k in expected and k not in metrics]
     return metrics, skipped
 
 
@@ -326,10 +363,15 @@ async def run_suite(
     only: Sequence[str] | None = None,
     datasets_dir: Path | None = None,
     concurrency: int = CONCURRENCY,
+    rag: RagTarget | None = None,
 ) -> Report:
     n = runs if runs is not None else RUNS_PER_CASE[suite]
     smoke_only = suite == "smoke"
-    selected = [name for name in SUITE_DATASETS if only is None or name in only]
+    selected = [
+        name
+        for name in SUITE_DATASETS
+        if (only is None or name in only) and (name != "rag.golden" or rag is not None)
+    ]
     chat = load_dataset("chat.golden", ChatCase, smoke_only=smoke_only, directory=datasets_dir)
     perf = load_dataset("perf.latency", PerfCase, smoke_only=smoke_only, directory=datasets_dir)
     red = load_dataset("safety.redteam", RedTeamCase, smoke_only=smoke_only, directory=datasets_dir)
@@ -342,6 +384,10 @@ async def run_suite(
         "perf.latency": perf,
         "safety.redteam": red,
     }
+    if rag is not None:
+        loaded["rag.golden"] = load_dataset(
+            "rag.golden", RagCase, smoke_only=smoke_only, directory=datasets_dir
+        )
 
     started = time.perf_counter()
     started_at = datetime.now(UTC)
@@ -368,11 +414,22 @@ async def run_suite(
         "safety.redteam": lambda: run_redteam(state, red),
         "perf.latency": lambda: run_perf(state, perf),  # last: nothing else competes for the API
     }
-    for name in selected:
+    if rag is not None:
+        from evals.rag import run_rag_golden  # here: evals.rag imports this module
+
+        rag_cases = loaded["rag.golden"]
+        steps["rag.golden"] = lambda: run_rag_golden(
+            state, rag_cases, graph=rag.graph, user_id=rag.user_id
+        )
+    # rag.golden before perf.latency: latency runs last, with nothing else using the API.
+    order = [n for n in selected if n != "perf.latency"] + [
+        n for n in selected if n == "perf.latency"
+    ]
+    for name in order:
         await steps[name]()
     logger.flush()
 
-    metrics, skipped = _metrics(state.scores)
+    metrics, skipped = _metrics(state.scores, selected)
     run = {
         "suite": suite,
         "mode": settings.llm_mode,
@@ -442,6 +499,28 @@ async def main_async(args: argparse.Namespace) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
+    rag: RagTarget | None = None
+    rag_env: RagEnv | None = None
+    wants_rag = not args.no_rag and (not args.dataset or "rag.golden" in args.dataset)
+    if wants_rag:
+        try:
+            rag_env = await ingest_corpus(settings)
+        except (RagSetupError, LLMConfigError) as exc:
+            print(
+                f"error: {exc} (is Qdrant running? use --no-rag to skip rag.golden)",
+                file=sys.stderr,
+            )
+            return 2
+        rag = RagTarget(
+            graph=build_graph(
+                checkpointer=None,
+                settings=settings,
+                retriever=rag_env.retriever,
+                recent_files=rag_env.recent_files,
+            ),
+            user_id=rag_env.user_id,
+        )
+
     tracer = None if fake or args.no_langfuse else Tracer(settings)
     run_name = f"{args.suite}-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}"
     logger = EvalLogger(
@@ -457,6 +536,7 @@ async def main_async(args: argparse.Namespace) -> int:
             logger=logger,
             runs=args.runs,
             only=args.dataset or None,
+            rag=rag,
         )
     except DatasetError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -464,6 +544,8 @@ async def main_async(args: argparse.Namespace) -> int:
     finally:
         if tracer is not None:
             await asyncio.to_thread(tracer.shutdown)
+        if rag_env is not None:
+            await rag_env.close()
 
     out = args.out or default_output(settings)
     write_report(report, out)
@@ -483,6 +565,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--dataset", action="append", choices=SUITE_DATASETS, help="only this dataset (repeatable)"
     )
     parser.add_argument("--no-langfuse", action="store_true", help="do not log to Langfuse")
+    parser.add_argument(
+        "--no-rag",
+        action="store_true",
+        help="skip rag.golden (it ingests the fixture corpus, so it needs Qdrant)",
+    )
     args = parser.parse_args(argv)
     if args.runs is not None and args.runs < 1:
         parser.error("--runs must be at least 1")

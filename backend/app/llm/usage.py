@@ -12,7 +12,7 @@ from typing import Any
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.outputs import LLMResult
 
-from app.llm.pricing import Usage, cost_usd, usage_from_metadata
+from app.llm.pricing import Usage, cost_usd, embedding_cost_usd, usage_from_metadata
 
 
 class UsageCollector(BaseCallbackHandler):
@@ -22,6 +22,7 @@ class UsageCollector(BaseCallbackHandler):
         self._default_model = default_model
         self.by_model: dict[str, Usage] = {}
         self.calls = 0
+        self._embedding_usd = Decimal(0)
 
     def on_llm_end(self, response: LLMResult, **kwargs: Any) -> None:
         for generations in response.generations:
@@ -41,6 +42,11 @@ class UsageCollector(BaseCallbackHandler):
                 )
                 self.calls += 1
 
+    def add_embedding(self, model: str, tokens: int) -> None:
+        """Spend on an embeddings call (a search query). Embeddings are priced on input tokens only
+        and are not chat tokens, so they add to the cost but not to the token totals."""
+        self._embedding_usd += embedding_cost_usd(model, tokens)
+
     @property
     def total(self) -> Usage:
         usages = self.by_model.values()
@@ -52,7 +58,8 @@ class UsageCollector(BaseCallbackHandler):
 
     @property
     def cost_usd(self) -> Decimal:
-        return sum((cost_usd(m, u) for m, u in self.by_model.items()), Decimal(0))
+        chat = sum((cost_usd(m, u) for m, u in self.by_model.items()), Decimal(0))
+        return chat + self._embedding_usd
 
     @property
     def main_model(self) -> str:

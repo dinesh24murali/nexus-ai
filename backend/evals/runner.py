@@ -19,7 +19,13 @@ import structlog
 from app.graph.nodes.summarize import make_summarize_node
 from app.llm.pricing import Usage
 from app.llm.usage import UsageCollector
-from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage
+from langchain_core.messages import (
+    AIMessage,
+    AIMessageChunk,
+    BaseMessage,
+    HumanMessage,
+    ToolMessage,
+)
 from langchain_core.runnables import Runnable, RunnableConfig
 from langgraph.graph.state import CompiledStateGraph
 
@@ -29,6 +35,15 @@ _log = structlog.get_logger("nexus.evals.runner")
 
 CASE_TIMEOUT_S = 120.0
 EVAL_USER_ID = "eval-a"  # the fixture user; never a real id
+
+
+@dataclass(frozen=True)
+class RagTarget:
+    """What the `rag.golden` step needs: a graph with the file-search tool, and the user whose
+    files were ingested (the search runs as that user)."""
+
+    graph: CompiledStateGraph[Any, Any, Any, Any]
+    user_id: uuid.UUID
 
 
 @dataclass
@@ -42,19 +57,23 @@ class ChatRun:
     # The provider itself rejected the request as unsafe (HTTP 400 "flagged"): no answer exists, so
     # `error` is set too; a case that expects a refusal may count this as one (see run.py).
     blocked: bool = False
+    # What the file-search tool returned this turn (RAG cases): the sources the answer may cite
+    # and the text of each tool result, which is what the answer has to stay faithful to.
+    citations: list[dict[str, Any]] = field(default_factory=list)
+    tool_results: list[str] = field(default_factory=list)
 
 
 def to_messages(turns: Sequence[Turn]) -> list[BaseMessage]:
     return [HumanMessage(t.content) if t.role == "user" else AIMessage(t.content) for t in turns]
 
 
-def _config(collector: UsageCollector) -> RunnableConfig:
+def _config(collector: UsageCollector, user_id: str) -> RunnableConfig:
     return cast(
         "RunnableConfig",
         {
             "configurable": {
                 "thread_id": str(uuid.uuid4()),
-                "user_id": EVAL_USER_ID,
+                "user_id": user_id,
                 "user_display_name": "Eval User",
                 "today": datetime.now(UTC).date().isoformat(),
             },
@@ -70,6 +89,7 @@ async def run_chat(
     text: str,
     history: Sequence[Turn] = (),
     timeout_s: float = CASE_TIMEOUT_S,
+    user_id: str = EVAL_USER_ID,
 ) -> ChatRun:
     """One user turn. Never raises: a failure is recorded in `error` and counts against the case."""
     collector = UsageCollector(default_model)
@@ -81,7 +101,9 @@ async def run_chat(
     async def drive() -> None:
         nonlocal answer
         request = {"messages": [*to_messages(history), HumanMessage(text)]}
-        stream: Any = graph.astream(request, _config(collector), stream_mode=["messages", "values"])
+        stream: Any = graph.astream(
+            request, _config(collector, user_id), stream_mode=["messages", "values"]
+        )
         async for mode, data in stream:
             if mode == "messages":
                 chunk, meta = data
@@ -95,12 +117,12 @@ async def run_chat(
                         result.ttft_ms = (time.perf_counter() - started) * 1000
                     streamed.append(chunk.text)
             else:
-                last = next(
-                    (m for m in reversed(data.get("messages", [])) if isinstance(m, AIMessage)),
-                    None,
-                )
+                messages = data.get("messages", [])
+                last = next((m for m in reversed(messages) if isinstance(m, AIMessage)), None)
                 if last is not None:
                     answer = last.text
+                result.citations = list(data.get("citations") or [])
+                result.tool_results = [m.text for m in messages if isinstance(m, ToolMessage)]
 
     try:
         await asyncio.wait_for(drive(), timeout=timeout_s)

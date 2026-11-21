@@ -1,0 +1,11 @@
+{
+  "turns": [
+    {
+      "text": "",
+      "tool_calls": [{"name": "search_my_files", "args": {"query": "churn"}}]
+    },
+    {
+      "text": "According to your files, monthly churn decreased to 3.1% [1]."
+    }
+  ]
+}
