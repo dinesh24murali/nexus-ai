@@ -174,6 +174,7 @@ async def apply_plan(
     plan: Plan,
     *,
     cap: int = MEMORY_CAP,
+    source: str = "extracted",
 ) -> Applied:
     done = Applied()
     for op in plan.ops:
@@ -187,7 +188,7 @@ async def apply_plan(
                 user_id,
                 content=op.content,
                 category=op.category or "fact",
-                source="extracted",
+                source=source,
                 conversation_id=conversation_id,
             )
             done.created += 1

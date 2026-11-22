@@ -45,8 +45,8 @@ const msg = (role: Msg['role'], content: string, extra: Partial<Msg> = {}): Msg 
 
 type Pending = {
   interrupt_id: string
-  tool: 'web_search'
-  args: { query: string }
+  tool: 'web_search' | 'forget_memory'
+  args: Record<string, unknown>
   created_at: string
   expires_at: string
 }
@@ -831,6 +831,35 @@ describe('tool approval', () => {
     await waitFor(() =>
       expect(screen.queryByRole('group', { name: 'Search the web?' })).not.toBeInTheDocument(),
     )
+  })
+
+  it('forgets a memory: posts the chosen memory id and streams the confirmation', async () => {
+    const { server } = await open({
+      messages: [msg('user', '/memory forget works at Acme')],
+      pending: {
+        ...PENDING,
+        tool: 'forget_memory',
+        args: {
+          candidates: [
+            { memory_id: 'a1b2c3d4-0000-4000-8000-000000000001', content: 'User works at Acme.' },
+          ],
+        },
+      },
+    })
+    const user = userEvent.setup()
+    await waitFor(() =>
+      expect(screen.getByRole('group', { name: 'Forget a memory?' })).toBeInTheDocument(),
+    )
+    expect(screen.getByText('User works at Acme.')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Forget it' }))
+
+    await seen('Found it on the web [1]')
+    expect(posts(server, '/runs/resume')[0]?.body).toEqual({
+      interrupt_id: 'int_9a8b7c',
+      decision: 'approve',
+      edited_args: { memory_id: 'a1b2c3d4-0000-4000-8000-000000000001' },
+    })
   })
 
   it('hides the card while the resumed run streams', async () => {

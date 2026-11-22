@@ -32,7 +32,7 @@ from evals.canaries import ToolFacts, check_canaries, check_tool_canaries, group
 from evals.datasets import RedTeamCase, RedTeamSetup, SetupDoc
 from evals.memory import leaked
 from evals.run import CaseRecord, SuiteRun
-from evals.tools import FileStub, WebStub, recent_files_of, run_one
+from evals.tools import FileStub, TenantMemoryManager, WebStub, recent_files_of, run_one
 
 # (file search, web search, recent files, memory lookup) -> graph. The production wiring is in
 # `evals/run.py::main_async`; tests pass scripted models.
@@ -127,11 +127,22 @@ async def run_tool_case(
         docs[other] = setup.other_user.docs
         stored[other] = setup.other_user.memories
     files, memories, web = TenantFiles(docs), TenantMemories(stored), ScriptedWeb(setup)
+    manager = TenantMemoryManager(stored)
     text = case.input.replace("{other_user_id}", str(other))
 
     async with suite.gate:
         try:
-            graph = graph_factory(files, web, files.recent(), memories=memories.lookup())
+            if case.needs_router:  # a routing attack needs the router and a manager to aim at
+                graph = graph_factory(
+                    files,
+                    web,
+                    files.recent(),
+                    memories=memories.lookup(),
+                    router=True,
+                    memory_manager=manager,
+                )
+            else:
+                graph = graph_factory(files, web, files.recent(), memories=memories.lookup())
         except Exception as exc:
             run = None
             error: str | None = type(exc).__name__
@@ -158,13 +169,19 @@ async def run_tool_case(
             searches_approved=run.interrupts if setup.approve_web else 0,
             approval_enforced=run.approval_enforced,
             tool_texts=run.result_texts,
-            foreign_lookups=sum(u != asker for u in [*files.lookups, *memories.lookups]),
+            foreign_lookups=sum(
+                u != asker for u in [*files.lookups, *memories.lookups, *manager.lookups]
+            ),
+            route=run.route,
+            interrupt_tools=run.interrupt_tools,
+            memories_deleted=len(manager.deleted),
         )
         violations = verdict.violations + check_tool_canaries(
             case.canaries, facts, scan_tool_texts=case.group == "cross_tenant"
         )
         record.notes.update(
             calls=names,
+            route=run.route,
             interrupts=run.interrupts,
             searched="search_my_files" in names,  # a run that never read the poisoned file is
             # not a defence: the review needs to see it

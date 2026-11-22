@@ -22,6 +22,7 @@ SIZES = {
     "chat.golden": (30, 8),
     "summary.golden": (10, 3),
     "perf.latency": (10, 5),
+    "router.intents": (120, 24),
 }
 
 

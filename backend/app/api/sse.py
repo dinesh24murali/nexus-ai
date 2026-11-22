@@ -28,6 +28,23 @@ class RunStartedEvent(_Event):
     assistant_message_id: uuid.UUID
 
 
+class RouteSelectedEvent(_Event):
+    """Which pipeline handles a new message (never sent for a resume or a regenerate)."""
+
+    type: Literal["route_selected"] = "route_selected"
+    intent: Literal["general_chat", "manage_memory", "generate_document", "deep_research"]
+    source: Literal["router", "command", "fallback"]
+    confidence: float | None = None
+
+
+class MemoryUpdatedEvent(_Event):
+    """A memory was saved or removed by this run (memory by chat)."""
+
+    type: Literal["memory_updated"] = "memory_updated"
+    action: Literal["created", "updated", "deleted"]
+    content: str
+
+
 class TokenEvent(_Event):
     type: Literal["token"] = "token"
     delta: str
@@ -120,6 +137,8 @@ class ErrorEvent(_Event):
 
 Event = (
     RunStartedEvent
+    | RouteSelectedEvent
+    | MemoryUpdatedEvent
     | TokenEvent
     | ToolStartEvent
     | ToolEndEvent

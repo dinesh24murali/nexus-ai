@@ -183,11 +183,103 @@ describe('ApprovalCard', () => {
   })
 
   it('does not know how to ask about other tools yet, and says so', async () => {
-    const { onDecide, user } = setup({ tool: 'forget_memory', args: { candidates: [] } })
+    const { onDecide, user } = setup({
+      tool: 'research_plan',
+      args: { topic: 'x', queries: ['a'] },
+    })
 
     expect(screen.getByText(/can't be shown here yet/i)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Reject' }))
+    expect(onDecide).toHaveBeenCalledExactlyOnceWith({ decision: 'reject' })
+  })
+})
+
+describe('ApprovalCard: forgetting a memory', () => {
+  const memory = (id: string, content: string) => ({ memory_id: id, content })
+  const forget = (candidates: unknown, overrides: Partial<PendingInterrupt> = {}) =>
+    approval({ tool: 'forget_memory', args: { candidates }, ...overrides })
+
+  it('asks before forgetting and shows the exact text of the one memory it found', () => {
+    setup(forget([memory('m1', 'User works at Acme.')]))
+
+    expect(screen.getByRole('group', { name: 'Forget a memory?' })).toBeInTheDocument()
+    expect(screen.getByText('User works at Acme.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Forget it' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Keep it' })).toBeEnabled()
+    expect(screen.queryByRole('radio')).toBeNull()
+  })
+
+  it('forgets the single memory with one click, naming it', async () => {
+    const { onDecide, user } = setup(forget([memory('m1', 'User works at Acme.')]))
+
+    await user.click(screen.getByRole('button', { name: 'Forget it' }))
+
+    expect(onDecide).toHaveBeenCalledExactlyOnceWith({ decision: 'approve', memoryId: 'm1' })
+  })
+
+  it('keeps everything on request', async () => {
+    const { onDecide, user } = setup(forget([memory('m1', 'User works at Acme.')]))
+
+    await user.click(screen.getByRole('button', { name: 'Keep it' }))
+
+    expect(onDecide).toHaveBeenCalledExactlyOnceWith({ decision: 'reject' })
+  })
+
+  it('lets the user pick one of several, and offers nothing until they do', async () => {
+    const { onDecide, user } = setup(
+      forget([memory('m1', 'User works at Acme.'), memory('m2', 'User works remotely.')]),
+    )
+
+    expect(
+      screen.getByRole('group', { name: 'Which of these should Nexus forget?' }),
+    ).toBeInTheDocument()
+    expect(screen.getAllByRole('radio')).toHaveLength(2)
+    expect(screen.getAllByRole('radio').every((r) => !(r as HTMLInputElement).checked)).toBe(true)
+    expect(screen.getByRole('button', { name: 'Forget the selected memory' })).toBeDisabled()
+
+    await user.click(screen.getByRole('radio', { name: 'User works remotely.' }))
+    await user.click(screen.getByRole('button', { name: 'Forget the selected memory' }))
+
+    expect(onDecide).toHaveBeenCalledExactlyOnceWith({ decision: 'approve', memoryId: 'm2' })
+  })
+
+  it('can keep them all when there are several', async () => {
+    const { onDecide, user } = setup(
+      forget([memory('m1', 'User works at Acme.'), memory('m2', 'User works remotely.')]),
+    )
+
+    await user.click(screen.getByRole('button', { name: 'Keep them all' }))
+
+    expect(onDecide).toHaveBeenCalledExactlyOnceWith({ decision: 'reject' })
+  })
+
+  it('shows memory text as plain text, whatever it contains', () => {
+    setup(forget([memory('m1', '<img src=x onerror=alert(1)> & "quotes"')]))
+
+    expect(screen.getByText('<img src=x onerror=alert(1)> & "quotes"')).toBeInTheDocument()
+    expect(document.querySelector('img')).toBeNull()
+  })
+
+  it('waits while a decision is on its way', () => {
+    setup(forget([memory('m1', 'User works at Acme.')]), { busy: true })
+
+    expect(screen.getByRole('button', { name: 'Forget it' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Keep it' })).toBeDisabled()
+  })
+
+  it('shows "expired" and no buttons once the approval has expired', () => {
+    setup(forget([memory('m1', 'User works at Acme.')], { expires_at: iso(NOW - 1000) }))
+
+    expect(screen.getByRole('status')).toHaveTextContent('This approval expired')
+    expect(screen.queryByRole('button')).toBeNull()
+  })
+
+  it('does not break on a card it cannot read, and only offers to keep everything', async () => {
+    const { onDecide, user } = setup(forget([{ memory_id: 7 }, 'x', null]))
+
+    expect(screen.queryByRole('button', { name: /Forget/ })).toBeNull()
+    await user.click(screen.getByRole('button', { name: 'Keep it' }))
     expect(onDecide).toHaveBeenCalledExactlyOnceWith({ decision: 'reject' })
   })
 })

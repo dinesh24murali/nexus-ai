@@ -42,6 +42,9 @@ _FAIL = re.compile(r"\[\[fail:(primary|all)\]\]")
 _ID = re.compile(r"^[a-z][a-z0-9_]*$")
 _WORD = re.compile(r"\S+\s*")
 _USER_BLOCK = re.compile(r"<user_message>\n?(.*?)\n?</user_message>", re.DOTALL)
+_ROUTE = re.compile(r"\[\[route:([a-z_]+)(?::([0-9.]+))?\]\]")
+_SLOT = re.compile(r"\[\[slot:([a-z_]+)=([^\]]*)\]\]")
+_ROUTE_MESSAGES = re.compile(r"<message>(.*?)</message>", re.DOTALL)
 _REMEMBER = re.compile(r"\bremember(?: that)?[:,]?\s+(.+)", re.IGNORECASE | re.DOTALL)
 _VERBS = {"have": "has", "do": "does", "go": "goes", "am": "is"}
 
@@ -162,6 +165,9 @@ class FakeChatModel(BaseChatModel):
         if self.role == "memory_extract":
             prompt = _text_of(messages[-1]) if messages else ""
             return self._plain(self._memory_ops(prompt), input_tokens)
+        if self.role == "router":
+            prompt = _text_of(messages[-1]) if messages else ""
+            return self._plain(self._route(prompt), input_tokens)
 
         last_human = max(
             (i for i, m in enumerate(messages) if isinstance(m, HumanMessage)), default=-1
@@ -210,6 +216,28 @@ class FakeChatModel(BaseChatModel):
             op = {"op": "create", "id": None, "content": content, "category": "preference"}
             return json.dumps({"ops": [op]})
         return json.dumps({"ops": []})
+
+    @staticmethod
+    def _route(prompt: str) -> str:
+        """The scripted router: `general_chat` (0.95) unless the NEWEST user message carries
+        `[[route:<intent>]]` or `[[route:<intent>:<confidence>]]`; `[[slot:key=value]]` fills slots
+        and `[[route:invalid]]` answers with text that is not a decision. Only the user messages in
+        the prompt are read, like the real prompt asks of the real model."""
+        messages = _ROUTE_MESSAGES.findall(prompt)
+        newest = messages[-1] if messages else ""
+        marker = _ROUTE.search(newest)
+        if marker and marker.group(1) == "invalid":
+            return "this is not a routing decision"
+        slots: dict[str, Any] = dict.fromkeys(
+            ("topic", "source", "output", "memory_action", "memory_content")
+        )
+        slots.update({key: value for key, value in _SLOT.findall(newest)})
+        decision = {
+            "intent": marker.group(1) if marker else "general_chat",
+            "confidence": float(marker.group(2)) if marker and marker.group(2) else 0.95,
+            "slots": slots,
+        }
+        return json.dumps(decision)
 
     @staticmethod
     def _plain(text: str, input_tokens: int) -> _Plan:

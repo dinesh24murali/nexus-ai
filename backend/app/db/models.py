@@ -135,6 +135,15 @@ class Message(Base):
     __table_args__ = (
         CheckConstraint("role IN ('user', 'assistant')", name="role"),
         CheckConstraint("status IN ('complete', 'cancelled', 'failed')", name="status"),
+        CheckConstraint(
+            "intent IS NULL OR intent IN "
+            "('general_chat', 'manage_memory', 'generate_document', 'deep_research')",
+            name="intent",
+        ),
+        CheckConstraint(
+            "route_source IS NULL OR route_source IN ('router', 'command', 'fallback')",
+            name="route_source",
+        ),
         Index("ix_messages_conversation_created", "conversation_id", "created_at", "id"),
     )
 
@@ -165,6 +174,11 @@ class Message(Base):
         Numeric(10, 6), server_default="0", default=Decimal(0)
     )
     trace_id: Mapped[str | None] = mapped_column(Text)
+    # The pipeline that wrote an assistant message and how it was chosen (ADR-0010). Null on
+    # messages from before routing existed and on answers that needed no pipeline (`/help`, a usage
+    # reply: route_source is then `command`).
+    intent: Mapped[str | None] = mapped_column(Text)
+    route_source: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = _created_at()
 
 

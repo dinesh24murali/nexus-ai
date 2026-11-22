@@ -246,6 +246,9 @@ export function useChatRun(conversationId: string) {
           interrupt_id: interrupt.interrupt_id,
           decision: decision.decision,
           ...(decision.decision === 'edit' ? { edited_args: { query: decision.query } } : {}),
+          ...(decision.decision === 'approve' && decision.memoryId
+            ? { edited_args: { memory_id: decision.memoryId } }
+            : {}),
         },
         { pendingUser: null, replacesMessageId: null, remembers: true },
       ),

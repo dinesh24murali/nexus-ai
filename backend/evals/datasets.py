@@ -28,6 +28,9 @@ class _Record(BaseModel):
     smoke: bool = False
 
 
+Intent = Literal["general_chat", "manage_memory", "generate_document", "deep_research"]
+
+
 class Turn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -151,6 +154,13 @@ class Canaries(BaseModel):
     require_approval: list[Literal["web_search"]] = Field(default_factory=list)  # never unasked
     max_tool_calls: int | None = Field(default=None, ge=0)  # calls that really ran in the turn
     forbidden_memory_writes: list[str] = Field(default_factory=list)  # substrings, case-insensitive
+    # Routing (LLM-T17): the pipeline the turn ends in must be one of these; no confirmation card
+    # of these kinds may be raised; no memory may be deleted by the turn.
+    must_route: list[Intent] = Field(default_factory=list)
+    forbidden_interrupts: list[Literal["forget_memory", "research_plan"]] = Field(
+        default_factory=list
+    )
+    forbidden_memory_deletes: bool = False
 
 
 class OtherUser(BaseModel):
@@ -205,8 +215,20 @@ class RedTeamCase(_Record):
         """True when the case needs the tool-backed run (a world to set up, or a tool to watch)."""
         c = self.canaries
         return self.setup is not None or bool(
-            c.forbidden_tool_calls or c.require_approval or c.max_tool_calls is not None
+            c.forbidden_tool_calls
+            or c.require_approval
+            or c.max_tool_calls is not None
+            or c.must_route
+            or c.forbidden_interrupts
+            or c.forbidden_memory_deletes
         )
+
+    @property
+    def needs_router(self) -> bool:
+        """True when the case is about where the message is routed, so the graph needs the router
+        and a memory manager."""
+        c = self.canaries
+        return bool(c.must_route or c.forbidden_interrupts or c.forbidden_memory_deletes)
 
     @model_validator(mode="after")
     def _consistent(self) -> RedTeamCase:
@@ -264,6 +286,90 @@ class MemoryExtractCase(_Record):
         return self
 
 
+SLOT_NAMES = ("topic", "source", "output", "memory_action", "memory_content")
+
+
+class RouterTurn(BaseModel):
+    """One earlier turn. The router sees only the user turns; `intent` on an assistant turn says
+    which pipeline answered it (the "previous intent" the router is given)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1)
+    intent: Intent | None = None
+
+    @model_validator(mode="after")
+    def _intent_only_on_assistant(self) -> RouterTurn:
+        if self.intent is not None and self.role != "assistant":
+            raise ValueError("`intent` belongs on an assistant turn")
+        return self
+
+
+class RouterCase(_Record):
+    """One message for the router alone (doc 09 section 3, `router.intents`): a component eval, no
+    pipeline runs. `acceptable_intents` are other answers that are also right (a genuinely
+    ambiguous message); `expected_slots_contains` maps a slot to text its value must contain
+    (case-insensitive), checked only when the intent is right."""
+
+    input: str = Field(min_length=1)
+    history: list[RouterTurn] = Field(default_factory=list)
+    expected_intent: Intent
+    acceptable_intents: list[Intent] = Field(default_factory=list)
+    expected_slots_contains: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _consistent(self) -> RouterCase:
+        if self.expected_intent in self.acceptable_intents:
+            raise ValueError("`acceptable_intents` lists the OTHER right answers")
+        unknown = set(self.expected_slots_contains) - set(SLOT_NAMES)
+        if unknown:
+            raise ValueError(f"unknown slot names: {sorted(unknown)}")
+        if self.expected_intent == "general_chat" and self.expected_slots_contains:
+            raise ValueError("general_chat has no slots")
+        return self
+
+    @property
+    def right_intents(self) -> frozenset[str]:
+        return frozenset({self.expected_intent, *self.acceptable_intents})
+
+
+class MemoryE2ECase(_Record):
+    """Memory by chat from the user's side (doc 09 sections 3 and 9). Conversation A sends
+    `turns_a` in order (a slash command or plain text, so the router decides); a `forget_memory`
+    card that appears is answered with `decide` (approve picks `pick`, the 0-based candidate).
+    Then, optionally, a NEW conversation B asks `probe_b`. Every check that is given must hold for
+    the case to score 1: a case is a pass or a fail, never partly right.
+
+    `existing_memories` are stored for the user before the first turn; `expect_candidates` lists a
+    substring per candidate the card must offer (`[]`: no card at all); the store checks run after
+    conversation A; `expect_in_replies` are substrings of A's replies, `expect_in_answer` of B's.
+    All substring checks are case-insensitive."""
+
+    description: str = ""
+    existing_memories: list[str] = Field(default_factory=list)
+    turns_a: list[str] = Field(min_length=1)
+    decide: Literal["approve", "reject"] | None = None
+    pick: int = Field(default=0, ge=0)
+    probe_b: str | None = Field(default=None, min_length=1)
+    expect_candidates: list[str] | None = None
+    expect_in_replies: list[str] = Field(default_factory=list)
+    expect_in_answer: list[str] = Field(default_factory=list)
+    expect_memories: list[str] = Field(default_factory=list)  # each in exactly one memory
+    expect_absent: list[str] = Field(default_factory=list)  # in no memory
+    expect_count: int | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def _consistent(self) -> MemoryE2ECase:
+        if self.expect_in_answer and self.probe_b is None:
+            raise ValueError("`expect_in_answer` needs a probe_b")
+        if self.expect_candidates and self.decide is None:
+            raise ValueError("a case that expects a card must say how to answer it (`decide`)")
+        if self.expect_candidates is not None and self.pick >= max(len(self.expect_candidates), 1):
+            raise ValueError("`pick` is beyond the expected candidates")
+        return self
+
+
 class CalibrationCase(_Record):
     """One hand-labelled RAG answer for judge calibration (TASK-037). `label` is the human's
     verdict: `faithful` only if every claim in the answer is supported by the passages."""
@@ -286,6 +392,8 @@ MODELS: dict[str, type[_Record]] = {
     "rag.golden": RagCase,
     "tools.routing": ToolsCase,
     "memory.extract": MemoryExtractCase,
+    "router.intents": RouterCase,
+    "memory.e2e": MemoryE2ECase,
 }
 
 

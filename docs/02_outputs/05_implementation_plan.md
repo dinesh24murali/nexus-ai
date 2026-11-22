@@ -81,14 +81,14 @@ Each repo task group in brackets becomes `tasks/active/<NNN>-<slug>.md` when sta
 - **Files:** `.github/workflows/deploy.yml`, `deploy/README.md`, `memory/infra.md`
 - **Description:** Manually dispatched workflow: SSH to the prod VM, `docker compose pull && up -d` with GHCR images, then smoke `/readyz`. Caddy TLS; secrets in `.env` (0600) on the VM.
 - **Acceptance criteria:**
-  - [ ] The M1 skeleton is live on the VM; a deploy during an open browser session does not log the user out
+  - [-] The M1 skeleton is live on the VM; a deploy during an open browser session does not log the user out — **needs the VM, domain and secrets: skipped, deferred (`tasks/deferred.md` D26)**
 
 #### TASK-034: Backups & uptime check
 - **Depends on:** TASK-033
 - **Files:** `deploy/backup.sh`, `deploy/uptime.md`
 - **Description:** Nightly `pg_dump` and Qdrant snapshot to off-site storage, with one tested restore; one external uptime check on `/readyz`. No SLO and no alert rules beyond uptime and spend (TASK-014).
 - **Acceptance criteria:**
-  - [ ] A restore into a fresh local stack succeeds once and is documented
+  - [-] A restore into a fresh local stack succeeds once and is documented — **deferred with TASK-033 (`tasks/deferred.md` D27)**
 
 ## M2 — Core chat + evals
 
@@ -310,15 +310,15 @@ Each repo task group in brackets becomes `tasks/active/<NNN>-<slug>.md` when sta
 - **Files:** `tests/coverage-baseline.json`
 - **Description:** Close coverage gaps to the 80% / 70% targets (ADR-0009); Langfuse dashboards for cost, latency and feedback. (Prometheus metrics deferred.)
 - **Acceptance criteria:**
-  - [ ] Every package meets its coverage target and the baseline file records it
+  - [-] Every package meets its coverage target and the baseline file records it — **deferred by the developer on 2026-11-22 (`tasks/deferred.md` D25)**
 
 #### TASK-035: Release checklist
 - **Depends on:** all
 - **Files:** `docs/02_outputs/release_checklist.md`, `README.md`
 - **Description:** Final full eval run, cost review against G4, privacy section in the README (data stored, Langfuse Cloud EU, OpenAI `store=false`, retention, deletion), admin CLI documented, fresh-clone timing (G8).
 - **Acceptance criteria:**
-  - [ ] `make eval` (full) passes on the prod config
-  - [ ] A fresh clone reaches a working stack in ≤ 15 min following the README
+  - [-] `make eval` (full) passes on the prod config — **deferred by the developer on 2026-11-22 (paid run; `tasks/deferred.md` D28); TASK-038's dependency on it is waived**
+  - [-] A fresh clone reaches a working stack in ≤ 15 min following the README — **deferred (D28)**
 
 ---
 
@@ -333,20 +333,20 @@ Starts after M6 so the v1 core ships hardened first. Every task ships with its e
 - **Files:** `backend/app/graph/router.py`, `backend/app/graph/commands.py` (slash-command parser), `backend/app/graph/builder.py`, `backend/prompts/nexus.route.md`, `backend/app/llm/factory.py` (`router` role), `backend/app/api/chat.py` (`/help`, usage replies), `adr/0010-intent-router.md`
 - **Description:** `RouteDecision` structured output on `gpt-6-luna` over 4 intents, running in parallel with `load_context`; dispatch to subgraphs with `general_chat` as fallback (confidence below `min_confidence` from the `nexus.route.md` front-matter, error, 5 s timeout); router input = last 3 user messages + previous intent only; deterministic slash-command parser (doc 08 §2.6) that skips the router, with `/help` answered without a model and usage replies for malformed commands; resume never re-routes; `route_selected` SSE event (`source=router|command|fallback`); `intent`/`route_source` stored on messages; trace tags; kill switches `ROUTER_DISABLED`, `INTENTS_DISABLED` (runtime flags); `nexus.system` gains the "never offer a PDF or research yourself" rule. Fake-LLM mode supports scripted route decisions.
 - **Acceptance criteria:**
-  - [ ] Unit tests (fake LLM): fallback on low confidence, timeout and invalid JSON; slash-command bypass; resume keeps the subgraph
-  - [ ] Parser unit tests: every command in doc 08 §2.6, case-insensitivity, commands only at the start, malformed commands → usage reply
-  - [ ] `min_confidence` tuned on the first reviewed full run (best `router.intent_accuracy`, ties → higher) or dropped if confidence is degenerate (doc 08 §2.2); result in `memory/ai.md`
-  - [ ] `ops.ttft_p95_ms` measured end to end with the router; if it misses, the keyword pre-gate is added
-  - [ ] `router.intents` dataset (120 / 24, 4 intents) reviewed; first baselines for `router.intent_accuracy`, `router.macro_f1`, `router.slot_accuracy`, `router.latency_p95_ms` recorded
-  - [ ] rt-22 passes; router input asserted to contain user text only
+  - [x] Unit tests (fake LLM): fallback on low confidence, timeout and invalid JSON; slash-command bypass; resume keeps the subgraph
+  - [x] Parser unit tests: every command in doc 08 §2.6, case-insensitivity, commands only at the start, malformed commands → usage reply
+  - [-] `min_confidence` tuned on the first reviewed full run (best `router.intent_accuracy`, ties → higher) or dropped if confidence is degenerate (doc 08 §2.2); result in `memory/ai.md` — **needs a paid run: skipped, deferred (`tasks/deferred.md` D29)**
+  - [-] `ops.ttft_p95_ms` measured end to end with the router; if it misses, the keyword pre-gate is added — **the eval graph now routes; the real measurement is deferred (D29)**
+  - [-] `router.intents` dataset (120 / 24, 4 intents) reviewed; first baselines for `router.intent_accuracy`, `router.macro_f1`, `router.slot_accuracy`, `router.latency_p95_ms` recorded — **dataset built (AI-drafted), suite wired and tested offline; developer review and baselines deferred (D29)**
+  - [x] rt-22 passes (offline, against a scripted resisting router; a scripted obeying one trips it; the real-model run is D29); router input asserted to contain user text only
 
 #### TASK-039: Memory by chat
 - **Depends on:** TASK-038, TASK-026
 - **Files:** `backend/app/graph/intents/manage_memory.py`, `backend/app/memory/ops.py`, `frontend/src/features/chat/ApprovalCard.tsx` (candidate picker)
 - **Description:** `manage_memory` `list` (template, no LLM), `save` (deny-list + instruction filter) and `forget` (top 3, similarity ≥ 0.75; `forget_memory` interrupt with 1 clear match or up to 3 candidates; delete exactly one on approve); `extract_memories` skipped on these turns; memory off → short notice.
 - **Acceptance criteria:**
-  - [ ] `memory.e2e` cases pass through `manage_memory`, including the one-clear-match and ambiguous forget cases (doc 09 §9)
-  - [ ] Every forget interrupts before deleting (`tools.approval_enforced`); reject and expiry delete nothing
+  - [x] `memory.e2e` cases pass through `manage_memory`, including the one-clear-match and ambiguous forget cases (doc 09 §9) *(offline against the real store; the real-model run is D29)*
+  - [x] Every forget interrupts before deleting (`tools.approval_enforced`); reject and expiry delete nothing
 
 #### TASK-040: Mode chip & slash commands (UI)
 - **Depends on:** TASK-038

@@ -8,7 +8,7 @@
     "backend/app/llm": 97,
     "backend/app/graph": 95,
     "backend/app/jobs": 97,
-    "backend/app/services": 94,
+    "backend/app/services": 95,
     "backend/app/core": 96,
     "frontend/src/api": 97,
     "frontend/src/features/chat": 90,

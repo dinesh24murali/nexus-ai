@@ -97,7 +97,7 @@ async def test_a_smoke_run_measures_what_needs_no_judge(fake_settings: Settings)
         "safety.injection_resistance",
         "safety.cross_tenant_leaks",
     ]
-    assert report.run["redteam_tool_cases_skipped"] == 8
+    assert report.run["redteam_tool_cases_skipped"] == 9  # incl. rt-22a
     assert report.metrics["safety.system_prompt_leaks"] == 0
 
 
@@ -353,3 +353,40 @@ def test_the_tools_dataset_can_be_selected_on_the_command_line() -> None:
     assert parse_args(["--suite", "smoke", "--dataset", "tools.routing"]).dataset == [
         "tools.routing"
     ]
+
+
+async def test_the_router_step_runs_in_a_fake_suite_and_reports_its_confusion_matrix(
+    fake_settings: Settings,
+) -> None:
+    from app.llm.factory import get_model
+
+    report = await suite(
+        fake_settings,
+        router_model=get_model("router", settings=fake_settings),
+        only=["router.intents"],
+    )
+
+    assert report.run["datasets"]["router.intents"]["cases"] == 24
+    assert report.run["errors"] == 0
+    # The scripted router always answers general_chat (0.95), so no case that names slots is
+    # routed right: `router.slot_accuracy` has no samples and is reported as not measured (a gated
+    # metric that cannot be measured fails the gate instead of passing).
+    assert set(report.metrics) == {
+        "router.intent_accuracy",
+        "router.macro_f1",
+        "router.fallback_rate",
+        "router.latency_p95_ms",
+    }
+    assert 0 < report.metrics["router.intent_accuracy"] < 1
+    assert report.metrics["router.fallback_rate"] == 0.0
+    confusion = report.run["router"]["confusion"]
+    assert set(confusion) == {"general_chat", "manage_memory", "generate_document", "deep_research"}
+    assert set(confusion["manage_memory"]) == {"general_chat"}
+    assert report.run["router"]["min_confidence"] == 0.70
+    assert report.run["skipped_metrics"] == ["router.slot_accuracy"]
+
+
+async def test_the_router_step_is_left_out_without_a_router_model(fake_settings: Settings) -> None:
+    report = await suite(fake_settings, only=["chat.golden"])
+
+    assert "router.intents" not in report.run["datasets"]

@@ -224,3 +224,90 @@ test("one account never sees another's memories", async ({ page, browser }) => {
   );
   await other.close();
 });
+
+/** What the API says the account remembers (the source of truth for what is really deleted). */
+async function stored(page: Page, account: Account): Promise<string[]> {
+  const res = await page.request.get("/api/v1/memories?limit=100", {
+    headers: { authorization: `Bearer ${account.token}` },
+  });
+  const body = (await res.json()) as { items: { content: string }[] };
+  return body.items.map((item) => item.content).sort();
+}
+
+async function say(page: Page, text: string) {
+  await box(page).fill(text);
+  await box(page).press("Enter");
+}
+
+test("memory by chat: remember, list and /help answer without the chat model", async ({
+  page,
+}) => {
+  const account = await signIn(page);
+
+  await say(page, "/memory remember I prefer Go for backend work.");
+  await expect(page).toHaveURL(/\/c\/[0-9a-f-]{36}$/);
+  await expect(page.getByText(`Saved: ${GO}.`)).toBeVisible();
+  expect(await stored(page, account)).toEqual([`${GO}.`]);
+
+  await say(page, "/memory");
+  await expect(page.getByText("I remember 1 thing about you:")).toBeVisible();
+
+  await say(page, "/help");
+  await expect(page.getByText(/I'm Nexus\. I can chat/)).toBeVisible();
+  await expect(page.getByText("/memory forget <text>")).toBeVisible();
+
+  // A command that is not available yet says so instead of falling through to the model.
+  await say(page, "/pdf");
+  await expect(page.getByText(/is not available yet/)).toBeVisible();
+});
+
+test("forgetting a memory asks first: keep it, then forget it", async ({
+  page,
+}) => {
+  const account = await signIn(page);
+  await seed(page, account, "User works at Acme.", "User prefers dark mode.");
+
+  await say(page, "/memory forget works at Acme");
+  const card = page.getByRole("group", { name: "Forget a memory?" });
+  await expect(card).toBeVisible();
+  await expect(card.getByText("User works at Acme.")).toBeVisible();
+  // The card is only a question: nothing is deleted while it waits.
+  expect(await stored(page, account)).toHaveLength(2);
+
+  // Keep it: nothing is deleted.
+  await card.getByRole("button", { name: "Keep it" }).click();
+  await expect(page.getByText("OK, I didn't delete anything.")).toBeVisible();
+  await expect(card).toHaveCount(0);
+  expect(await stored(page, account)).toHaveLength(2);
+
+  // Ask again and confirm: exactly that memory goes.
+  await say(page, "/memory forget works at Acme");
+  await expect(card).toBeVisible();
+  await card.getByRole("button", { name: "Forget it" }).click();
+  await expect(page.getByText("Forgot: User works at Acme.")).toBeVisible();
+  await expect(card).toHaveCount(0);
+  expect(await stored(page, account)).toEqual(["User prefers dark mode."]);
+
+  // A reload keeps the answer, and no card comes back.
+  await page.reload();
+  await expect(page.getByText("Forgot: User works at Acme.")).toBeVisible();
+  await expect(card).toHaveCount(0);
+});
+
+test("a forget card survives a reload and a new message abandons it", async ({
+  page,
+}) => {
+  const account = await signIn(page);
+  await seed(page, account, "User works at Acme.");
+
+  await say(page, "/memory forget works at Acme");
+  const card = page.getByRole("group", { name: "Forget a memory?" });
+  await expect(card).toBeVisible();
+
+  await page.reload();
+  await expect(card).toBeVisible(); // restored from the conversation, not from run state
+
+  await say(page, "never mind, hello");
+  await expect(card).toHaveCount(0);
+  expect(await stored(page, account)).toEqual(["User works at Acme."]);
+});

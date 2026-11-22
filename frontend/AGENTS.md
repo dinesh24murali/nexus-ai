@@ -78,6 +78,12 @@ frontend/
 - Toasts: `ToastProvider` (in `AppShell`) renders a labelled `aria-live="polite"` region; a toast is a list item, not a `status` role (pages keep exactly one `status`: the running tool call). `useToasts()` is a no-op outside a provider
 - `tests/e2e/memory.spec.ts` needs `LLM_MODE=fake` on api AND worker (the fake extraction turns "Remember that I prefer Go for backend work." into "User prefers Go for backend work")
 
+### Forget card (TASK-039)
+- `ApprovalCard` shows the card for the pending approval's tool: `web_search` (query, edit), `forget_memory` (`ForgetMemoryCard`: the exact text of each memory the server found, as text; one candidate → "Forget it" / "Keep it"; several → a radio group with nothing preselected, "Forget the selected memory" stays disabled until one is chosen, "Keep them all"), anything else → the "can't be shown here yet" card with Reject. Candidates are read defensively (anything that is not `{memory_id: string, content: string}` is dropped; a card with none can only be kept)
+- The decision type carries the choice: `{decision: 'approve', memoryId}`; `useChatRun.decide` posts it as `edited_args.memory_id` (the API refuses an id that was not offered, 422, and the card stays). An expired card shows "expired" and no buttons. Like every approval it is read from the conversation (`pending_interrupt`), so it survives a reload, and a new message abandons it
+- `route_selected` and `memory_updated` events are known to `api/stream.ts` but not rendered yet (the mode chip and slash menu are TASK-040); a memory answer is an ordinary assistant message, so the toast after a turn (`useMemoryWatch`) still tells the user a memory was saved
+- `tests/e2e/memory.spec.ts` (memory by chat: `/memory remember`, `/memory`, `/help`, `/pdf` explained, forget keep / forget / reload / abandon) needs `LLM_MODE=fake` like the rest of that file; plain-text requests are never routed in fake mode
+
 ### Auth and sessions
 - All session logic is `src/lib/auth.ts` (`AuthManager`). Use `manager.fetch()` for every API call: it adds the bearer token, refreshes once on 401 and retries. Never put tokens in localStorage, sessionStorage, URLs or the DOM
 - **Refresh must never overlap.** Refreshing rotates the refresh cookie and the server revokes the whole session if an old token is reused. The manager keeps one refresh in flight per tab and one at a time across tabs (Web Locks). Do not call `/auth/refresh` yourself

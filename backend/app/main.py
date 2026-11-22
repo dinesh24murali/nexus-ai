@@ -19,6 +19,7 @@ from app.core.shutdown import chain_sigterm
 from app.db.session import create_engine, create_session_factory
 from app.llm.factory import build_embeddings_client
 from app.llm.tracing import Tracer
+from app.memory.manage import memory_manager_for
 from app.memory.read import memory_lookup_for
 from app.rag.embedder import Embedder
 from app.rag.retriever import lazy_retriever
@@ -75,6 +76,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 retriever=lazy_retriever(settings),
                 recent_files=recent_files_for(app.state.session_factory),
                 memories=memory_lookup_for(app.state.session_factory, settings, embedder),
+                memory_manager=memory_manager_for(app.state.session_factory, settings, embedder),
             ),
             flags=app.state.flags,
             tracer=tracer,

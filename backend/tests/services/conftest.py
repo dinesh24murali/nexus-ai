@@ -39,6 +39,8 @@ async def make_env(
         retriever: Any = None,
         web: Any = None,
         calculator: bool = False,
+        router: Any = None,
+        memory_manager: Any = None,
         settings_update: dict[str, Any] | None = None,
     ) -> Env:
         user = UUID(make_user())
@@ -60,6 +62,8 @@ async def make_env(
                 retriever=retriever,
                 web_searcher=web,
                 calculator=calculator,
+                router_model=router,
+                memory_manager=memory_manager,
             )
 
         service = RunService(

@@ -1,8 +1,16 @@
 """Assembles the chat graph:
 
-    START -> load_context -> (history above the trigger? summarize) -> agent -> END
-                                                                         |  ^
-                                         (tool calls) -> [approval ->] tools
+    START -> load_context --+
+    START -> router --------+-> dispatch -> (history above the trigger? summarize) -> agent -> END
+                                  |                                                    |  ^
+                                  |                              (tool calls) -> [approval ->] tools
+                                  +-> manage_memory [-> forget_confirm] -> END
+
+`router` (ADR-0010) picks the pipeline for a new message while `load_context` runs; `dispatch`
+waits for both and sends `manage_memory` messages to their own pipeline, everything else to the
+chat agent below. Without a router model or a route the message is a chat message, which is how
+the graph behaved before routing existed. A resume continues inside the pipeline that paused
+(LangGraph resumes at the interrupted node), so it never routes again.
 
 The `tools` node exists when at least one tool is given: file search (`retriever`), web search
 (`web_searcher`) or the calculator. A message with calls that need the user's approval
@@ -22,6 +30,13 @@ from langgraph.graph.state import CompiledStateGraph
 
 from app.core.config import Settings
 from app.graph.calls import disabled_tools
+from app.graph.intents import FALLBACK_INTENT
+from app.graph.intents.manage_memory import (
+    MemoryManager,
+    after_manage_memory,
+    make_forget_confirm_node,
+    make_manage_memory_node,
+)
 from app.graph.nodes.agent import make_agent_node
 from app.graph.nodes.approval import calls_needing_approval, make_approval_node
 from app.graph.nodes.load_context import MemoryLookup, RecentFiles, make_load_context
@@ -31,6 +46,7 @@ from app.graph.nodes.summarize import (
     make_summarize_node,
 )
 from app.graph.nodes.tools import TOOL_TIMEOUT_S, make_tools_node
+from app.graph.router import ROUTER_TIMEOUT_S, make_router_node
 from app.graph.state import ChatState
 from app.graph.tools.calculator import tool_spec as calculator_spec
 from app.graph.tools.search_my_files import tool_spec as search_my_files_spec
@@ -51,6 +67,9 @@ def build_graph(
     calculator: bool = False,
     recent_files: RecentFiles | None = None,
     memories: MemoryLookup | None = None,
+    router_model: Runnable[Any, Any] | None = None,
+    memory_manager: MemoryManager | None = None,
+    router_timeout_s: float = ROUTER_TIMEOUT_S,
     tool_timeout_s: float = TOOL_TIMEOUT_S,
     settings: Settings | None = None,
     summarize_trigger_tokens: int = SUMMARIZE_TRIGGER_TOKENS,
@@ -88,16 +107,37 @@ def build_graph(
                 bound[names] = chat_model.bind_tools(subset)  # type: ignore[attr-defined]
         return bound[names]
 
-    def needs_summary(state: ChatState) -> Literal["summarize", "agent"]:
+    pipelines = frozenset({FALLBACK_INTENT} | ({"manage_memory"} if memory_manager else set()))
+
+    def dispatch_to(state: ChatState) -> Literal["summarize", "agent", "manage_memory"]:
+        route = state.get("route") or {}
+        if route.get("intent") == "manage_memory" and "manage_memory" in pipelines:
+            return "manage_memory"
         too_long = count_messages(state["messages"]) > summarize_trigger_tokens
         return "summarize" if too_long else "agent"
 
+    async def dispatch(state: ChatState) -> dict[str, Any]:
+        return {}  # a join: it runs once `load_context` and `router` are both done
+
     builder = StateGraph(ChatState)
     builder.add_node("load_context", make_load_context(recent_files, memories))
+    builder.add_node(
+        "router", make_router_node(router_model, pipelines=pipelines, timeout_s=router_timeout_s)
+    )
+    builder.add_node("dispatch", dispatch)
     builder.add_node("summarize", make_summarize_node(summarizer, keep_tokens=history_keep_tokens))
     builder.add_node("agent", make_agent_node(chat, tools_for=tools_for if specs else None))
     builder.add_edge(START, "load_context")
-    builder.add_conditional_edges("load_context", needs_summary, ["summarize", "agent"])
+    builder.add_edge(START, "router")
+    builder.add_edge(["load_context", "router"], "dispatch")
+    destinations = ["summarize", "agent"]
+    if memory_manager is not None:
+        builder.add_node("manage_memory", make_manage_memory_node(memory_manager))
+        builder.add_node("forget_confirm", make_forget_confirm_node(memory_manager))
+        builder.add_conditional_edges("manage_memory", after_manage_memory, ["forget_confirm", END])
+        builder.add_edge("forget_confirm", END)
+        destinations.append("manage_memory")
+    builder.add_conditional_edges("dispatch", dispatch_to, destinations)
     builder.add_edge("summarize", "agent")
     if not specs:
         builder.add_edge("agent", END)

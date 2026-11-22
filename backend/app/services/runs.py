@@ -48,7 +48,9 @@ from app.api.sse import (
     ErrorEvent,
     Event,
     InterruptEvent,
+    MemoryUpdatedEvent,
     PendingInterrupt,
+    RouteSelectedEvent,
     RunStartedEvent,
     TokenEvent,
     ToolEndEvent,
@@ -63,6 +65,9 @@ from app.core.runtime_flags import RuntimeFlags
 from app.db.repositories import conversations, messages, users
 from app.db.repositories import usage as usage_repo
 from app.graph.builder import build_graph
+from app.graph.commands import ParsedCommand, StaticReply, parse_command, unavailable_reply
+from app.graph.intents import PIPELINES
+from app.graph.intents.manage_memory import MemoryManager
 from app.graph.nodes.load_context import MemoryLookup, RecentFiles
 from app.graph.state import MAX_TOOL_CALLS
 from app.graph.tools.web_search import MAX_QUERY_CHARS
@@ -87,7 +92,7 @@ HEARTBEAT_INTERVAL_S = 10.0  # ADR-0006
 DRAIN_TIMEOUT_S = 90.0  # ADR-0006
 _FORCE_STOP_WAIT_S = 10.0
 _RETRY_AFTER_S = "10"
-_TRACED_PROMPTS = ("nexus.system", "nexus.context", "nexus.summarize")
+_TRACED_PROMPTS = ("nexus.system", "nexus.context", "nexus.summarize", "nexus.route")
 _RATE_WINDOW_S = 60
 _RATE_LIMITED_MESSAGE = "You're sending messages too quickly. Please wait a moment."
 
@@ -98,6 +103,15 @@ TraceName = Literal["chat.turn", "chat.regenerate", "chat.resume"]
 _DANGLING_CALL_TEXT = (
     "This tool call did not run: the conversation moved on before it was completed."
 )
+
+
+@dataclass(frozen=True)
+class RoutingFlags:
+    """The kill switches that shape routing, read once when a run starts (a 60 s cache)."""
+
+    router_disabled: bool = False  # ROUTER_DISABLED: every message is a chat message
+    disabled_intents: frozenset[str] = frozenset()  # INTENTS_DISABLED
+    memory_writes_disabled: bool = False  # MEMORY_WRITES_DISABLED: no save or forget by chat
 
 
 @dataclass(eq=False)
@@ -112,6 +126,11 @@ class Run:
     default_model: str
     kind: RunKind = "send"  # a regenerate or a resume is not "a message sent" in usage_daily
     disabled: frozenset[str] = frozenset()  # TOOLS_DISABLED at the time the run started
+    routing: RoutingFlags = field(default_factory=lambda: RoutingFlags())
+    command: ParsedCommand | None = None  # a slash command that selects a pipeline
+    static_reply: StaticReply | None = None  # /help or a usage reply: no graph, no model
+    intent: str | None = None  # the pipeline that answered (from the `route` event or the state)
+    route_source: str | None = None
     events: asyncio.Queue[Event | None] = field(default_factory=asyncio.Queue)  # None ends it
     done: asyncio.Event = field(default_factory=asyncio.Event)
     partial: list[str] = field(default_factory=list)  # answer text streamed so far
@@ -152,13 +171,15 @@ def graph_factory_for(
     retriever: Callable[[], Retriever] | None = None,
     recent_files: RecentFiles | None = None,
     memories: MemoryLookup | None = None,
+    memory_manager: MemoryManager | None = None,
 ) -> GraphFactory:
     """The production graph: factory-built models, the Postgres checkpointer, the file-search tool
     (when a retriever is given), `web_search` (when Tavily is configured, or in fake mode) and the
     calculator. The retriever is built on first use, so a missing API key fails the run (like the
     chat model) and not the start of the API. Which tools a run may use is decided per run
     (`TOOLS_DISABLED`), not here. `memories` reads the user's long-term memories into the late
-    context message."""
+    context message. The router model is always built (ADR-0010); `ROUTER_DISABLED` is a per-run
+    switch. `memory_manager` is what `manage_memory` acts through."""
 
     def build(model_override: str | None) -> Graph:
         chat = get_model("chat", settings=settings, model_override=model_override)
@@ -170,6 +191,8 @@ def graph_factory_for(
             calculator=True,
             recent_files=recent_files,
             memories=memories,
+            router_model=get_model("router", settings=settings),
+            memory_manager=memory_manager,
             settings=settings,
         )
 
@@ -192,16 +215,13 @@ def _no_pending() -> ApiError:
     )
 
 
-def _bad_edit(reason: str) -> ApiError:
+def _bad_edit(reason: str, field: str = "query") -> ApiError:
+    loc = ["body", "decision"] if field == "decision" else ["body", "edited_args", field]
     return ApiError(
         422,
         "VALIDATION_FAILED",
         "The request body is invalid.",
-        details={
-            "fields": [
-                {"loc": ["body", "edited_args", "query"], "msg": reason, "type": "value_error"}
-            ]
-        },
+        details={"fields": [{"loc": loc, "msg": reason, "type": "value_error"}]},
     )
 
 
@@ -217,6 +237,8 @@ def _resume_value(
     pending: dict[str, Any], decision: str, edited_args: dict[str, Any] | None
 ) -> Any:
     """The value `interrupt()` returns inside the graph, validated against the approval."""
+    if pending.get("tool") == "forget_memory":
+        return _forget_resume_value(pending, decision, edited_args)
     if decision != "edit":
         return {"decision": decision}
     query = (edited_args or {}).get("query")
@@ -226,6 +248,29 @@ def _resume_value(
     if not 1 <= len(query) <= MAX_QUERY_CHARS:
         raise _bad_edit(f"edited_args.query must be 1 to {MAX_QUERY_CHARS} characters")
     return {"decision": "edit", "args": {"query": query}}
+
+
+def _forget_resume_value(
+    pending: dict[str, Any], decision: str, edited_args: dict[str, Any] | None
+) -> Any:
+    """A `forget_memory` decision: `reject`, or `approve` naming one of the memories that were
+    offered (the id may be left out when only one was). Anything else is a 422 and the approval
+    stays pending, so a typo cannot delete or lose the card."""
+    if decision == "reject":
+        return {"decision": "reject"}
+    if decision == "edit":
+        raise _bad_edit("a memory can be approved or rejected, not edited", "decision")
+    offered = [str(c.get("memory_id")) for c in (pending.get("args") or {}).get("candidates") or []]
+    wanted = (edited_args or {}).get("memory_id")
+    if wanted is None:
+        if len(offered) != 1:
+            raise _bad_edit(
+                "edited_args.memory_id is required to pick one of the memories", "memory_id"
+            )
+        wanted = offered[0]
+    if str(wanted) not in offered:
+        raise _bad_edit("edited_args.memory_id is not one of the offered memories", "memory_id")
+    return {"decision": "approve", "args": {"memory_id": str(wanted)}}
 
 
 def _no_regenerate() -> ApiError:
@@ -312,6 +357,12 @@ class RunService:
         tags = ("moderation:skipped",) if verdict.skipped else ()
         override = await self._override()
         disabled = await self._disabled_tools()
+        routing = await self._routing_flags()
+        command, static = self._command_for(content, routing)
+        if command is not None:
+            tags = (*tags, "route:command", f"intent:{command.intent}")
+        elif routing.router_disabled and static is None:
+            tags = (*tags, "route:disabled")
         run_id, user_message_id = uuid.uuid4(), uuid.uuid4()
         async with self._factory() as session, session.begin():
             await self._acquire(session, user_id, conversation_id, run_id)
@@ -328,9 +379,12 @@ class RunService:
         run = self._register(
             run_id, conversation_id, user_id, user_message_id, None, override, tags, disabled
         )
-        # The lease is ours: settle a tool call the last run left unanswered before the model
-        # sees the thread again (an abandoned approval, a crash or a stop mid-tools).
-        await self._repair_thread(run)
+        run.routing, run.command, run.static_reply = routing, command, static
+        if static is None:
+            # The lease is ours: settle a tool call the last run left unanswered before the model
+            # sees the thread again (an abandoned approval, a crash or a stop mid-tools). A static
+            # reply never reaches the model or the thread.
+            await self._repair_thread(run)
         message = HumanMessage(content=content, id=str(user_message_id))
         return self._launch(run, {"messages": [message]}, display_name, override, None, "chat.turn")
 
@@ -352,6 +406,7 @@ class RunService:
         await self._admit(user_id)
         override = await self._override()
         disabled = await self._disabled_tools()
+        routing = await self._routing_flags()
         run_id = uuid.uuid4()
         async with self._factory() as session, session.begin():
             conversation = await conversations.get(session, user_id, conversation_id)
@@ -375,6 +430,7 @@ class RunService:
         run = self._register(
             run_id, conversation_id, user_id, None, None, override, (), disabled, kind="resume"
         )
+        run.routing = routing
         return self._launch(run, Command(resume=value), display_name, override, None, "chat.resume")
 
     async def start_regenerate(
@@ -392,7 +448,7 @@ class RunService:
             if conversation.active_run_id is not None:
                 raise _already_running()
             last = await messages.latest(session, user_id, conversation_id)
-            if last is None or last.role != "assistant":
+            if last is None or last.role != "assistant" or not _regenerable(last):
                 raise _no_regenerate()
             await self._acquire(session, user_id, conversation_id, run_id)
             replace_id = last.id
@@ -501,6 +557,36 @@ class RunService:
             return frozenset()
         raw = (await self._flags.get("TOOLS_DISABLED")) or ""
         return frozenset(name.strip() for name in str(raw).split(",") if name.strip())
+
+    async def _routing_flags(self) -> RoutingFlags:
+        """`ROUTER_DISABLED`, `INTENTS_DISABLED` and `MEMORY_WRITES_DISABLED`, read per run."""
+        if self._flags is None:
+            return RoutingFlags()
+        intents = str(await self._flags.get("INTENTS_DISABLED") or "")
+        return RoutingFlags(
+            router_disabled=str(await self._flags.get("ROUTER_DISABLED") or "") == "1",
+            disabled_intents=frozenset(p.strip() for p in intents.split(",") if p.strip()),
+            memory_writes_disabled=str(await self._flags.get("MEMORY_WRITES_DISABLED") or "")
+            == "1",
+        )
+
+    @staticmethod
+    def _command_for(
+        content: str, routing: RoutingFlags
+    ) -> tuple[ParsedCommand | None, StaticReply | None]:
+        """The slash command at the start of a message, as (a pipeline to run, an answer that
+        needs none). A command whose pipeline is not built or is switched off gets an explanation,
+        never a silent fallback to chat."""
+        parsed = parse_command(content, available=PIPELINES - routing.disabled_intents)
+        if isinstance(parsed, StaticReply):
+            return None, parsed
+        if parsed is None:
+            return None, None
+        if parsed.intent not in PIPELINES:
+            return None, unavailable_reply(parsed, disabled=False)
+        if parsed.intent in routing.disabled_intents:
+            return None, unavailable_reply(parsed, disabled=True)
+        return parsed, None
 
     async def _acquire(
         self,
@@ -718,7 +804,16 @@ class RunService:
             "user_display_name": display_name,
             "today": datetime.now(UTC).date().isoformat(),
             "disabled_tools": sorted(run.disabled),  # TOOLS_DISABLED, a trusted per-run value
+            "router_disabled": run.routing.router_disabled,
+            "disabled_intents": sorted(run.routing.disabled_intents),
+            "memory_writes_disabled": run.routing.memory_writes_disabled,
         }
+        if run.command is not None:  # parsed by code before the graph: skips the router
+            configurable["command"] = {
+                "name": run.command.name,
+                "intent": run.command.intent,
+                "slots": run.command.slots,
+            }
         if checkpoint_id:
             configurable.update(checkpoint_id=checkpoint_id, checkpoint_ns="")
         config: dict[str, Any] = {"configurable": configurable, "callbacks": [run.collector]}
@@ -748,12 +843,20 @@ class RunService:
         checkpoint_id: str | None,
         trace_name: TraceName,
     ) -> _Result | _Paused:
+        if run.static_reply is not None:  # /help or a usage reply: no graph, no model, no thread
+            return self._answer_statically(run, run.static_reply)
         graph = self._graph(override)
         config = self._config(run, display_name, checkpoint_id, trace_name)
         thread: RunnableConfig = {"configurable": {"thread_id": str(run.conversation_id)}}
+        if run.kind != "send":
+            # A resume and a regenerate continue a turn that was routed earlier: the pipeline it
+            # chose is in the state (a resume never routes again).
+            before = await graph.aget_state(thread)
+            route = before.values.get("route") or {}
+            run.intent = route.get("intent") or run.intent
+            run.route_source = route.get("source") or run.route_source
         if run.kind == "resume":
             # The turn started in an earlier run: its sources and tool calls are in the state.
-            before = await graph.aget_state(thread)
             run.citations = [
                 Citation.model_validate(c).model_dump(mode="json")
                 for c in before.values.get("citations") or []
@@ -791,11 +894,32 @@ class RunService:
             finish_reason="tool_limit" if out_of_calls and reason == "stop" else reason,
         )
 
+    @staticmethod
+    def _answer_statically(run: Run, reply: StaticReply) -> _Result:
+        """The whole answer at once. It has no pipeline, so it stores no intent; `route_source`
+        `command` marks it (a regenerate of it is refused)."""
+        run.route_source = "command"
+        run.partial.append(reply.text)
+        run.events.put_nowait(TokenEvent(delta=reply.text))
+        return _Result(text=reply.text, finish_reason="stop")
+
     def _on_custom(self, run: Run, payload: Any) -> None:
         """Turn the tools node's custom events into SSE events and the stored read model."""
         if not isinstance(payload, dict):
             return
         match payload.get("kind"):
+            case "route":
+                routed = RouteSelectedEvent(
+                    intent=payload["intent"],
+                    source=payload["source"],
+                    confidence=payload.get("confidence"),
+                )
+                run.intent, run.route_source = routed.intent, routed.source
+                run.events.put_nowait(routed)
+            case "memory_updated":
+                run.events.put_nowait(
+                    MemoryUpdatedEvent(action=payload["action"], content=payload["content"])
+                )
             case "tool_start":
                 event = ToolStartEvent(
                     call_id=payload["call_id"], name=payload["name"], args=payload["args"]
@@ -971,6 +1095,8 @@ class RunService:
             ),
             tool_calls=run.tool_calls,
             citations=run.citations,
+            intent=run.intent,
+            route_source=run.route_source,
         )
         await self._add_spend(session, run)
         if status == "complete":
@@ -991,8 +1117,10 @@ class RunService:
         A send and a resume (the answer that ends a turn paused for approval) are turns; a
         regenerate answers a message that was already read. Only users with memory on get a job:
         the job checks again when it runs, as does `MEMORY_WRITES_DISABLED`."""
-        if run.kind == "regenerate":
+        if run.kind == "regenerate" or run.static_reply is not None:
             return
+        if run.intent == "manage_memory":
+            return  # the user managed memories directly: nothing to extract from this turn
         user = await users.get_by_id(session, run.user_id)
         if user is None or not user.memory_enabled:
             return
@@ -1043,6 +1171,14 @@ class RunService:
             )
         except Exception:
             _log.exception("thread_append_failed", run_id=str(run.run_id))
+
+
+def _regenerable(message: Any) -> bool:
+    """Only a `general_chat` answer can be regenerated (doc 08 section 2.3). A message from before
+    routing (no intent) was one. A `/help` or usage reply has no thread behind it."""
+    if message.intent not in (None, "general_chat"):
+        return False
+    return not (message.intent is None and message.route_source == "command")
 
 
 def _last_answer(history: list[BaseMessage]) -> AIMessage | None:

@@ -60,6 +60,31 @@ def select_for_prompt(
     return chosen
 
 
+async def read_for_prompt(
+    database_url: str, embedder: Embedder, user_id: uuid.UUID, query: str
+) -> LoadedMemories:
+    """The memories that suit `query` for this user, marked as used. No user check: the caller
+    decides whether the user's memory is on (production: `memory_lookup_for`; the memory eval,
+    which has no user row, calls this directly)."""
+    async with open_memory_store(database_url, embedder) as store:
+        everything = await store.all(user_id)  # at most 200: the cap
+        if not everything:
+            return LoadedMemories()  # nothing to find: do not pay to embed the query
+        relevant: list[Memory] = []
+        if query.strip():
+            relevant = await store.search(user_id, query, limit=MAX_RELEVANT)
+        preferences = most_recent(everything, limit=MAX_RECENT_PREFERENCES, category="preference")
+        chosen = select_for_prompt(relevant, preferences)
+        try:
+            await store.touch(user_id, [m.id for m in chosen])
+        except Exception as exc:  # not worth failing the answer: eviction just sees older use
+            _log.warning("memory_touch_failed", error_type=type(exc).__name__)
+        return LoadedMemories(
+            [policy.normalise(m.content) for m in chosen],
+            embedding_tokens=store.embedding_tokens,
+        )
+
+
 def memory_lookup_for(
     factory: async_sessionmaker[AsyncSession],
     settings: Settings,
@@ -75,24 +100,6 @@ def memory_lookup_for(
         if user is None or user.status != "active" or not user.memory_enabled:
             return LoadedMemories()
 
-        async with open_memory_store(settings.database_url, get_embedder()) as store:
-            everything = await store.all(user_id)  # at most 200: the cap
-            if not everything:
-                return LoadedMemories()  # nothing to find: do not pay to embed the query
-            relevant: list[Memory] = []
-            if query.strip():
-                relevant = await store.search(user_id, query, limit=MAX_RELEVANT)
-            preferences = most_recent(
-                everything, limit=MAX_RECENT_PREFERENCES, category="preference"
-            )
-            chosen = select_for_prompt(relevant, preferences)
-            try:
-                await store.touch(user_id, [m.id for m in chosen])
-            except Exception as exc:  # not worth failing the answer: eviction just sees older use
-                _log.warning("memory_touch_failed", error_type=type(exc).__name__)
-            return LoadedMemories(
-                [policy.normalise(m.content) for m in chosen],
-                embedding_tokens=store.embedding_tokens,
-            )
+        return await read_for_prompt(settings.database_url, get_embedder(), user_id, query)
 
     return lookup

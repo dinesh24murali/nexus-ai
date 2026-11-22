@@ -34,12 +34,16 @@ backend/
 │   │                         moderation.py (input moderation, fail-open),
 │   │                         usage.py (per-run token + cost collector)
 │   ├── graph/              ← state.py, prompting.py (cache-friendly request layout), builder.py, policy.py (TOOL_POLICY),
-│   │                         calls.py, nodes/ (agent, load_context, summarize, approval = interrupt per call that needs
-│   │                         it, tools = the tool loop + cap), tools/ (search_my_files, web_search, calculator, outcome)
+│   │                         calls.py, router.py (intent router: RouteDecision, input = user text only, decide + fallbacks),
+│   │                         commands.py (slash-command parser, pure), intents/ (PIPELINES; manage_memory = list/save/forget
+│   │                         by chat, forget_confirm = the card), nodes/ (agent, load_context, summarize, approval = interrupt
+│   │                         per call that needs it, tools = the tool loop + cap), tools/ (search_my_files, web_search,
+│   │                         calculator, outcome)
 │   ├── rag/                ← formats.py, parsers.py (PDF/DOCX/TXT/MD), chunker.py (800/120 tokens), embedder.py,
 │   │                         retriever.py (query -> tenant-filtered passages),
 │   │                         index.py (Qdrant: alias `documents`, tenant payload); ingestion job is in jobs/handlers.py
-│   └── memory/             ← store.py (per-user `AsyncPostgresStore`, namespace built from the user id), policy.py (what may be
+│   └── memory/             ← ops.py (memory by chat: wording, category, forget candidates, reply templates; pure), manage.py
+│                             (`MemoryManager` for `manage_memory`), store.py (per-user `AsyncPostgresStore`, namespace built from the user id), policy.py (what may be
 │                             remembered: deny-list + instruction filter, pure), extract.py (plan_ops / apply_plan), read.py (what
 │                             `load_context` shows: select_for_prompt, memory_lookup_for; touch marks use)
 ├── evals/                  ← the eval suite (`python -m evals.run`; judge calibration `python -m evals.calibrate`;

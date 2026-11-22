@@ -37,6 +37,8 @@ async def add(
     trace_id: str | None = None,
     tool_calls: list[Any] | None = None,
     citations: list[Any] | None = None,
+    intent: str | None = None,
+    route_source: str | None = None,
 ) -> Message:
     message = Message(
         conversation_id=conversation_id,
@@ -53,6 +55,8 @@ async def add(
         trace_id=trace_id,
         tool_calls=tool_calls or [],
         citations=citations or [],
+        intent=intent,
+        route_source=route_source,
     )
     if id is not None:
         message.id = id

@@ -1,7 +1,7 @@
 """Graph state (docs/02_outputs/08 section 2.1), the v1 subset.
 
-`route` (intent router, M7) joins when its feature lands; added keys are optional, so existing
-checkpoints stay readable.
+Keys added later (`route`, `forget_candidates`) are optional, so existing checkpoints stay
+readable.
 """
 
 from typing import Annotated, Any, Literal, NotRequired, TypedDict
@@ -49,6 +49,14 @@ class ChatState(TypedDict):
     # A run that resumes after an approval stores the whole turn, and the events of the run before
     # it are gone, so the state keeps them. Reset by `load_context`.
     tool_log: NotRequired[list[dict[str, Any]]]
+    # The pipeline chosen for the newest message (`graph/router.py::Route.as_state`): intent,
+    # source (router | command | fallback), confidence, slots, reason. Written by `router` on
+    # every new message, kept across an approval pause (a resume never re-routes), and read back
+    # as the "previous intent" of the next turn.
+    route: NotRequired[dict[str, Any]]
+    # `manage_memory` forget: the memories (id and text, best match first) offered to the user in
+    # the confirmation card. Written by `manage_memory`, read by `forget_confirm`.
+    forget_candidates: NotRequired[list[dict[str, str]]]
 
 
 class RecentFile(TypedDict):

@@ -350,7 +350,7 @@ class MessageOut(BaseModel):
             citations=list(m.citations or []),
             feedback=feedback,
             usage=usage,
-            intent=None,  # the intent router arrives with M7
+            intent=m.intent,
             documents=[],
             created_at=m.created_at,
         )

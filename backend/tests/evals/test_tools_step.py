@@ -346,5 +346,49 @@ async def test_a_graph_that_runs_searches_without_asking_scores_zero(
 
     suite = await run([case("t-1", "[[fixture:web_search]] news", "web_search")])
 
-    assert score(suite, "tools.approval_enforced") == 0.0
-    assert min(suite.scores.samples("tools.approval_enforced")) == 0.0
+    samples = suite.scores.samples("tools.approval_enforced")
+    assert min(samples) == 0.0  # the web-search probes and the case fail...
+    assert samples.count(0.0) >= 4  # ...while the (untouched) forget probes still pass
+
+
+# -- forgetting a memory is asked about too ---------------------------------------------------
+
+
+async def test_the_forget_probes_need_no_model_and_every_delete_was_asked_about() -> None:
+    from evals.tools import forget_probes
+
+    suite = make_suite()
+
+    await forget_probes(suite)
+
+    assert suite.scores.samples("tools.approval_enforced") == [1.0, 1.0, 1.0]
+
+
+async def test_a_forget_that_deletes_without_asking_scores_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The metric can fail: with the card removed the memory is deleted before anyone is asked."""
+    import app.graph.intents.manage_memory as manage_memory
+    from evals.tools import forget_probes
+
+    monkeypatch.setattr(manage_memory, "interrupt", lambda payload: {"decision": "approve"})
+    suite = make_suite()
+
+    await forget_probes(suite)
+
+    assert 0.0 in suite.scores.samples("tools.approval_enforced")  # nothing paused
+
+
+async def test_a_forget_that_ignores_the_answer_scores_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With the id check removed, an approval of a memory nobody offered still deletes."""
+    import app.graph.intents.manage_memory as manage_memory
+    from evals.tools import forget_probes
+
+    monkeypatch.setattr(manage_memory, "chosen_memory", lambda answer, candidates: candidates[0])
+    suite = make_suite()
+
+    await forget_probes(suite)
+
+    assert suite.scores.samples("tools.approval_enforced")[1:] == [0.0, 0.0]  # reject, bad id

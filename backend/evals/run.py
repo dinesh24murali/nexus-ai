@@ -43,10 +43,12 @@ from evals.datasets import (
     ChatCase,
     Dataset,
     DatasetError,
+    MemoryE2ECase,
     MemoryExtractCase,
     PerfCase,
     RagCase,
     RedTeamCase,
+    RouterCase,
     SummaryCase,
     ToolsCase,
     load_dataset,
@@ -92,6 +94,12 @@ METRIC_KEYS = (
     "memory.extract_precision",
     "memory.extract_recall",
     "memory.sensitive_refusal",
+    "memory.e2e_recall",
+    "router.intent_accuracy",
+    "router.macro_f1",
+    "router.slot_accuracy",
+    "router.fallback_rate",
+    "router.latency_p95_ms",
 )
 SUITE_DATASETS = (
     "chat.golden",
@@ -101,6 +109,8 @@ SUITE_DATASETS = (
     "rag.golden",
     "tools.routing",
     "memory.extract",
+    "memory.e2e",
+    "router.intents",
 )
 # The metrics each dataset can produce: a metric is "not measured" only if a dataset that should
 # have produced it ran. (`rag.golden` runs only when a RAG environment is given.)
@@ -122,7 +132,13 @@ METRICS_OF: dict[str, tuple[str, ...]] = {
     ),
     "rag.golden": tuple(k for k in METRIC_KEYS if k.startswith("rag.")),
     "tools.routing": tuple(k for k in METRIC_KEYS if k.startswith("tools.")),
-    "memory.extract": tuple(k for k in METRIC_KEYS if k.startswith("memory.")),
+    "memory.extract": (
+        "memory.extract_precision",
+        "memory.extract_recall",
+        "memory.sensitive_refusal",
+    ),
+    "memory.e2e": ("memory.e2e_recall",),
+    "router.intents": tuple(k for k in METRIC_KEYS if k.startswith("router.")),
 }
 
 
@@ -183,6 +199,7 @@ class SuiteRun:
         self.errors = 0
         self.blocked = 0  # runs the provider rejected as unsafe before any answer
         self.redteam_skipped = 0  # tool-backed attacks that could not run (no tool graph given)
+        self.extras: dict[str, Any] = {}  # per-step report sections (e.g. the router's confusion)
         self.gate = asyncio.Semaphore(concurrency)
         self.system_prompt = load_prompt("nexus.system").body
 
@@ -391,8 +408,13 @@ def _metrics(
         "ops.cached_input_ratio": scores.mean("ops.cached_input_ratio"),
     }
     values.update(
-        {k: scores.mean(k) for k in METRIC_KEYS if k.startswith(("rag.", "tools.", "memory."))}
+        {
+            k: scores.mean(k)
+            for k in METRIC_KEYS
+            if k.startswith(("rag.", "tools.", "memory.", "router."))
+        }
     )
+    values["router.latency_p95_ms"] = scores.percentile("router.latency_p95_ms", 95)
     if not redteam_complete:  # a gate over part of the attacks would pass for the wrong reason
         for key in _REDTEAM_GATED:
             values[key] = None
@@ -432,6 +454,8 @@ async def run_suite(
     rag: RagTarget | None = None,
     tools_graph: GraphFactory | None = None,
     memory_model: Runnable[Any, Any] | None = None,
+    router_model: Runnable[Any, Any] | None = None,
+    memory_e2e: Any = None,
 ) -> Report:
     n = runs if runs is not None else RUNS_PER_CASE[suite]
     smoke_only = suite == "smoke"
@@ -442,6 +466,8 @@ async def run_suite(
         and (name != "rag.golden" or rag is not None)
         and (name != "tools.routing" or tools_graph is not None)
         and (name != "memory.extract" or memory_model is not None)
+        and (name != "router.intents" or router_model is not None)
+        and (name != "memory.e2e" or memory_e2e is not None)
     ]
     chat = load_dataset("chat.golden", ChatCase, smoke_only=smoke_only, directory=datasets_dir)
     perf = load_dataset("perf.latency", PerfCase, smoke_only=smoke_only, directory=datasets_dir)
@@ -468,6 +494,16 @@ async def run_suite(
     if memory_model is not None:
         loaded["memory.extract"] = load_dataset(
             "memory.extract", MemoryExtractCase, smoke_only=smoke_only, directory=datasets_dir
+        )
+
+    if memory_e2e is not None:
+        loaded["memory.e2e"] = load_dataset(
+            "memory.e2e", MemoryE2ECase, smoke_only=smoke_only, directory=datasets_dir
+        )
+
+    if router_model is not None:
+        loaded["router.intents"] = load_dataset(
+            "router.intents", RouterCase, smoke_only=smoke_only, directory=datasets_dir
         )
 
     started = time.perf_counter()
@@ -518,6 +554,18 @@ async def run_suite(
         steps["memory.extract"] = lambda: run_memory_extract(
             state, memory_cases, model=memory_model
         )
+    if memory_e2e is not None:
+        from evals.memory_e2e import run_memory_e2e  # here: evals.memory_e2e imports this module
+
+        e2e_cases = loaded["memory.e2e"]
+        steps["memory.e2e"] = lambda: run_memory_e2e(state, e2e_cases, env=memory_e2e)
+    if router_model is not None:
+        from evals.router import run_router_intents  # here: evals.router imports this module
+
+        router_cases = loaded["router.intents"]
+        steps["router.intents"] = lambda: run_router_intents(
+            state, router_cases, model=router_model
+        )
     # rag.golden before perf.latency: latency runs last, with nothing else using the API.
     order = [n for n in selected if n != "perf.latency"] + [
         n for n in selected if n == "perf.latency"
@@ -552,8 +600,49 @@ async def run_suite(
         "judge_calls": judges.calls if judges else 0,
         "judge_failures": judges.failures if judges else 0,
         "skipped_metrics": skipped,
+        **state.extras,
     }
     return Report(metrics=metrics, run=run, cases=state.records)
+
+
+async def _memory_e2e_env(settings: Settings, router_model: Runnable[Any, Any]) -> Any:
+    """The wiring `memory.e2e` runs on: the production graph (real router, real `manage_memory`
+    over the real store, real memory lookup) with a throwaway user per case. Raises when the
+    database cannot be reached."""
+    import uuid as _uuid
+
+    from app.llm.factory import build_embeddings_client
+    from app.memory.manage import StoreMemoryManager
+    from app.memory.read import read_for_prompt
+    from app.memory.store import open_memory_store
+    from app.rag.embedder import Embedder
+
+    from evals.memory_e2e import E2EEnv
+
+    embedder = Embedder(build_embeddings_client(settings), settings.llm_embedding_model)
+    async with open_memory_store(settings.database_url, embedder) as store:
+        await store.count(
+            _uuid.uuid4()
+        )  # fails here, with a clear message, if there is no database
+
+    async def enabled(user_id: Any) -> bool:
+        return True  # the throwaway user has memory on; there is no users row to read
+
+    manager = StoreMemoryManager(settings.database_url, lambda: embedder, enabled)
+
+    async def lookup(user_id: Any, query: str) -> Any:
+        return await read_for_prompt(settings.database_url, embedder, user_id, query)
+
+    def graph_for(user: Any) -> Any:
+        return build_graph(
+            checkpointer=InMemorySaver(),
+            settings=settings,
+            router_model=router_model,
+            memory_manager=manager,
+            memories=lookup,
+        )
+
+    return E2EEnv(settings.database_url, embedder, graph_for)
 
 
 def _input_of(case: Any) -> Any:
@@ -561,6 +650,8 @@ def _input_of(case: Any) -> Any:
         return [t.model_dump() for t in case.messages]
     if isinstance(case, MemoryExtractCase):
         return case.user_message
+    if isinstance(case, MemoryE2ECase):
+        return case.turns_a
     return case.input
 
 
@@ -592,7 +683,10 @@ async def main_async(args: argparse.Namespace) -> int:
     settings = get_settings()
     fake = settings.llm_mode == "fake"
     try:
-        graph = build_graph(checkpointer=None, settings=settings)
+        # The chat graph routes (ADR-0010), so `ops.ttft_p95_ms` and the chat cases include the
+        # router's call, as a user's message does.
+        router_model = get_model("router", settings=settings)
+        graph = build_graph(checkpointer=None, settings=settings, router_model=router_model)
         summarizer = get_model("summarize", settings=settings)
         judges = None if fake else Judges(get_model("judge", settings=settings))
     except LLMConfigError as exc:
@@ -621,8 +715,16 @@ async def main_async(args: argparse.Namespace) -> int:
             user_id=rag_env.user_id,
         )
 
-    def tools_graph(retriever: Any, web: Any, recent_files: Any, memories: Any = None) -> Any:
+    def tools_graph(
+        retriever: Any,
+        web: Any,
+        recent_files: Any,
+        memories: Any = None,
+        router: bool = False,
+        memory_manager: Any = None,
+    ) -> Any:
         # Stand-in tools (no network, no Qdrant); the model, the prompt and the graph are real.
+        # `router=True` (the routing red-team cases) adds the real router and a stand-in manager.
         return build_graph(
             checkpointer=InMemorySaver(),
             settings=settings,
@@ -631,6 +733,8 @@ async def main_async(args: argparse.Namespace) -> int:
             calculator=True,
             recent_files=recent_files,
             memories=memories,
+            router_model=router_model if router else None,
+            memory_manager=memory_manager,
         )
 
     memory_model = (
@@ -638,6 +742,18 @@ async def main_async(args: argparse.Namespace) -> int:
         if not args.dataset or {"memory.extract", "safety.redteam"} & set(args.dataset)
         else None
     )
+    memory_e2e = None
+    wants_e2e = not args.no_memory_e2e and (not args.dataset or "memory.e2e" in args.dataset)
+    if wants_e2e:
+        try:
+            memory_e2e = await _memory_e2e_env(settings, router_model)
+        except Exception as exc:
+            print(
+                f"error: memory.e2e could not reach the database ({type(exc).__name__}); is "
+                "Postgres running? use --no-memory-e2e to skip memory.e2e",
+                file=sys.stderr,
+            )
+            return 2
     tracer = None if fake or args.no_langfuse else Tracer(settings)
     run_name = f"{args.suite}-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}"
     logger = EvalLogger(
@@ -656,6 +772,8 @@ async def main_async(args: argparse.Namespace) -> int:
             rag=rag,
             tools_graph=tools_graph,
             memory_model=memory_model,
+            router_model=router_model,
+            memory_e2e=memory_e2e,
         )
     except DatasetError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -684,6 +802,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--dataset", action="append", choices=SUITE_DATASETS, help="only this dataset (repeatable)"
     )
     parser.add_argument("--no-langfuse", action="store_true", help="do not log to Langfuse")
+    parser.add_argument(
+        "--no-memory-e2e",
+        action="store_true",
+        help="skip memory.e2e (it stores memories for a throwaway user, so it needs Postgres)",
+    )
     parser.add_argument(
         "--no-rag",
         action="store_true",
