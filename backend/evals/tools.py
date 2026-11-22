@@ -26,6 +26,7 @@ from typing import Any
 
 from app.graph.builder import build_graph
 from app.graph.nodes.load_context import RecentFiles
+from app.graph.nodes.tools import LIMIT_TEXT
 from app.graph.state import RecentFile
 from app.graph.tools.calculator import CalculatorArgs
 from app.graph.tools.search_my_files import SearchMyFilesArgs
@@ -104,6 +105,8 @@ class ToolRun:
     output: str = ""
     calls: list[tuple[str, dict[str, Any]]] = field(default_factory=list)  # in the order made
     results: list[str] = field(default_factory=list)  # what the model was shown, shortened
+    result_texts: list[str] = field(default_factory=list)  # the same, in full
+    executed: int = 0  # tool calls that really ran (a call past the cap only got an error text)
     interrupts: int = 0
     # Web searches that had really run each time the run stopped for an approval. Before the
     # k-th decision at most k searches may have run: a larger number is a search nobody approved.
@@ -127,12 +130,15 @@ async def run_one(
     text: str,
     *,
     timeout_s: float = CASE_TIMEOUT_S,
+    decision: str = "approve",
+    user_id: uuid.UUID | None = None,
 ) -> ToolRun:
-    """One user turn, answering every approval with "approve". Never raises."""
+    """One user turn, answering every approval with `decision` ("approve" or "reject").
+    Never raises."""
     config: Any = {
         "configurable": {
             "thread_id": str(uuid.uuid4()),
-            "user_id": str(uuid.uuid4()),
+            "user_id": str(user_id or uuid.uuid4()),
             "user_display_name": "Eval User",
             "today": datetime.now(UTC).date().isoformat(),
         }
@@ -149,7 +155,7 @@ async def run_one(
                 raise RuntimeError("too many approvals in one turn")
             run.searches_at_pause.append(len(web.queries))
             run.interrupts += len(state.interrupts)
-            await graph.ainvoke(Command(resume={"decision": "approve"}), config)
+            await graph.ainvoke(Command(resume={"decision": decision}), config)
 
     try:
         await asyncio.wait_for(drive(), timeout=timeout_s)
@@ -159,6 +165,8 @@ async def run_one(
                 run.calls += [(str(c["name"]), dict(c["args"])) for c in message.tool_calls]
             elif isinstance(message, ToolMessage):
                 run.results.append(message.text[:300])
+                run.result_texts.append(message.text)
+                run.executed += LIMIT_TEXT not in message.text
         last = next((m for m in reversed(messages) if isinstance(m, AIMessage)), None)
         run.output = last.text if last is not None else ""
     except Exception as exc:

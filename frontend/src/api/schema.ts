@@ -83,7 +83,13 @@ export interface paths {
         get: operations["getMe"];
         put?: never;
         post?: never;
-        /** Delete the account and all data (purged within 24 h) */
+        /**
+         * Delete the account and all data (purged within 24 h)
+         * @description Marks the account `pending_deletion` (it can no longer sign in, and every session ends at
+         *     once) and queues the purge of every Postgres row, conversation checkpoint, memory, vector
+         *     and uploaded file. A `confirm_email` that is not the account's own (compared without regard
+         *     to case) is `400 CONFIRMATION_MISMATCH` and nothing changes.
+         */
         delete: operations["deleteMe"];
         options?: never;
         head?: never;

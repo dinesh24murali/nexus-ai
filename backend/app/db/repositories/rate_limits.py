@@ -33,3 +33,8 @@ async def increment(session: AsyncSession, key: str, window_start: datetime) -> 
 async def delete_older_than(session: AsyncSession, cutoff: datetime) -> int:
     result = await session.execute(delete(RateLimit).where(RateLimit.window_start < cutoff))
     return int(result.rowcount)  # type: ignore[attr-defined]
+
+
+async def delete_key(session: AsyncSession, key: str) -> int:
+    result = await session.execute(delete(RateLimit).where(RateLimit.key == key))
+    return int(result.rowcount)  # type: ignore[attr-defined]

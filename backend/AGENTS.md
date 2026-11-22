@@ -95,6 +95,10 @@ backend/
 - `load_context` gets memories from the injected `MemoryLookup`; the lookup returns nothing when the user has memory off and never fails the run. Memories reach the model only as escaped lines inside `<user_memory>` (`prompting._memory_lines`), never in the system prompt (cache prefix) and never in a log or trace field of their own
 - Marking a memory as used is `MemoryStore.touch` (one `UPDATE`), never `update`/`aput`: those re-embed, move `updated_at` and can resurrect a deleted memory
 
+### Account deletion (TASK-028)
+- `DELETE /me` (`services/accounts.py`) only schedules: one transaction sets `pending_deletion`, revokes every refresh token, cancels the user's queued jobs and queues `purge_user`. The erasure is the job (`jobs/handlers.py::purge_user`): external stores first (Qdrant by `user_id`, memory store, the user's uploads directory), then one Postgres transaction that ends with the `users` row (FK cascade does the rest). Every step is idempotent, the job waits while another job of the user is running, and it refuses a user who is not `pending_deletion`
+- A new table with a `user_id` needs `ON DELETE CASCADE` (or an explicit step in the purge): `tests/jobs/test_purge_user.py` finds user-owned tables from the catalogue and fails if any row of the user survives. A new store that holds user data (a vector collection, a directory) needs its own purge step and a line in that test
+
 ### Limits and moderation
 - A chat send/regenerate passes, in order: drain check, `ratelimit.hit` (atomic), `usage.ensure_within_budgets`, `Moderator.check` (sends only), then the lease. Refusals (`RATE_LIMITED`, `BUDGET_EXCEEDED` with `details.scope`, `MODERATION_FLAGGED`) happen before anything is written. New run-starting endpoints must go through `RunService._admit`
 - Spend lives in `usage_daily` (USD); anything that calls a model for a user adds to it (runs `requests=1`, regenerates and jobs `requests=0`). Budget policy is `core/budgets.py` (pure); reading spend is `services/usage.py`

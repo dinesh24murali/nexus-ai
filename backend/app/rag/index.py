@@ -135,6 +135,16 @@ class QdrantIndex:
             wait=True,
         )
 
+    async def delete_user(self, user_id: uuid.UUID) -> None:
+        """Remove every point of one user (account purge). Idempotent."""
+        await self.client.delete(
+            self.alias,
+            points_selector=models.FilterSelector(
+                filter=models.Filter(must=[_eq("user_id", user_id)])
+            ),
+            wait=True,
+        )
+
     async def search(
         self,
         *,

@@ -22,17 +22,12 @@ SPEC = Path(__file__).resolve().parents[3] / "docs" / "02_outputs" / "04_api_spe
 
 pytestmark = pytest.mark.integration
 
-schema = (
-    schemathesis.openapi.from_path(SPEC)
-    .include(
-        path_regex=(
-            r"^/(healthz|readyz|auth/.*|me(/password|/usage)?|conversations(/\{conversationId\})?"
-            r"|conversations/\{conversationId\}/(messages|regenerate|runs/(cancel|resume))"
-            r"|messages/\{messageId\}/feedback|memories(/\{memoryId\})?)$"
-        )
+schema = schemathesis.openapi.from_path(SPEC).include(
+    path_regex=(
+        r"^/(healthz|readyz|auth/.*|me(/password|/usage)?|conversations(/\{conversationId\})?"
+        r"|conversations/\{conversationId\}/(messages|regenerate|runs/(cancel|resume))"
+        r"|messages/\{messageId\}/feedback|memories(/\{memoryId\})?)$"
     )
-    # Not implemented yet: account deletion is TASK-028 (M6).
-    .exclude(path="/me", method="DELETE")
 )
 
 
@@ -74,8 +69,6 @@ def _signed_in(live_server_url: str, make_user: Any) -> None:
 )
 def test_api_conforms_to_the_spec(case: Any, live_server_url: str) -> None:
     # Narrow, documented exceptions to schemathesis' generic checks:
-    #  * Allow header: `/me` documents DELETE, which lands with TASK-028; until then the Allow
-    #    header on a 405 legitimately omits it. REMOVE this exclusion in TASK-028.
     #  * Positive-data acceptance on POST /me/password: a schema-valid body with a wrong
     #    `current_password` is a business-rule rejection, documented as 400 in the spec.
     #  * Positive-data acceptance on GET /conversations: `cursor` is typed as a plain string but is
@@ -84,6 +77,10 @@ def test_api_conforms_to_the_spec(case: Any, live_server_url: str) -> None:
     #  * Positive-data acceptance on POST/PATCH conversations: titles are trimmed and must then be
     #    non-empty and free of NUL (Postgres cannot store it); the spec's `minLength: 1` is looser
     #    than that, and the stricter rule is a documented 422 (tested in test_conversations.py).
+    #  * Allow header: where a path has one route per method (GET/PATCH/DELETE /me, GET/PATCH
+    #    /memories/{id}, ...) Starlette's 405 lists only the first route's methods. The 405 itself
+    #    is correct; the header is incomplete. Left as is (found while closing TASK-028; the
+    #    earlier note that this would vanish with DELETE /me was wrong, and is removed).
     excluded: list[Any] = [allow_header_conformance]
     #  * Positive-data acceptance on PATCH /me, POST /auth/register, POST /auth/login: a NUL
     #    character in `display_name` or the email is schema-valid, but Postgres text cannot store
@@ -94,6 +91,9 @@ def test_api_conforms_to_the_spec(case: Any, live_server_url: str) -> None:
         "POST /auth/register",
         "POST /auth/login",
         "POST /me/password",
+        # confirm_email: a well-formed address that is not the account's own is the documented 400
+        # CONFIRMATION_MISMATCH (tests/api/test_delete_account.py).
+        "DELETE /me",
         "GET /conversations",
         "POST /conversations",
         "PATCH /conversations/{conversationId}",

@@ -36,7 +36,7 @@ from langchain_core.runnables import Runnable
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph.state import CompiledStateGraph
 
-from evals.canaries import check_canaries
+from evals.canaries import check_canaries, group_scores
 from evals.corpus import RagEnv, RagSetupError, ingest_corpus
 from evals.datasets import (
     REPO_ROOT,
@@ -72,6 +72,8 @@ METRIC_KEYS = (
     "summary.fact_retention",
     "safety.system_prompt_leaks",
     "safety.canary_pass_rate",
+    "safety.injection_resistance",
+    "safety.cross_tenant_leaks",
     "ops.ttft_p95_ms",
     "ops.cost_per_turn_usd",
     "ops.cached_input_ratio",
@@ -115,6 +117,8 @@ METRICS_OF: dict[str, tuple[str, ...]] = {
         "chat.refusal_accuracy",
         "safety.system_prompt_leaks",
         "safety.canary_pass_rate",
+        "safety.injection_resistance",
+        "safety.cross_tenant_leaks",
     ),
     "rag.golden": tuple(k for k in METRIC_KEYS if k.startswith("rag.")),
     "tools.routing": tuple(k for k in METRIC_KEYS if k.startswith("tools.")),
@@ -178,6 +182,7 @@ class SuiteRun:
         self.records: list[CaseRecord] = []
         self.errors = 0
         self.blocked = 0  # runs the provider rejected as unsafe before any answer
+        self.redteam_skipped = 0  # tool-backed attacks that could not run (no tool graph given)
         self.gate = asyncio.Semaphore(concurrency)
         self.system_prompt = load_prompt("nexus.system").body
 
@@ -288,8 +293,24 @@ async def run_perf(suite: SuiteRun, dataset: Dataset[PerfCase]) -> None:
     await _each(dataset.cases, suite.runs, work, parallel=False)
 
 
-async def run_redteam(suite: SuiteRun, dataset: Dataset[RedTeamCase]) -> None:
+async def run_redteam(
+    suite: SuiteRun,
+    dataset: Dataset[RedTeamCase],
+    *,
+    graph_factory: Callable[..., Any] | None = None,
+    memory_model: Runnable[Any, Any] | None = None,
+) -> None:
     async def work(case: RedTeamCase, index: int) -> None:
+        if case.uses_tools:
+            if graph_factory is None:
+                suite.redteam_skipped += 1  # not run: the gated metrics then count as unmeasured
+                return
+            from evals.redteam import run_tool_case  # here: evals.redteam imports this module
+
+            await run_tool_case(
+                suite, case, index, graph_factory=graph_factory, memory_model=memory_model
+            )
+            return
         result = await suite.chat(case.input)
         record = CaseRecord("safety.redteam", case.id, index, result.output, error=result.error)
         record.notes["threat_id"] = case.threat_id
@@ -300,8 +321,11 @@ async def run_redteam(suite: SuiteRun, dataset: Dataset[RedTeamCase]) -> None:
                 record.error = None
                 record.scores["chat.refusal_accuracy"] = 1.0
                 record.scores["safety.canary_pass_rate"] = 1.0
+                record.scores.update(group_scores(case.group, True))
                 suite.scores.add("chat.refusal_accuracy", 1.0)
                 suite.scores.add("safety.canary_pass_rate", 1.0)
+                for key, value in group_scores(case.group, True).items():
+                    suite.scores.add(key, value)
                 suite.record(record, case_input=case.input)
                 return
         if result.error is None:
@@ -310,12 +334,16 @@ async def run_redteam(suite: SuiteRun, dataset: Dataset[RedTeamCase]) -> None:
             )
             record.notes["violations"] = verdict.violations
             record.scores["safety.canary_pass_rate"] = float(verdict.passed)
+            record.scores.update(group_scores(case.group, verdict.passed))
             if case.canaries.system_prompt_leak:
                 record.scores["safety.system_prompt_leaks"] = float(verdict.prompt_leaked)
             if case.should_refuse and suite.judges is not None:
                 refused = await suite.judges.refused(case.input, result.output)
                 if refused is not None:
                     record.scores["chat.refusal_accuracy"] = float(refused)
+        else:
+            # An outage fails closed: it cannot raise a gated safety metric.
+            record.scores.update(group_scores(case.group, False))
         for key, value in record.scores.items():
             suite.scores.add(key, value)
         suite.record(record, case_input=case.input)
@@ -340,7 +368,13 @@ async def run_summaries(suite: SuiteRun, dataset: Dataset[SummaryCase]) -> None:
     await _each(dataset.cases, suite.runs, work, parallel=True)
 
 
-def _metrics(scores: Scores, ran: Sequence[str]) -> tuple[dict[str, float], list[str]]:
+# Gated safety metrics that are only complete when every attack ran (see `redteam_skipped`).
+_REDTEAM_GATED = ("safety.injection_resistance", "safety.cross_tenant_leaks")
+
+
+def _metrics(
+    scores: Scores, ran: Sequence[str], *, redteam_complete: bool = True
+) -> tuple[dict[str, float], list[str]]:
     values: dict[str, float | None] = {
         "chat.format_compliance": scores.mean("chat.format_compliance"),
         "chat.refusal_accuracy": scores.mean("chat.refusal_accuracy"),
@@ -349,6 +383,9 @@ def _metrics(scores: Scores, ran: Sequence[str]) -> tuple[dict[str, float], list
         # A count, not a mean: one leak anywhere must show.
         "safety.system_prompt_leaks": scores.total("safety.system_prompt_leaks"),
         "safety.canary_pass_rate": scores.mean("safety.canary_pass_rate"),
+        # Doc 09 section 8: a pass rate, and a count (one leak anywhere must show).
+        "safety.injection_resistance": scores.mean("safety.injection_resistance"),
+        "safety.cross_tenant_leaks": scores.total("safety.cross_tenant_leaks"),
         "ops.ttft_p95_ms": scores.percentile("ops.ttft_p95_ms", 95),
         "ops.cost_per_turn_usd": scores.mean("ops.cost_per_turn_usd"),
         "ops.cached_input_ratio": scores.mean("ops.cached_input_ratio"),
@@ -356,6 +393,9 @@ def _metrics(scores: Scores, ran: Sequence[str]) -> tuple[dict[str, float], list
     values.update(
         {k: scores.mean(k) for k in METRIC_KEYS if k.startswith(("rag.", "tools.", "memory."))}
     )
+    if not redteam_complete:  # a gate over part of the attacks would pass for the wrong reason
+        for key in _REDTEAM_GATED:
+            values[key] = None
     metrics = {k: round(v, 6) for k, v in values.items() if v is not None}
     expected = {key for name in ran for key in METRICS_OF[name]}
     skipped = [k for k in METRIC_KEYS if k in expected and k not in metrics]
@@ -452,7 +492,9 @@ async def run_suite(
     steps: dict[str, Callable[[], Awaitable[None]]] = {
         "chat.golden": lambda: run_chat_golden(state, chat),
         "summary.golden": lambda: run_summaries(state, summaries),
-        "safety.redteam": lambda: run_redteam(state, red),
+        "safety.redteam": lambda: run_redteam(
+            state, red, graph_factory=tools_graph, memory_model=memory_model
+        ),
         "perf.latency": lambda: run_perf(state, perf),  # last: nothing else competes for the API
     }
     if rag is not None:
@@ -484,7 +526,7 @@ async def run_suite(
         await steps[name]()
     logger.flush()
 
-    metrics, skipped = _metrics(state.scores, selected)
+    metrics, skipped = _metrics(state.scores, selected, redteam_complete=state.redteam_skipped == 0)
     run = {
         "suite": suite,
         "mode": settings.llm_mode,
@@ -506,6 +548,7 @@ async def run_suite(
         "case_runs": len(state.records),
         "errors": state.errors,
         "provider_blocked": state.blocked,
+        "redteam_tool_cases_skipped": state.redteam_skipped,
         "judge_calls": judges.calls if judges else 0,
         "judge_failures": judges.failures if judges else 0,
         "skipped_metrics": skipped,
@@ -578,7 +621,7 @@ async def main_async(args: argparse.Namespace) -> int:
             user_id=rag_env.user_id,
         )
 
-    def tools_graph(retriever: Any, web: Any, recent_files: Any) -> Any:
+    def tools_graph(retriever: Any, web: Any, recent_files: Any, memories: Any = None) -> Any:
         # Stand-in tools (no network, no Qdrant); the model, the prompt and the graph are real.
         return build_graph(
             checkpointer=InMemorySaver(),
@@ -587,11 +630,12 @@ async def main_async(args: argparse.Namespace) -> int:
             web_searcher=web,
             calculator=True,
             recent_files=recent_files,
+            memories=memories,
         )
 
     memory_model = (
         get_model("memory_extract", settings=settings)
-        if not args.dataset or "memory.extract" in args.dataset
+        if not args.dataset or {"memory.extract", "safety.redteam"} & set(args.dataset)
         else None
     )
     tracer = None if fake or args.no_langfuse else Tracer(settings)

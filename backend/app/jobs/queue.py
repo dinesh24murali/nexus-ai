@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import case, func, select, update
+from sqlalchemy import case, delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -122,6 +122,35 @@ async def cancel_queued(
         )
         .values(status="cancelled")
     )
+    return int((await session.execute(stmt)).rowcount)  # type: ignore[attr-defined]
+
+
+async def cancel_all_queued_for_user(
+    session: AsyncSession, user_id: uuid.UUID, *, keep: str
+) -> int:
+    """Cancel every not-yet-started job of the user except those of kind `keep` (account deletion:
+    nothing queued may act for a user who is leaving)."""
+    stmt = (
+        update(Job)
+        .where(Job.user_id == user_id, Job.status == "queued", Job.kind != keep)
+        .values(status="cancelled")
+    )
+    return int((await session.execute(stmt)).rowcount)  # type: ignore[attr-defined]
+
+
+async def count_running_for_user(
+    session: AsyncSession, user_id: uuid.UUID, *, except_id: int
+) -> int:
+    """Jobs of the user that a worker is running right now, apart from `except_id`."""
+    stmt = select(func.count()).where(
+        Job.user_id == user_id, Job.status == "running", Job.id != except_id
+    )
+    return int((await session.execute(stmt)).scalar_one())
+
+
+async def delete_for_user(session: AsyncSession, user_id: uuid.UUID, *, except_id: int) -> int:
+    """Delete the user's job rows (they would otherwise outlive the user with a NULL owner)."""
+    stmt = delete(Job).where(Job.user_id == user_id, Job.id != except_id)
     return int((await session.execute(stmt)).rowcount)  # type: ignore[attr-defined]
 
 

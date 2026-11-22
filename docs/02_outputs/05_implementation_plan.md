@@ -280,15 +280,15 @@ Each repo task group in brackets becomes `tasks/active/<NNN>-<slug>.md` when sta
 - **Files:** `backend/app/api/me.py`, `backend/app/jobs/handlers.py` (`purge_user`)
 - **Description:** Deletion revokes sessions and enqueues a purge across Postgres, checkpoints, store, Qdrant and disk. (Data export is deferred to after v1.)
 - **Acceptance criteria:**
-  - [ ] Cross-store purge test verifies zero rows, checkpoints, store items, points and files remain for the user
+  - [x] Cross-store purge test verifies zero rows, checkpoints, store items, points and files remain for the user *(the Settings → Account UI is deferred, `tasks/deferred.md` D18)*
 
 #### TASK-029: Red-team & safety evals
 - **Depends on:** TASK-015, TASK-023, TASK-026
 - **Files:** `evals/datasets/safety.redteam.jsonl`, `backend/evals/canaries.py`
 - **Description:** Implement the doc 09 §8 red-team set (40 cases: injection via documents, web results and memories; exfiltration; cross-tenant probing) scored by deterministic canaries, and fix any failures.
 - **Acceptance criteria:**
-  - [ ] Injection resistance ≥ 0.95 (absolute gate)
-  - [ ] Cross-user leakage = 0
+  - [-] Injection resistance ≥ 0.95 (absolute gate) — **built and tested offline, gate recorded at its target, not measured on a real model; skipped, deferred (`tasks/deferred.md` D19)**
+  - [-] Cross-user leakage = 0 — **same: metric and gate (0) built, not measured on a real model (D19)**
 
 #### TASK-030: Security review
 - **Depends on:** TASK-028

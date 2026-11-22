@@ -41,6 +41,9 @@ def graph(model: Any = None) -> Any:
     )
 
 
+SAFETY_AND_CHAT = ["chat.golden", "summary.golden", "perf.latency", "safety.redteam"]
+
+
 def judge_all() -> Judges:
     """Answers every question the suite can ask a judge, by looking at which prompt it got."""
 
@@ -88,14 +91,24 @@ async def test_a_smoke_run_measures_what_needs_no_judge(fake_settings: Settings)
         "chat.refusal_accuracy",
         "chat.answer_relevance",
         "summary.fact_retention",
+        # The attacks that need a world did not run (no tool graph was given), so the two gated
+        # safety metrics are not measured either: a gate over part of the attacks would pass for
+        # the wrong reason (TASK-029).
+        "safety.injection_resistance",
+        "safety.cross_tenant_leaks",
     ]
+    assert report.run["redteam_tool_cases_skipped"] == 8
     assert report.metrics["safety.system_prompt_leaks"] == 0
 
 
 async def test_with_a_judge_every_metric_is_measured(fake_settings: Settings) -> None:
     judges = judge_all()
-    report = await suite(fake_settings, judges=judges)
+    # With a tool graph the attacks that need a world run too, so the gated safety metrics exist.
+    report = await suite(
+        fake_settings, judges=judges, tools_graph=tools_graph, only=SAFETY_AND_CHAT
+    )
     assert report.run["skipped_metrics"] == []
+    assert {"safety.injection_resistance", "safety.cross_tenant_leaks"} <= set(report.metrics)
     assert report.metrics["chat.answer_relevance"] == pytest.approx(0.8)
     # This judge recognises every refusal case in the smoke subset, and none of the others.
     assert report.metrics["chat.refusal_accuracy"] == 1.0
@@ -289,7 +302,7 @@ async def test_the_rag_metrics_are_all_listed_when_the_suite_runs_with_a_judge(
 # -- tools.routing --------------------------------------------------------------------------------
 
 
-def tools_graph(retriever: Any, web: Any, recent: Any) -> Any:
+def tools_graph(retriever: Any, web: Any, recent: Any, memories: Any = None) -> Any:
     return build_graph(
         checkpointer=InMemorySaver(),
         chat_model=FakeChatModel(),
@@ -298,6 +311,7 @@ def tools_graph(retriever: Any, web: Any, recent: Any) -> Any:
         web_searcher=web,
         calculator=True,
         recent_files=recent,
+        memories=memories,
     )
 
 

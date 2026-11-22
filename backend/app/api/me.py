@@ -3,9 +3,16 @@ from datetime import UTC, datetime
 from fastapi import APIRouter, Response
 
 from app.api.deps import CurrentUserDep, FactoryDep, SettingsDep
-from app.api.schemas import ChangePasswordRequest, UpdateMeRequest, UsageOut, UserOut
+from app.api.schemas import (
+    ChangePasswordRequest,
+    DeleteAccountRequest,
+    UpdateMeRequest,
+    UsageOut,
+    UserOut,
+)
 from app.core.errors import ApiError
 from app.db.repositories import users
+from app.services import accounts as accounts_service
 from app.services import auth as auth_service
 from app.services import usage as usage_service
 
@@ -29,6 +36,18 @@ async def update_me(body: UpdateMeRequest, current: CurrentUserDep, factory: Fac
     if updated is None:  # deleted between authentication and update
         raise ApiError(401, "UNAUTHORIZED", "Authentication required.")
     return UserOut.model_validate(updated)
+
+
+@router.delete(
+    "",
+    status_code=202,
+    summary="Delete the account and all data (purged within 24 h)",
+)
+async def delete_me(
+    body: DeleteAccountRequest, current: CurrentUserDep, factory: FactoryDep
+) -> Response:
+    await accounts_service.request_deletion(factory, current.user, confirm_email=body.confirm_email)
+    return Response(status_code=202)
 
 
 @router.post("/password", status_code=204, summary="Change password (revokes other sessions)")

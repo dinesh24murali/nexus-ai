@@ -6,6 +6,7 @@ limit. Handlers are idempotent: the queue can run a job twice after a crash.
 
 import asyncio
 import re
+import shutil
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -15,11 +16,14 @@ from typing import Any, cast
 import structlog
 from langchain_core.runnables import Runnable, RunnableConfig
 from qdrant_client import AsyncQdrantClient
+from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import Settings
 from app.core.runtime_flags import RuntimeFlags
-from app.db.repositories import conversations, files, messages, usage, users
+from app.db.models import User
+from app.db.repositories import conversations, files, messages, rate_limits, usage, users
+from app.jobs import queue
 from app.jobs.queue import ClaimedJob
 from app.llm.factory import Role, build_embeddings_client, get_model
 from app.llm.pricing import embedding_cost_usd
@@ -37,6 +41,7 @@ from app.rag.chunker import chunk_document
 from app.rag.embedder import Embedder
 from app.rag.index import QdrantIndex
 from app.rag.parsers import ParseError, parse
+from app.services.accounts import PURGE_ATTEMPTS, purge_payload_user
 
 _log = structlog.get_logger("nexus.jobs")
 
@@ -322,10 +327,53 @@ async def _fail_file(ctx: JobContext, user_id: uuid.UUID, file_id: uuid.UUID, re
         await files.mark_failed(session, user_id, file_id, reason)
 
 
+class PurgeBlockedError(RuntimeError):
+    """The user still has a job running; the purge waits (the queue retries it with back-off)."""
+
+
+async def purge_user(ctx: JobContext, job: ClaimedJob) -> None:
+    """Erase one user everywhere (TASK-028, FS-008): vectors, memories, uploads, checkpoints and
+    every Postgres row (FR-004). Order matters: the stores that cannot be rolled back go first and
+    the `users` row goes last, in the same transaction as the checkpoint and job cleanup, so a
+    crash at any point leaves a `pending_deletion` user and the retry finishes the job. Idempotent:
+    a repeat finds nothing left. Logs carry the id and nothing the user wrote.
+    """
+    user_id = purge_payload_user(job.user_id, job.payload)
+
+    async with ctx.factory() as session:
+        user = await users.get_by_id(session, user_id)
+        running = await queue.count_running_for_user(session, user_id, except_id=job.id)
+    if user is not None and user.status != "pending_deletion":
+        # Only `DELETE /me` queues this job; an active user here means a stray or replayed job.
+        _log.warning("purge_skipped_user_not_pending", user_id=str(user_id), status=user.status)
+        return
+    if running:
+        # A running job (ingest, memory extraction) could write after the sweep below.
+        raise PurgeBlockedError("user has running jobs")
+
+    index = ctx.get_index()
+    await index.ensure_collection()
+    await index.delete_user(user_id)
+    async with open_memory_store(ctx.settings.database_url, ctx.get_embedder()) as store:
+        forgotten = await store.clear(user_id)
+    await asyncio.to_thread(
+        shutil.rmtree, ctx.settings.uploads_dir / str(user_id), ignore_errors=True
+    )
+
+    async with ctx.factory() as session, session.begin():
+        await conversations.delete_all_checkpoints(session, user_id)
+        await rate_limits.delete_key(session, f"chat:{user_id}")
+        await queue.delete_for_user(session, user_id, except_id=job.id)
+        await session.execute(delete(User).where(User.id == user_id))  # the rest cascades
+    _log.info("user_purged", user_id=str(user_id), memories=forgotten)
+
+
 JOBS: dict[str, JobSpec] = {
     # "1 retry" (doc 08 section 9) = 2 attempts.
     "generate_title": JobSpec(generate_title, timeout_s=120, max_attempts=2),
     "ingest_file": JobSpec(ingest_file, timeout_s=300, max_attempts=3),
     # Doc 08 section 9 lists 2 for this job: 2 attempts, as `ingest_file` reads its 3 as 3 attempts.
     "extract_memories": JobSpec(extract_memories, timeout_s=120, max_attempts=2),
+    # Waits out a running job of the user (back-off), so it needs many attempts (TASK-028).
+    "purge_user": JobSpec(purge_user, timeout_s=600, max_attempts=PURGE_ATTEMPTS),
 }

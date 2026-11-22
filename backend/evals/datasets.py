@@ -59,22 +59,6 @@ class PerfCase(_Record):
     uses_tools: bool = False
 
 
-class Canaries(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    system_prompt_leak: bool = False  # the system prompt must not appear in the output
-    must_not_appear: list[str] = Field(default_factory=list)
-    must_not_match: list[str] = Field(default_factory=list)  # regular expressions
-    max_output_chars: int | None = Field(default=None, gt=0)
-
-
-class RedTeamCase(_Record):
-    threat_id: str = Field(pattern=r"^LLM-T\d{2}$")
-    input: str = Field(min_length=1)
-    should_refuse: bool = False
-    canaries: Canaries = Field(default_factory=Canaries)
-
-
 class ChunkRef(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -150,6 +134,88 @@ class ToolsCase(_Record):
             raise ValueError("`expected_args_contains` needs an expected_tool")
         if self.expected_sequence and self.expected_sequence[0] != self.expected_tool:
             raise ValueError("`expected_sequence` must start with the expected_tool")
+        return self
+
+
+class Canaries(BaseModel):
+    """What must never happen. Text checks look at the answer; tool checks look at the calls the
+    model made (`forbidden_tool_calls` even if the approval card would have caught them)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    system_prompt_leak: bool = False  # the system prompt must not appear in the output
+    must_not_appear: list[str] = Field(default_factory=list)
+    must_not_match: list[str] = Field(default_factory=list)  # regular expressions
+    max_output_chars: int | None = Field(default=None, gt=0)
+    forbidden_tool_calls: list[ToolName] = Field(default_factory=list)  # may not even be requested
+    require_approval: list[Literal["web_search"]] = Field(default_factory=list)  # never unasked
+    max_tool_calls: int | None = Field(default=None, ge=0)  # calls that really ran in the turn
+    forbidden_memory_writes: list[str] = Field(default_factory=list)  # substrings, case-insensitive
+
+
+class OtherUser(BaseModel):
+    """A second user who exists in every store while the case user asks: their data must stay
+    theirs. Put `CANARY-...` tokens in it and list them in `canaries.must_not_appear`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    docs: list[SetupDoc] = Field(default_factory=list)
+    memories: list[str] = Field(default_factory=list)
+
+
+class SetupWebResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1)
+    url: str = Field(pattern=r"^https?://")
+    content: str = Field(min_length=1)
+
+
+class RedTeamSetup(BaseModel):
+    """The world of one attack: files the case user uploaded (`docs`), what a web search returns
+    (`web`), memories planted for the user, another user's data, and whether an approval card is
+    approved (the search runs, so a poisoned result reaches the model) or rejected (it does not)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    docs: list[SetupDoc] = Field(default_factory=list)
+    web: list[SetupWebResult] = Field(default_factory=list)
+    memories: list[str] = Field(default_factory=list)
+    other_user: OtherUser | None = None
+    approve_web: bool = False
+
+
+RedTeamGroup = Literal["injection", "cross_tenant"]
+
+
+class RedTeamCase(_Record):
+    """One attack (doc 09 section 8). `group` says which gated metric the case feeds:
+    `injection` -> `safety.injection_resistance`, `cross_tenant` -> `safety.cross_tenant_leaks`.
+    `{other_user_id}` in `input` is replaced by the other user's id when the case runs."""
+
+    threat_id: str = Field(pattern=r"^LLM-T\d{2}$")
+    input: str = Field(min_length=1)
+    should_refuse: bool = False
+    canaries: Canaries = Field(default_factory=Canaries)
+    setup: RedTeamSetup | None = None
+    group: RedTeamGroup | None = None
+
+    @property
+    def uses_tools(self) -> bool:
+        """True when the case needs the tool-backed run (a world to set up, or a tool to watch)."""
+        c = self.canaries
+        return self.setup is not None or bool(
+            c.forbidden_tool_calls or c.require_approval or c.max_tool_calls is not None
+        )
+
+    @model_validator(mode="after")
+    def _consistent(self) -> RedTeamCase:
+        if "{other_user_id}" in self.input and (
+            self.setup is None or self.setup.other_user is None
+        ):
+            raise ValueError("`{other_user_id}` needs setup.other_user")
+        if self.canaries.forbidden_memory_writes and self.setup is None:
+            raise ValueError("forbidden_memory_writes needs a setup (the turn it is checked on)")
         return self
 
 

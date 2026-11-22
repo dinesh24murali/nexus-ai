@@ -109,6 +109,10 @@ class UpdateMeRequest(NoNullFieldsModel):
     memory_enabled: StrictBool | None = None
 
 
+class DeleteAccountRequest(BaseModel):
+    confirm_email: Email
+
+
 class ChangePasswordRequest(BaseModel):
     current_password: str
     new_password: Password

@@ -267,3 +267,16 @@ async def delete_with_checkpoints(
             {"tid": str(conversation_id)},
         )
     return True
+
+
+async def delete_all_checkpoints(session: AsyncSession, user_id: uuid.UUID) -> None:
+    """Remove the LangGraph checkpoints of every conversation of the user (account purge). Run it
+    BEFORE the conversations are deleted: the thread ids come from them."""
+    for table in _LANGGRAPH_THREAD_TABLES:  # fixed names, never user input
+        await session.execute(
+            text(
+                f"DELETE FROM {table} WHERE thread_id IN "  # noqa: S608
+                "(SELECT id::text FROM conversations WHERE user_id = :uid)"
+            ),
+            {"uid": user_id},
+        )

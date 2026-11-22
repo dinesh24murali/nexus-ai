@@ -14,6 +14,7 @@
 - 429 carries `Retry-After`; codes `RATE_LIMITED`, `BUDGET_EXCEEDED` with `details.scope = user | global` (USD budgets reset 00:00 UTC)
 - `POST /auth/register` takes `invite_code` (required when `REGISTRATION_MODE=invite`); bad codes → 403 `INVITE_INVALID` (one response for unknown/used/revoked/expired)
 - No data export endpoint in v1 (FR-005 deferred)
+- `DELETE /me` -> 202 (TASK-028): schedules the purge of everything the user owns (see `memory/auth.md` for the request side, `memory/ai.md` for the job); 400 `CONFIRMATION_MISMATCH` for a wrong `confirm_email`; the purge runs within minutes (the user was promised 24 h)
 - Upload: multipart field `file`; 413 `FILE_TOO_LARGE` (> 20 MB), 415 `FILE_TYPE_UNSUPPORTED`, 409 `FILE_DUPLICATE`, 409 `FILE_LIMIT_REACHED` (50 files)
 - Spec lints clean with Redocly (warnings only: no license, placeholder server URL, health probes without 4xx); spec version 1.1.0
 - **Implementation facts (TASK-004/006, 2026-11-21):**
