@@ -127,6 +127,11 @@ export class AuthManager {
     this.listeners.forEach((l) => l())
   }
 
+  /** Replace the signed-in user's profile (after the API returned the updated one). */
+  updateUser(user: User) {
+    if (this.state.status === 'authenticated') this.set({ ...this.state, user })
+  }
+
   private setSession(body: AuthResponse) {
     this.token = body.access_token
     this.set({ status: 'authenticated', user: body.user, sessionExpired: false })

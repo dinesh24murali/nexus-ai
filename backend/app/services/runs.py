@@ -63,7 +63,7 @@ from app.core.runtime_flags import RuntimeFlags
 from app.db.repositories import conversations, messages, users
 from app.db.repositories import usage as usage_repo
 from app.graph.builder import build_graph
-from app.graph.nodes.load_context import RecentFiles
+from app.graph.nodes.load_context import MemoryLookup, RecentFiles
 from app.graph.state import MAX_TOOL_CALLS
 from app.graph.tools.web_search import MAX_QUERY_CHARS
 from app.jobs import queue
@@ -151,12 +151,14 @@ def graph_factory_for(
     *,
     retriever: Callable[[], Retriever] | None = None,
     recent_files: RecentFiles | None = None,
+    memories: MemoryLookup | None = None,
 ) -> GraphFactory:
     """The production graph: factory-built models, the Postgres checkpointer, the file-search tool
     (when a retriever is given), `web_search` (when Tavily is configured, or in fake mode) and the
     calculator. The retriever is built on first use, so a missing API key fails the run (like the
     chat model) and not the start of the API. Which tools a run may use is decided per run
-    (`TOOLS_DISABLED`), not here."""
+    (`TOOLS_DISABLED`), not here. `memories` reads the user's long-term memories into the late
+    context message."""
 
     def build(model_override: str | None) -> Graph:
         chat = get_model("chat", settings=settings, model_override=model_override)
@@ -167,6 +169,7 @@ def graph_factory_for(
             web_searcher=build_web_searcher(settings),
             calculator=True,
             recent_files=recent_files,
+            memories=memories,
             settings=settings,
         )
 

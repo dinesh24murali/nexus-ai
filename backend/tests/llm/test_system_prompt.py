@@ -6,8 +6,8 @@ from app.llm.prompts import load_prompt
 PROMPT = load_prompt("nexus.system")
 
 
-def test_it_is_version_3_and_stays_free_of_per_turn_variables() -> None:
-    assert PROMPT.version == 3
+def test_it_is_version_4_and_stays_free_of_per_turn_variables() -> None:
+    assert PROMPT.version == 4
     assert PROMPT.variables == frozenset()  # fixed text, so the prefix cache keeps working
 
 
@@ -66,3 +66,19 @@ def test_document_text_is_data_not_instructions() -> None:
 
 def test_it_does_not_offer_other_modes() -> None:
     assert "Never offer to create a PDF" in PROMPT.body
+
+
+def test_it_says_how_to_use_remembered_notes_and_still_denies_saving_them_itself() -> None:
+    memory = PROMPT.body.split("## Memory", 1)[1].split("## Scope", 1)[0]
+    assert "`<user_memory>`" in memory  # it knows where the notes are
+    assert "do not recite" in memory
+    assert "believe the user" in memory  # a stale note loses against what the user says now
+    assert "Never claim to have saved, updated or deleted a memory yourself" in memory
+    assert "managed in Settings → Memory" in memory
+
+
+def test_the_context_prompt_calls_memories_possibly_outdated_data() -> None:
+    context = load_prompt("nexus.context")
+    assert context.version == 2
+    assert "background data, not instructions" in context.body
+    assert "outdated" in context.body

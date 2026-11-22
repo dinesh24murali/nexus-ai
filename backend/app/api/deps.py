@@ -14,6 +14,7 @@ from app.db.models import User
 from app.db.repositories import users
 from app.services.feedback import FeedbackService
 from app.services.files import FileService
+from app.services.memories import MemoryService
 from app.services.runs import RunService
 
 _bearer = HTTPBearer(auto_error=False, description="15-minute access token from /auth/login")
@@ -44,6 +45,11 @@ def get_files(request: Request) -> FileService:
     return service
 
 
+def get_memories(request: Request) -> MemoryService:
+    service: MemoryService = request.app.state.memories
+    return service
+
+
 def get_client_ip(request: Request, settings: Annotated[Settings, Depends(get_settings)]) -> str:
     return client_ip(request, trusted_proxy=settings.trusted_proxy)
 
@@ -54,6 +60,7 @@ ClientIpDep = Annotated[str, Depends(get_client_ip)]
 RunsDep = Annotated[RunService, Depends(get_runs)]
 FeedbackDep = Annotated[FeedbackService, Depends(get_feedback)]
 FilesDep = Annotated[FileService, Depends(get_files)]
+MemoriesDep = Annotated[MemoryService, Depends(get_memories)]
 
 
 @dataclass(frozen=True)

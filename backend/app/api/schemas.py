@@ -191,6 +191,39 @@ class FilePage(BaseModel):
     next_cursor: str | None
 
 
+# ──────────────────────────────── memories ────────────────────────────────
+
+
+class MemoryInput(BaseModel):
+    # Mirrors the spec (1..500, no stripping): the memory policy decides what else is refused.
+    content: Annotated[str, StringConstraints(min_length=1, max_length=500)]
+
+
+class MemoryOut(BaseModel):
+    id: uuid.UUID
+    content: str
+    source: Literal["extracted", "chat", "manual"]
+    conversation_id: uuid.UUID | None
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def from_memory(cls, m: Any) -> MemoryOut:
+        return cls(
+            id=m.id,
+            content=m.content,
+            source=m.source,
+            conversation_id=m.conversation_id,
+            created_at=m.created_at,
+            updated_at=m.updated_at,
+        )
+
+
+class MemoryPage(BaseModel):
+    items: list[MemoryOut]
+    next_cursor: str | None
+
+
 # ───────────────────────────────── chat ─────────────────────────────────
 
 

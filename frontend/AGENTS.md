@@ -21,12 +21,13 @@ frontend/
 │   │                               theme.ts, messages.ts (error text), cn.ts
 │   ├── routes/                   ← pages (LoginPage, RegisterPage, AppShell, ...) and guards.tsx
 │   ├── components/ui/            ← shadcn-style primitives (Button, Field, Alert) on our tokens
-│   ├── components/               ← app components (ThemeToggle, sidebar/: ConversationNav, ConversationList, ConversationItem)
+│   ├── components/               ← app components (ThemeToggle, Toasts + toast-context, sidebar/: ConversationNav, ConversationList, ConversationItem)
 │   ├── features/                 ← feature folders (conversations/ = TanStack Query hooks; chat/ = ChatView, useChatRun,
 │   │                               MessageList, Composer, Feedback (thumbs), Markdown + CodeBlock + highlight (Shiki), notices, UsageMeter,
 │   │                               ApprovalCard (web-search approve / edit / reject);
 │   │                               ToolCard + toolCalls.ts (tool call cards, live and stored);
-│   │                               Citations (chips + snippet popover); files/ = FilesPage, uploads, chips, paperclip; settings/ to come)
+│   │                               Citations (chips + snippet popover); files/ = FilesPage, uploads, chips, paperclip;
+│   │                               settings/ = Memory (Settings → Memory page), memories.ts hooks, useMemoryWatch (toast))
 │   ├── styles/tokens.css, theme.css   ← design tokens + Tailwind 4 @theme (docs/02_outputs/07)
 │   └── config.ts                 ← build-time VITE_* config
 ├── public/theme-init.js          ← sets data-theme before first paint (CSP forbids inline scripts)
@@ -70,6 +71,12 @@ frontend/
 - **Errors from `unwrap` / `unwrapEmpty` keep the API error code** (`problemFromBody`): openapi-fetch has already read the body, so `parseProblem(response)` on it would turn every code into `HTTP_ERROR`. Use `unwrapEmpty` for 204 calls
 - Citation chips (`features/chat/Citations.tsx`) render under stored assistant messages from `message.citations`, as plain text; web links only for `http(s)` URLs. Live `citation` events are not shown while streaming (the chips appear when the stored message replaces the live bubble)
 - Tests: in jsdom a `File` cannot be read by Node's fetch (it hangs), so tests build uploads with `File` from `node:buffer` (see `files.test.tsx`); the bytes on the wire are proven by `tests/e2e/rag.spec.ts`. `tests/e2e/rag.spec.ts` needs `LLM_MODE=fake` on api AND worker; the fake embeddings are a hashed bag of words, so keep the fixture file short (a one-word query must stay above the 0.25 score cut-off)
+
+### Memory (TASK-027)
+- `/settings/memory` (`features/settings/Memory.tsx`): the switch (`PATCH /me`, then `AuthManager.updateUser` so every screen sees `memory_enabled`), add, inline edit, delete with an inline confirm, clear all with a count. Keys are `['memories', uid, 'list']`; the list is read whole (a user has at most 200: two pages of 100). Memory text is rendered as text, never as markup. Managing works with the switch off
+- **Toast after a turn** (`useMemoryWatch`, called from `useChatRun.start` for a send and for the resume that ends a turn, not for a regenerate): the extraction job runs after the stream ends, so the stream cannot say what was stored. `begin()` reads the memory list when a turn starts (the cache is reused for 30 s); `finish()` re-reads it at 1.5, 4, 9 and 20 s and shows "Nexus remembered N thing(s). Manage" for new or changed memories, then stops. Memory off, a failed read, or a failed run means no checks and no toast. Delays live in `features/settings/timing.ts` so tests shrink them (`vi.mock('../settings/timing', ...)`)
+- Toasts: `ToastProvider` (in `AppShell`) renders a labelled `aria-live="polite"` region; a toast is a list item, not a `status` role (pages keep exactly one `status`: the running tool call). `useToasts()` is a no-op outside a provider
+- `tests/e2e/memory.spec.ts` needs `LLM_MODE=fake` on api AND worker (the fake extraction turns "Remember that I prefer Go for backend work." into "User prefers Go for backend work")
 
 ### Auth and sessions
 - All session logic is `src/lib/auth.ts` (`AuthManager`). Use `manager.fetch()` for every API call: it adds the bearer token, refreshes once on 401 and retries. Never put tokens in localStorage, sessionStorage, URLs or the DOM

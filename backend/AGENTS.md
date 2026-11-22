@@ -17,11 +17,13 @@ backend/
 │   ├── main.py             ← create_app() factory (run: uvicorn app.main:create_app --factory)
 │   ├── api/                ← routers (thin), deps.py (auth + session factory), schemas.py,
 │   │                         chat.py (send/regenerate/cancel/history) + sse.py (typed events, framing),
-│   │                         feedback.py (PUT /messages/{id}/feedback), files.py (upload, list, get)
+│   │                         feedback.py (PUT /messages/{id}/feedback), files.py (upload, list, get),
+│   │                         memories.py (list, add, edit, delete, clear all)
 │   ├── services/           ← use cases and transaction boundaries (auth.py; files.py = upload checks, storage,
 │   │                         duplicate/limit, enqueue `ingest_file`; runs.py = run lease,
 │   │                         streaming, cancel, regenerate, drain, pre-run limits; usage.py = spend reads,
-│   │                         budget check, /me/usage, spend alert; feedback.py = rate an answer + Langfuse score)
+│   │                         budget check, /me/usage, spend alert; feedback.py = rate an answer + Langfuse score; memories.py = the
+│   │                         memories API use cases, same policy as extraction)
 │   ├── jobs/               ← queue.py (Postgres SKIP LOCKED), handlers.py (registry: kind -> handler,
 │   │                         timeout, attempts), periodic.py (reaper, stale-job requeue, cleanups)
 │   ├── db/                 ← base, models, session, repositories/ (every query is owner-scoped)
@@ -38,8 +40,8 @@ backend/
 │   │                         retriever.py (query -> tenant-filtered passages),
 │   │                         index.py (Qdrant: alias `documents`, tenant payload); ingestion job is in jobs/handlers.py
 │   └── memory/             ← store.py (per-user `AsyncPostgresStore`, namespace built from the user id), policy.py (what may be
-│                             remembered: deny-list + instruction filter, pure), extract.py (plan_ops / apply_plan); nothing reads
-│                             memories into prompts yet (TASK-026)
+│                             remembered: deny-list + instruction filter, pure), extract.py (plan_ops / apply_plan), read.py (what
+│                             `load_context` shows: select_for_prompt, memory_lookup_for; touch marks use)
 ├── evals/                  ← the eval suite (`python -m evals.run`; judge calibration `python -m evals.calibrate`;
 │                             see evals/AGENTS.md); not imported by app/
 ├── prompts/                ← canonical prompt files `<name>.md` (front-matter name + version; ADR-0008)
@@ -88,6 +90,10 @@ backend/
 - Every `MemoryStore` method takes the user id and builds the namespace itself; never pass a namespace or a key from model output. Text in a memory is user data: never log it, never put it in a prompt outside a data tag
 - Anything that writes a memory goes through `memory.policy.check` (sensitive categories, instruction-like text, length) whoever proposed it, and a memory op may only name a memory that was shown to the model (`filter_ops`). The model is never trusted to obey its prompt
 - `extract_memories` re-checks `memory_enabled` and `MEMORY_WRITES_DISABLED` when it runs, and is idempotent (a re-run finds its own creates as duplicates). The store needs a database URL: tests that run a worker with the default job registry must give it the test database (`settings.model_copy(update={"database_url": db_url})`), or the memory job would use the developer's database
+
+### Memory in context (TASK-026)
+- `load_context` gets memories from the injected `MemoryLookup`; the lookup returns nothing when the user has memory off and never fails the run. Memories reach the model only as escaped lines inside `<user_memory>` (`prompting._memory_lines`), never in the system prompt (cache prefix) and never in a log or trace field of their own
+- Marking a memory as used is `MemoryStore.touch` (one `UPDATE`), never `update`/`aput`: those re-embed, move `updated_at` and can resurrect a deleted memory
 
 ### Limits and moderation
 - A chat send/regenerate passes, in order: drain check, `ratelimit.hit` (atomic), `usage.ensure_within_budgets`, `Moderator.check` (sends only), then the lease. Refusals (`RATE_LIMITED`, `BUDGET_EXCEEDED` with `details.scope`, `MODERATION_FLAGGED`) happen before anything is written. New run-starting endpoints must go through `RunService._admit`

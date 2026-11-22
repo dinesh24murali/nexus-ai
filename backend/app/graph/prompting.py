@@ -13,6 +13,7 @@ them as data).
 """
 
 from collections.abc import Sequence
+from html import escape
 
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 
@@ -24,6 +25,14 @@ NONE_TEXT = "(none)"
 
 def _bullets(items: Sequence[str]) -> str:
     return "\n".join(f"- {item}" for item in items) if items else NONE_TEXT
+
+
+def _memory_lines(memories: Sequence[str]) -> str:
+    """One bullet per memory, as plain text. A memory is user data that came from a model's
+    reading of earlier chats: collapse it to one line and escape `<`, `>` and `&`, so it cannot
+    close `</user_memory>` or open a tag of its own."""
+    lines = [" ".join(escape(m, quote=False).split()) for m in memories]
+    return _bullets([line for line in lines if line])
 
 
 def _files_block(files: Sequence[RecentFile]) -> str:
@@ -51,7 +60,7 @@ def build_request(
         load_prompt("nexus.context").render(
             today=today,
             user_display_name=user_display_name,
-            memories_block=_bullets(memories),
+            memories_block=_memory_lines(memories),
             recent_files_block=_files_block(recent_files),
         )
     )

@@ -10,16 +10,16 @@ is untrusted user data: nothing here logs it.
 """
 
 import uuid
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Protocol
 
 from langgraph.store.postgres.aio import AsyncPostgresStore
 from langgraph.store.postgres.base import PostgresIndexConfig
 
-from app.rag.embedder import Embedder
+from app.rag.embedder import Embedded
 
 EMBEDDING_DIMS = 1536  # text-embedding-3-small; the same size as the document index
 MEMORY_CAP = 200  # per user; the least recently used is evicted (doc 08 section 7)
@@ -28,6 +28,23 @@ NAMESPACE_ROOT = "memories"
 
 CATEGORIES = ("preference", "fact", "goal", "context")
 SOURCES = ("extracted", "chat", "manual")
+
+
+class TextEmbedder(Protocol):
+    """What the store needs to embed text (`rag.embedder.Embedder` is one)."""
+
+    async def embed(self, texts: Sequence[str]) -> Embedded: ...
+
+
+class LazyEmbedder:
+    """An embedder built on first use: a store opened only to list or delete memories needs no
+    embeddings key, so the API can serve those without one."""
+
+    def __init__(self, get: Callable[[], TextEmbedder]) -> None:
+        self._get = get
+
+    async def embed(self, texts: Sequence[str]) -> Embedded:
+        return await self._get().embed(texts)
 
 
 def namespace(user_id: uuid.UUID) -> tuple[str, str]:
@@ -78,6 +95,15 @@ def index_config(embed: Any) -> PostgresIndexConfig:
     }
 
 
+def most_recent(
+    memories: Sequence[Memory], *, limit: int, category: str | None = None
+) -> list[Memory]:
+    """The most recently used memories, newest first; only one category when `category` is given."""
+    if category is not None:
+        memories = [m for m in memories if m.category == category]
+    return sorted(memories, key=lambda m: m.last_used_at, reverse=True)[:limit]
+
+
 class MemoryStore:
     """Memories of any number of users; each call names the user it acts for."""
 
@@ -95,10 +121,30 @@ class MemoryStore:
         items = await self._store.asearch(namespace(user_id), query=query, limit=limit)
         return [_memory(i) for i in items]
 
-    async def recent(self, user_id: uuid.UUID, *, limit: int = 5) -> list[Memory]:
-        """Newest first, by last use."""
-        everything = await self.all(user_id)
-        return sorted(everything, key=lambda m: m.last_used_at, reverse=True)[:limit]
+    async def recent(
+        self, user_id: uuid.UUID, *, limit: int = 5, category: str | None = None
+    ) -> list[Memory]:
+        """Newest first, by last use; only one category when `category` is given."""
+        return most_recent(await self.all(user_id), limit=limit, category=category)
+
+    async def touch(self, user_id: uuid.UUID, memory_ids: Sequence[uuid.UUID]) -> None:
+        """Mark memories as just used (they were put in a prompt), which is what the cap evicts by.
+
+        One atomic UPDATE of `last_used_at` in the stored value, not `aput`: a put would embed the
+        text again, change `updated_at` (shown to the user as the last edit), and, as a read then a
+        write, could bring back a memory the user deleted in between. Memories that no longer exist
+        are not created, and another user's are not matched (the prefix is the user's namespace).
+        """
+        if not memory_ids:
+            return
+        now = datetime.now(UTC).isoformat()
+        # `_cursor` is the store's own helper: there is no public API for a partial update.
+        async with self._store._cursor() as cur:
+            await cur.execute(
+                "UPDATE store SET value = jsonb_set(value, '{last_used_at}', to_jsonb(%s::text)) "
+                "WHERE prefix = %s AND key = ANY(%s)",
+                (now, ".".join(namespace(user_id)), [str(i) for i in memory_ids]),
+            )
 
     async def all(self, user_id: uuid.UUID) -> list[Memory]:
         found: list[Memory] = []
@@ -165,6 +211,13 @@ class MemoryStore:
             await self._store.adelete(namespace(user_id), str(memory_id))
         return existed
 
+    async def clear(self, user_id: uuid.UUID) -> int:
+        """Delete every memory of the user. Returns how many there were."""
+        everything = await self.all(user_id)
+        for memory in everything:
+            await self._store.adelete(namespace(user_id), str(memory.id))
+        return len(everything)
+
     async def evict_to(self, user_id: uuid.UUID, cap: int = MEMORY_CAP) -> int:
         """Delete the least recently used memories until at most `cap` are left."""
         everything = await self.all(user_id)
@@ -180,7 +233,7 @@ class MemoryStore:
 class CountingEmbedder:
     """The store's embedding function: batches go to the embeddings client, tokens are counted."""
 
-    def __init__(self, embedder: Embedder) -> None:
+    def __init__(self, embedder: TextEmbedder) -> None:
         self._embedder = embedder
         self.tokens = 0
 
@@ -191,7 +244,9 @@ class CountingEmbedder:
 
 
 @asynccontextmanager
-async def open_memory_store(database_url: str, embedder: Embedder) -> AsyncIterator[MemoryStore]:
+async def open_memory_store(
+    database_url: str, embedder: TextEmbedder
+) -> AsyncIterator[MemoryStore]:
     """A store on its own connection, with its own token counter (one per job)."""
     counting = CountingEmbedder(embedder)
     async with AsyncPostgresStore.from_conn_string(

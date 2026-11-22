@@ -13,6 +13,7 @@
     "frontend/src/api": 97,
     "frontend/src/features/chat": 90,
     "frontend/src/features/files": 94,
+    "frontend/src/features/settings": 98,
     "backend/evals": 97,
     "backend/app/rag": 98,
     "backend/app/memory": 99

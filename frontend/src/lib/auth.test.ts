@@ -92,6 +92,32 @@ describe('login', () => {
   })
 })
 
+describe('updateUser', () => {
+  it('replaces the signed-in profile and tells subscribers, keeping the session', async () => {
+    const { fn } = scriptedFetch(() => json(200, authBody('tok-1')))
+    const auth = new AuthManager({ fetch: fn, locks: null })
+    await auth.login('marco@example.com', 'correct-horse-battery')
+    const heard = vi.fn()
+    auth.subscribe(heard)
+
+    auth.updateUser({ ...USER, memory_enabled: false })
+
+    expect(auth.getState().user?.memory_enabled).toBe(false)
+    expect(auth.getState().status).toBe('authenticated')
+    expect(auth.getAccessToken()).toBe('tok-1')
+    expect(heard).toHaveBeenCalledTimes(1)
+  })
+
+  it('does nothing when nobody is signed in (a late response after sign-out)', () => {
+    const { fn } = scriptedFetch(() => json(500, {}))
+    const auth = new AuthManager({ fetch: fn, locks: null })
+
+    auth.updateUser(USER)
+
+    expect(auth.getState().user).toBeNull()
+  })
+})
+
 describe('bootstrap (silent sign-in on page load)', () => {
   it('signs in from the refresh cookie when it is valid', async () => {
     const { fn, calls } = scriptedFetch(() => json(200, authBody('tok-boot')))

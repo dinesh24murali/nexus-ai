@@ -24,7 +24,7 @@ from app.core.config import Settings
 from app.graph.calls import disabled_tools
 from app.graph.nodes.agent import make_agent_node
 from app.graph.nodes.approval import calls_needing_approval, make_approval_node
-from app.graph.nodes.load_context import RecentFiles, make_load_context
+from app.graph.nodes.load_context import MemoryLookup, RecentFiles, make_load_context
 from app.graph.nodes.summarize import (
     HISTORY_KEEP_TOKENS,
     SUMMARIZE_TRIGGER_TOKENS,
@@ -50,6 +50,7 @@ def build_graph(
     web_searcher: WebSearcher | None = None,
     calculator: bool = False,
     recent_files: RecentFiles | None = None,
+    memories: MemoryLookup | None = None,
     tool_timeout_s: float = TOOL_TIMEOUT_S,
     settings: Settings | None = None,
     summarize_trigger_tokens: int = SUMMARIZE_TRIGGER_TOKENS,
@@ -92,7 +93,7 @@ def build_graph(
         return "summarize" if too_long else "agent"
 
     builder = StateGraph(ChatState)
-    builder.add_node("load_context", make_load_context(recent_files))
+    builder.add_node("load_context", make_load_context(recent_files, memories))
     builder.add_node("summarize", make_summarize_node(summarizer, keep_tokens=history_keep_tokens))
     builder.add_node("agent", make_agent_node(chat, tools_for=tools_for if specs else None))
     builder.add_edge(START, "load_context")

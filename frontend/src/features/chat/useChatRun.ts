@@ -7,6 +7,7 @@ import { useConversationKeys } from '../conversations/api'
 import type { Conversation } from '../conversations/api'
 import { useChatKeys } from './api'
 import type { Decision, PendingInterrupt } from './ApprovalCard'
+import { useMemoryWatch } from '../settings/useMemoryWatch'
 import { noticeFromError, type Notice } from './notices'
 import { TITLE_REFRESH_DELAYS_MS, TOKEN_BATCH_MS } from './timing'
 import type { ToolCallView } from './toolCalls'
@@ -77,6 +78,7 @@ export function useChatRun(conversationId: string) {
   const live = useRef<Live | null>(null)
   const mounted = useRef(false)
   const titleTimers = useRef<number[]>([])
+  const memoryWatch = useMemoryWatch()
 
   useEffect(() => {
     mounted.current = true
@@ -110,12 +112,18 @@ export function useChatRun(conversationId: string) {
     (
       path: string,
       body: unknown,
-      options: { pendingUser: string | null; replacesMessageId: string | null },
+      options: {
+        pendingUser: string | null
+        replacesMessageId: string | null
+        /** The turn can teach Nexus something (a send, or the resume that ends a turn). */
+        remembers?: boolean
+      },
     ): Promise<boolean> => {
       if (live.current) return Promise.resolve(false)
       const controller = new AbortController()
       const run: Live = { controller, text: '', timer: undefined }
       live.current = run
+      if (options.remembers) memoryWatch.begin()
       setState({
         ...IDLE,
         running: true,
@@ -190,6 +198,7 @@ export function useChatRun(conversationId: string) {
                 queryClient.invalidateQueries({ queryKey: conversationKeys.one(conversationId) }),
               ])
               refreshTitle()
+              if (options.remembers && !notice) memoryWatch.finish()
             } else {
               // Refused before it started (say, the approval was answered elsewhere): re-read
               // what the server holds so the screen does not keep a stale card.
@@ -206,7 +215,7 @@ export function useChatRun(conversationId: string) {
       })()
       return accepted
     },
-    [manager, queryClient, chatKeys, conversationKeys, conversationId, refreshTitle],
+    [manager, queryClient, chatKeys, conversationKeys, conversationId, refreshTitle, memoryWatch],
   )
 
   const send = useCallback(
@@ -214,7 +223,7 @@ export function useChatRun(conversationId: string) {
       start(
         `/conversations/${conversationId}/messages`,
         { content: text },
-        { pendingUser: text, replacesMessageId: null },
+        { pendingUser: text, replacesMessageId: null, remembers: true },
       ),
     [start, conversationId],
   )
@@ -238,7 +247,7 @@ export function useChatRun(conversationId: string) {
           decision: decision.decision,
           ...(decision.decision === 'edit' ? { edited_args: { query: decision.query } } : {}),
         },
-        { pendingUser: null, replacesMessageId: null },
+        { pendingUser: null, replacesMessageId: null, remembers: true },
       ),
     [start, conversationId],
   )

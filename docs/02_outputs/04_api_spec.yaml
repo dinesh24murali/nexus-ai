@@ -562,7 +562,9 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/MemoryPage" }
+        "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
         "500": { $ref: "#/components/responses/InternalError" }
     post:
       tags: [memories]
@@ -622,6 +624,7 @@ paths:
         "204": { description: Deleted }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/ValidationError" }
         "500": { $ref: "#/components/responses/InternalError" }
 
   /healthz:
@@ -747,7 +750,7 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     Conflict:
-      description: Conflicts with current state (e.g. EMAIL_TAKEN, RUN_IN_PROGRESS, FILE_DUPLICATE (details.file_id is the existing file), FILE_LIMIT_REACHED (50 files per user), NO_PENDING_INTERRUPT, DOCUMENT_NOT_READY, REGENERATE_NOT_SUPPORTED)
+      description: Conflicts with current state (e.g. EMAIL_TAKEN, RUN_IN_PROGRESS, FILE_DUPLICATE (details.file_id is the existing file), FILE_LIMIT_REACHED (50 files per user), NO_PENDING_INTERRUPT, MEMORY_DUPLICATE (an almost identical memory already exists), DOCUMENT_NOT_READY, REGENERATE_NOT_SUPPORTED)
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }

@@ -1,6 +1,7 @@
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from functools import cache
 
 import structlog
 from fastapi import APIRouter, FastAPI
@@ -8,7 +9,7 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
-from app.api import auth, chat, conversations, feedback, files, health, me
+from app.api import auth, chat, conversations, feedback, files, health, me, memories
 from app.core.config import Settings, get_settings
 from app.core.errors import register_exception_handlers
 from app.core.health import default_checks
@@ -16,15 +17,30 @@ from app.core.logging import RequestContextMiddleware, configure_logging
 from app.core.runtime_flags import RuntimeFlags
 from app.core.shutdown import chain_sigterm
 from app.db.session import create_engine, create_session_factory
+from app.llm.factory import build_embeddings_client
 from app.llm.tracing import Tracer
+from app.memory.read import memory_lookup_for
+from app.rag.embedder import Embedder
 from app.rag.retriever import lazy_retriever
 from app.services.feedback import FeedbackService
 from app.services.files import FileService, recent_files_for
+from app.services.memories import MemoryService
 from app.services.runs import DRAIN_TIMEOUT_S, RunService, graph_factory_for
 
 _log = structlog.get_logger("nexus.app")
 
 API_PREFIX = "/api/v1"
+
+
+def lazy_embedder(settings: Settings) -> Callable[[], Embedder]:
+    """The embedder, built on first use and then reused: the API starts without an embeddings key
+    and a run that needs one fails like a chat run would."""
+
+    @cache
+    def get() -> Embedder:
+        return Embedder(build_embeddings_client(settings), settings.llm_embedding_model)
+
+    return get
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -49,6 +65,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         await pool.open()
         tracer = Tracer(settings)
+        embedder = lazy_embedder(settings)  # shared by the memory lookup and the memories API
         runs = RunService(
             factory=app.state.session_factory,
             settings=settings,
@@ -57,6 +74,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 AsyncPostgresSaver(pool),  # type: ignore[arg-type]
                 retriever=lazy_retriever(settings),
                 recent_files=recent_files_for(app.state.session_factory),
+                memories=memory_lookup_for(app.state.session_factory, settings, embedder),
             ),
             flags=app.state.flags,
             tracer=tracer,
@@ -64,6 +82,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.runs = runs
         app.state.feedback = FeedbackService(app.state.session_factory, tracer)
         app.state.files = FileService(app.state.session_factory, settings)
+        app.state.memories = MemoryService(app.state.session_factory, settings, embedder)
         restore_sigterm = chain_sigterm(runs.begin_drain)  # refuse new runs from the first moment
         try:
             yield
@@ -98,5 +117,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     api.include_router(chat.router)
     api.include_router(feedback.router)
     api.include_router(files.router)
+    api.include_router(memories.router)
     app.include_router(api)
     return app

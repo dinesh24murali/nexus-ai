@@ -1,5 +1,6 @@
 import { Route, Routes } from 'react-router'
 import { FilesPage } from './features/files/FilesPage'
+import { MemoryPage } from './features/settings/Memory'
 import { AppShell } from './routes/AppShell'
 import { ConversationPage } from './routes/ConversationPage'
 import { HomePage } from './routes/HomePage'
@@ -20,6 +21,7 @@ export default function App() {
           <Route index element={<HomePage />} />
           <Route path="c/:conversationId" element={<ConversationPage />} />
           <Route path="files" element={<FilesPage />} />
+          <Route path="settings/memory" element={<MemoryPage />} />
         </Route>
       </Route>
       <Route path="*" element={<NotFoundPage />} />

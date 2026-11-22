@@ -28,7 +28,7 @@ schema = (
         path_regex=(
             r"^/(healthz|readyz|auth/.*|me(/password|/usage)?|conversations(/\{conversationId\})?"
             r"|conversations/\{conversationId\}/(messages|regenerate|runs/(cancel|resume))"
-            r"|messages/\{messageId\}/feedback)$"
+            r"|messages/\{messageId\}/feedback|memories(/\{memoryId\})?)$"
         )
     )
     # Not implemented yet: account deletion is TASK-028 (M6).
@@ -107,6 +107,12 @@ def test_api_conforms_to_the_spec(case: Any, live_server_url: str) -> None:
         "POST /conversations/{conversationId}/runs/resume",
         # comment: NUL is schema-valid but Postgres cannot store it: a documented 422 (tested in
         # tests/api/test_feedback.py).
+        # memories: `content` the spec accepts (1..500 characters) can still be refused as an
+        # instruction or a sensitive category, a documented 422 (tests/api/test_memories.py); the
+        # cursor is opaque and server-issued (a bad one is the documented 400).
+        "GET /memories",
+        "POST /memories",
+        "PATCH /memories/{memoryId}",
     ):
         excluded.append(positive_data_acceptance)
     case.call_and_validate(base_url=live_server_url, excluded_checks=excluded)

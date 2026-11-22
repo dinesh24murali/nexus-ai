@@ -1589,7 +1589,7 @@ export interface components {
                 "application/json": components["schemas"]["Error"];
             };
         };
-        /** @description Conflicts with current state (e.g. EMAIL_TAKEN, RUN_IN_PROGRESS, FILE_DUPLICATE (details.file_id is the existing file), FILE_LIMIT_REACHED (50 files per user), NO_PENDING_INTERRUPT, DOCUMENT_NOT_READY, REGENERATE_NOT_SUPPORTED) */
+        /** @description Conflicts with current state (e.g. EMAIL_TAKEN, RUN_IN_PROGRESS, FILE_DUPLICATE (details.file_id is the existing file), FILE_LIMIT_REACHED (50 files per user), NO_PENDING_INTERRUPT, MEMORY_DUPLICATE (an almost identical memory already exists), DOCUMENT_NOT_READY, REGENERATE_NOT_SUPPORTED) */
         Conflict: {
             headers: {
                 [name: string]: unknown;
@@ -2457,7 +2457,9 @@ export interface operations {
                     "application/json": components["schemas"]["MemoryPage"];
                 };
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
+            422: components["responses"]["ValidationError"];
             500: components["responses"]["InternalError"];
         };
     };
@@ -2530,6 +2532,7 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             404: components["responses"]["NotFound"];
+            422: components["responses"]["ValidationError"];
             500: components["responses"]["InternalError"];
         };
     };

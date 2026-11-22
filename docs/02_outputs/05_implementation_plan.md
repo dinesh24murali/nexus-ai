@@ -262,16 +262,16 @@ Each repo task group in brackets becomes `tasks/active/<NNN>-<slug>.md` when sta
 - **Files:** `backend/app/graph/nodes/load_context.py`, `backend/prompts/nexus.context.md`, `backend/prompts/nexus.system.md`
 - **Description:** Inject the top-k relevant memories in the late context message as untrusted user-profile data. There is no memory-writing tool in `general_chat` (revision 1.3 removed `remember_fact` and its taint rule); `nexus.system` says memories are saved automatically and deleted in Settings → Memory, and never to claim otherwise.
 - **Acceptance criteria:**
-  - [ ] "Remember that I prefer Go" leads to exactly one Go memory after the extraction job (`memory.e2e`)
-  - [ ] rt-05: a web result asking to remember something never produces a memory
-  - [ ] Isolation test passes
+  - [x] "Remember that I prefer Go" leads to exactly one Go memory after the extraction job (`memory.e2e`)
+  - [x] rt-05: a web result asking to remember something never produces a memory *(deterministic, fake-model test; the real-model record rides with TASK-029, `tasks/deferred.md` D17/D13)*
+  - [x] Isolation test passes
 
 #### TASK-027: Memories API & UI
 - **Depends on:** TASK-025, TASK-007
 - **Files:** `backend/app/api/memories.py`, `frontend/src/features/settings/Memory.tsx`
 - **Description:** CRUD endpoints plus clear-all; settings page with toggle, inline edit and delete; toast after extraction.
 - **Acceptance criteria:**
-  - [ ] Playwright `memory.spec.ts` passes
+  - [x] Playwright `memory.spec.ts` passes
 
 ## M6 — Hardening  [010-hardening]
 
