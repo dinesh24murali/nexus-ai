@@ -1,0 +1,9 @@
+[project]
+name = "nexus-loadtest"
+version = "0.1.0"
+description = "Load and resilience test for Nexus AI (TASK-031). Not part of the app image."
+requires-python = ">=3.12"
+dependencies = ["locust>=2.47"]
+
+[tool.uv]
+package = false

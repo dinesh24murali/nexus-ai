@@ -3,7 +3,7 @@
 EVAL_COMMAND ?= cd backend && uv run python -m evals.run --suite full
 EVAL_SMOKE_COMMAND ?= cd backend && uv run python -m evals.run --suite smoke
 
-.PHONY: scaffold verify adr task check-env init help up down eval eval-smoke lint test test-integration fmt hooks npm-lock
+.PHONY: scaffold verify adr task check-env init help up down eval eval-smoke lint test test-integration fmt hooks npm-lock audit loadtest loadtest-restart
 
 ## scaffold: Create the initial project structure (run once after cloning)
 scaffold:
@@ -86,6 +86,22 @@ test:
 POSTGRES_PORT ?= 5432
 test-integration:
 	cd backend && TEST_DATABASE_URL=postgresql+psycopg://nexus:nexus@localhost:$(POSTGRES_PORT)/nexus uv run pytest -m integration
+
+## audit: Known-vulnerability scan of the locked dependencies (pip-audit, npm audit; needs network)
+audit:
+	cd backend && uv export --frozen --no-dev --no-hashes -o /tmp/nexus-audit-requirements.txt >/dev/null
+	cd backend && uvx pip-audit -r /tmp/nexus-audit-requirements.txt --no-deps --disable-pip
+	cd frontend && npm audit --omit=dev
+	cd frontend && npm audit
+
+## loadtest: 20 concurrent streams + 5 req/s against the fake model, thresholds from the PRD (rebuilds the stack in fake mode)
+loadtest:
+	@bash loadtest/run.sh
+
+## loadtest-restart: restart the API under load and check nothing stays locked (MODE=graceful|kill)
+MODE ?= graceful
+loadtest-restart:
+	@bash loadtest/restart.sh $(MODE)
 
 ## npm-lock: Regenerate package-lock.json files with the container's npm (run after changing JS deps)
 # The host npm can omit optional platform packages from the lockfile, which makes `npm ci` fail in

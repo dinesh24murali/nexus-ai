@@ -6,15 +6,23 @@
 
 {$SITE_ADDRESS::80} {
 	header {
-		Content-Security-Policy "default-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'"
+		# default-src 'self' covers scripts, styles, fonts and XHR. The extra directives are not
+		# covered by default-src: <base> and <form> hijacking and plugins.
+		Content-Security-Policy "default-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'self'; object-src 'none'; frame-ancestors 'none'"
 		Strict-Transport-Security "max-age=31536000; includeSubDomains"
 		X-Content-Type-Options nosniff
 		Referrer-Policy no-referrer
+		# The app uses none of these browser features.
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=(), interest-cohort=()"
+		Cross-Origin-Opener-Policy same-origin
+		Cross-Origin-Resource-Policy same-origin
 		-Server
 	}
 
 	# API: never compress or buffer (SSE streams must flush immediately).
 	handle /api/* {
+		# No `Cache-Control: no-store` here on purpose: with it the DOM check (verify/scripts/
+		# check-dom.ts) never sees the page go network-idle (tasks/deferred.md D23).
 		# Uploads are 20 MB at most (the API enforces it; this stops a bigger body at the door).
 		request_body {
 			max_size 22MB

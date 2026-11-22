@@ -164,6 +164,30 @@ def _client(
     )
 
 
+def _build_fake(
+    role: Role, spec: _Spec, s: Settings, tools: Sequence[Any] | None
+) -> Runnable[Any, Any]:
+    """The scripted model, in the same primary + fallback chain as the real one, so the fallback
+    wiring (which errors it catches, how a stream starts over) is exercised offline. A message
+    with `[[fail:primary]]` is answered by the fallback model; `[[fail:all]]` fails both."""
+
+    def build(*, fails_on: tuple[str, ...], model_name: str | None) -> Runnable[Any, Any]:
+        fake: BaseChatModel = FakeChatModel(
+            role=role,
+            token_delay_s=s.llm_fake_token_delay_s,
+            fails_on=fails_on,
+            model_name=model_name,
+        )
+        return fake.bind_tools(tools) if tools else fake
+
+    if not spec.fallback_model:
+        return build(fails_on=(), model_name=None)
+    return build(fails_on=("primary", "all"), model_name=None).with_fallbacks(
+        [build(fails_on=("all",), model_name=spec.fallback_model)],
+        exceptions_to_handle=_FALLBACK_ON,
+    )
+
+
 def get_model(
     role: Role,
     *,
@@ -180,8 +204,7 @@ def get_model(
     spec = _spec(role, s)
 
     if s.llm_mode == "fake":
-        fake: BaseChatModel = FakeChatModel(role=role, token_delay_s=s.llm_fake_token_delay_s)
-        return fake.bind_tools(tools) if tools else fake
+        return _build_fake(role, spec, s, tools)
 
     if not s.openai_api_key.get_secret_value():
         raise LLMConfigError("OPENAI_API_KEY is not set (use LLM_MODE=fake to work offline)")

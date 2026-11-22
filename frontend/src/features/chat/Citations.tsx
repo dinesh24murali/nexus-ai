@@ -15,6 +15,10 @@ function safeUrl(raw: string | null | undefined): string | null {
   }
 }
 
+/** Where a link really goes, shown before the click: a model-chosen title can say anything. A
+ * look-alike domain appears in its punycode form (`xn--...`), which is what the browser opens. */
+const hostOf = (link: string) => new URL(link).hostname
+
 const labelOf = (c: Citation) => (c.page ? `${c.title} p.${c.page}` : c.title)
 
 function Chip({
@@ -60,7 +64,7 @@ function Chip({
               rel="noopener noreferrer"
               className="mt-2 inline-block text-primary underline underline-offset-2"
             >
-              Open source
+              Open source ({hostOf(link)})
             </a>
           )}
         </div>

@@ -14,6 +14,9 @@ x-backend: &backend
     UPLOADS_DIR: /data/uploads
     # Every request reaches the api through Caddy, which sets X-Forwarded-For (core/net.py).
     TRUSTED_PROXY: "true"
+  # The image already runs as a non-root user; these take away what it never needs.
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
 
 # api and worker start only after the one-shot migrate service has finished successfully.
 x-backend-app: &backend-app
@@ -85,6 +88,10 @@ services:
     <<: *backend-app
     command: ["python", "-m", "app.worker"]
     stop_grace_period: 120s
+    # The worker parses uploaded files (LLM-T12): a hostile file may use up its memory or spawn
+    # processes, but not the whole VM's.
+    mem_limit: 2g
+    pids_limit: 512
     volumes: ["uploads:/data/uploads"]
     healthcheck:
       # The worker touches this file every 10 s.

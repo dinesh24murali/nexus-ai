@@ -22,6 +22,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import httpx2
+import openai
 from langchain_core.callbacks import AsyncCallbackManagerForLLMRun, CallbackManagerForLLMRun
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage
@@ -34,6 +36,9 @@ from app.graph.tools.web_search import WebResult
 
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 _MARKER = re.compile(r"\[\[fixture:([^\]]*)\]\]")
+# `[[fail:primary]]` in the newest message: the primary model is down, the fallback answers.
+# `[[fail:all]]`: both are down. Used by the load test and the fallback tests (TASK-031).
+_FAIL = re.compile(r"\[\[fail:(primary|all)\]\]")
 _ID = re.compile(r"^[a-z][a-z0-9_]*$")
 _WORD = re.compile(r"\S+\s*")
 _USER_BLOCK = re.compile(r"<user_message>\n?(.*?)\n?</user_message>", re.DOTALL)
@@ -135,6 +140,12 @@ class FakeChatModel(BaseChatModel):
     role: str = "chat"
     token_delay_s: float = 0.0
     fixtures_dir: Path = FIXTURES_DIR
+    # Which `[[fail:...]]` markers make this instance raise a connection error, the kind of
+    # failure the real fallback chain handles. The primary fails on both, the fallback on "all".
+    fails_on: tuple[str, ...] = ()
+    # Reported in the response metadata so usage and cost are billed to this model; unset means
+    # "the role's configured model" (what the collector assumes).
+    model_name: str | None = None
 
     @property
     def _llm_type(self) -> str:
@@ -156,6 +167,10 @@ class FakeChatModel(BaseChatModel):
             (i for i, m in enumerate(messages) if isinstance(m, HumanMessage)), default=-1
         )
         newest = _text_of(messages[last_human]) if last_human >= 0 else ""
+        if (failure := _FAIL.search(newest)) and failure.group(1) in self.fails_on:
+            raise openai.APIConnectionError(
+                request=httpx2.Request("POST", "https://fake.invalid/v1/responses")
+            )
         marker = _MARKER.search(newest)
         if not marker:
             return self._plain(f"Fake reply: {newest}", input_tokens)
@@ -205,6 +220,12 @@ class FakeChatModel(BaseChatModel):
             output_tokens=_approx_tokens(text),
         )
 
+    def _response_metadata(self, plan: _Plan) -> dict[str, Any]:
+        meta: dict[str, Any] = {"finish_reason": "tool_calls" if plan.tool_calls else "stop"}
+        if self.model_name:
+            meta["model_name"] = self.model_name
+        return meta
+
     def _chunks(self, plan: _Plan) -> list[AIMessageChunk]:
         chunks = [AIMessageChunk(content=word) for word in _WORD.findall(plan.text)]
         if plan.tool_calls:
@@ -229,7 +250,7 @@ class FakeChatModel(BaseChatModel):
             content=last.content,
             tool_call_chunks=last.tool_call_chunks,
             usage_metadata=plan.usage,
-            response_metadata={"finish_reason": "tool_calls" if plan.tool_calls else "stop"},
+            response_metadata=self._response_metadata(plan),
         )
         return chunks
 
@@ -247,7 +268,7 @@ class FakeChatModel(BaseChatModel):
             content=plan.text,
             tool_calls=plan.tool_calls,
             usage_metadata=plan.usage,
-            response_metadata={"finish_reason": "tool_calls" if plan.tool_calls else "stop"},
+            response_metadata=self._response_metadata(plan),
         )
         return ChatResult(generations=[ChatGeneration(message=message)])
 

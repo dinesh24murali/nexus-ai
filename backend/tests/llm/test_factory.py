@@ -157,26 +157,32 @@ def test_unknown_role_is_rejected() -> None:
         get_model("wizard", settings=real_settings())  # type: ignore[arg-type]
 
 
+def scripted(model: object) -> FakeChatModel:
+    """The scripted model behind `model`: in fake mode the chat roles are a primary with a
+    fallback, like the real chain (TASK-031), so the first runnable is the primary."""
+    primary = model.runnable if isinstance(model, RunnableWithFallbacks) else model
+    assert isinstance(primary, FakeChatModel)
+    return primary
+
+
 @pytest.mark.parametrize("role", ROLES)
 def test_fake_mode_returns_the_scripted_model_for_every_role(role: str) -> None:
     model = get_model(role, settings=real_settings(llm_mode="fake", openai_api_key=""))  # type: ignore[arg-type]
-    assert isinstance(model, FakeChatModel)
-    assert model.role == role
+    assert scripted(model).role == role
 
 
 def test_fake_mode_applies_the_configured_delay_between_tokens() -> None:
     settings = real_settings(llm_mode="fake", openai_api_key="", llm_fake_token_delay_s=0.25)
     model = get_model("chat", settings=settings)
-    assert isinstance(model, FakeChatModel)
-    assert model.token_delay_s == 0.25
+    assert scripted(model).token_delay_s == 0.25
+    assert model.fallbacks[0].token_delay_s == 0.25  # type: ignore[attr-defined]
     default = get_model("chat", settings=real_settings(llm_mode="fake", openai_api_key=""))
-    assert isinstance(default, FakeChatModel)
-    assert default.token_delay_s == 0
+    assert scripted(default).token_delay_s == 0
 
 
 def test_fake_mode_needs_no_api_key_and_accepts_tools() -> None:
     settings = real_settings(llm_mode="fake", openai_api_key="")
-    assert isinstance(get_model("chat", tools=[lookup], settings=settings), FakeChatModel)
+    assert scripted(get_model("chat", tools=[lookup], settings=settings))
 
 
 @pytest.mark.parametrize("effort", ["minimal", "low", "medium", "high"])

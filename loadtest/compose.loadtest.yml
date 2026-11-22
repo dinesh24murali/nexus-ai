@@ -1,0 +1,23 @@
+# Overlay for the load test: the dev stack with the scripted model and no outbound tracing.
+#   docker compose -f compose.yml -f loadtest/compose.loadtest.yml up -d --build
+# (`make loadtest` does this.) Fake mode is refused in production, so this is never a prod file.
+x-load-env: &load-env
+  LLM_MODE: fake
+  # About 30 words per second per stream, close to a real model's speed, so a 20-stream run
+  # really holds 20 open connections instead of finishing each answer in a blink.
+  LLM_FAKE_TOKEN_DELAY_S: "0.03"
+  # Traces would carry the load test's fake conversations to Langfuse Cloud.
+  LANGFUSE_PUBLIC_KEY: ""
+  LANGFUSE_SECRET_KEY: ""
+  APP_ENV: development
+  # The budgets are real controls and they work: the fake model is billed like an unknown (so
+  # the dearest) model, about $0.003 a turn, and a few runs reach the global $5/day cap, after
+  # which every send is refused with BUDGET_EXCEEDED. Lifted for this overlay only.
+  USER_DAILY_BUDGET_USD: "1000"
+  GLOBAL_DAILY_BUDGET_USD: "100000"
+
+services:
+  api:
+    environment: *load-env
+  worker:
+    environment: *load-env

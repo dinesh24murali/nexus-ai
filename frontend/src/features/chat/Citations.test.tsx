@@ -99,7 +99,8 @@ describe('Citations', () => {
     }
     const { rerender } = render(<Citations citations={[web]} />)
     await user.click(screen.getByRole('button'))
-    const link = screen.getByRole('link', { name: 'Open source' })
+    // The destination is written next to the link, whatever the title says (LLM-T02, phishing).
+    const link = screen.getByRole('link', { name: 'Open source (example.com)' })
     expect(link).toHaveAttribute('href', 'https://example.com/a')
     expect(link).toHaveAttribute('rel', 'noopener noreferrer')
     expect(link).toHaveAttribute('target', '_blank')
@@ -107,6 +108,22 @@ describe('Citations', () => {
     rerender(<Citations citations={[{ ...web, index: 2, url: 'javascript:alert(1)' }]} />)
     await user.click(screen.getByRole('button', { name: /^\[2\]/ }))
     expect(screen.queryByRole('link')).not.toBeInTheDocument()
+  })
+
+  it('shows the real host, not the title, and a look-alike domain in its punycode form', async () => {
+    const user = userEvent.setup()
+    const web = {
+      index: 1,
+      source_type: 'web' as const,
+      title: 'paypal.com - sign in',
+      url: 'https://xn--pypal-4ve.com/login',
+      snippet: 's',
+    }
+    render(<Citations citations={[web]} />)
+
+    await user.click(screen.getByRole('button'))
+
+    expect(screen.getByRole('link')).toHaveTextContent('Open source (xn--pypal-4ve.com)')
   })
 
   it('never makes a file source a link, whatever url it carries', async () => {
