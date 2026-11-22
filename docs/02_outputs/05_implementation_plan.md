@@ -355,7 +355,7 @@ Starts after M6 so the v1 core ships hardened first. Every task ships with its e
 - **Acceptance criteria:**
   - [x] Component tests (`modes`, `MessageList`, `chat.test.tsx`: chip live and stored, the Regenerate rule, the menu: open, filter, keyboard, insert, Escape, no false opens)
   - [x] Playwright (fake LLM): `/pdf` produces a Document chip and Regenerate is hidden on it (`tests/e2e/commands.spec.ts`)
-  - [-] ... and a document card — **the card is TASK-042's (`DocumentCard`); deferred as D33**
+  - [x] ... and a document card — **done in TASK-042 (`DocumentCard`, `tests/e2e/documents.spec.ts`)**
 
 ### Documents & research  [012-documents-research]
 
@@ -376,16 +376,20 @@ Starts after M6 so the v1 core ships hardened first. Every task ships with its e
 - **Depends on:** TASK-041
 - **Files:** `backend/app/api/documents.py`, `frontend/src/features/documents/*`, `frontend/src/features/chat/DocumentCard.tsx`
 - **Description:** List/get/delete/download endpoints (owner-scoped, 404 on mismatch); download through a Bearer fetch → blob; `/documents` page; document card with polling.
+- **Built as:** `backend/app/api/documents.py` + `DocumentsService.delete` / `pdf_for_download`; `frontend/src/features/documents/{api.ts,DocumentCard.tsx,DocumentsPage.tsx,messages.ts,timing.ts}`; spec 1.4.1 (`listDocuments` 422, download notes); `tests/e2e/documents.spec.ts`.
 - **Acceptance criteria:**
-  - [ ] Contract tests for the new paths; IDOR test (user B gets 404 on user A's document and download)
+  - [x] Contract tests for the new paths (schemathesis: all four operations); IDOR test (user B gets 404 on user A's document, its download and its delete, and A's PDF survives: `tests/api/test_isolation.py`, mutation-checked)
+  - [x] Component tests (card: pending -> ready, failed, deleted, hostile title, live and stored without a duplicate; page: list, empty, delete confirm / cancel / error, download) and Playwright (fake LLM, real renderer): the card, a real PDF download, the page, delete, another user gets 404
 
 #### TASK-043: Deep research
 - **Depends on:** TASK-041, TASK-023
 - **Files:** `backend/app/graph/intents/deep_research.py`, `backend/prompts/{nexus.research_plan,nexus.research_report}.md`, `frontend/src/features/chat/ResearchPlanCard.tsx`, `evals/fixtures/web/`
 - **Description:** Plan (max output 1k) → `research_plan` interrupt (editable queries) → parallel approved searches (≤ 16k tokens of results) with `progress` events → report (`long_form`, max output 4k) streamed to chat, then rendered through the `last_answer` path when a PDF was asked for; worst-case pre-check against the user budget and the global cap; cancel semantics (doc 08 §2.3). Eval runner replays recorded Tavily fixtures.
+- **Built as:** `backend/app/graph/intents/deep_research.py` (five nodes), `backend/app/services/research.py`, role `research_plan`, prompts `nexus.research_plan` / `nexus.research_report` v1, `ProgressEvent`, resume validation for `research_plan`, `frontend/src/features/chat/{ResearchPlanCard,approvals}.tsx`, `backend/evals/research.py` + `evals/fixtures/web/`, `tests/e2e/research.spec.ts`. The PDF is made inside the report node (a node returns one message).
 - **Acceptance criteria:**
-  - [ ] `research.unapproved_queries = 0` and `tools.approval_enforced = 1` (absolute)
-  - [ ] `research.golden` reviewed; `ops.cost_per_research_run_usd` baseline ≤ $0.05; rt-25 passes
+  - [x] `research.unapproved_queries = 0` and `tools.approval_enforced = 1` (absolute; offline: the pipeline's code decides what is searched, so the gate is recorded now)
+  - [-] `research.golden` reviewed; `ops.cost_per_research_run_usd` baseline ≤ $0.05 — **dataset (10 / 2) and its fixtures built (AI-drafted, not real Tavily recordings), suite wired and run offline; the review, a real-model run and the baselines need a paid run: deferred (D35)**
+  - [x] rt-25 passes (offline: `res-009`, `res-010`, an obeying planner and an obeying report model are both caught by the step's tests; the real-model run is D35)
 
 #### TASK-046: M7 hardening & release
 - **Depends on:** TASK-038…043

@@ -142,11 +142,16 @@ def test_a_confidence_outside_zero_to_one_is_invalid(confidence: float) -> None:
     assert (route.source, route.reason) == ("fallback", "invalid_confidence")
 
 
+# A build that lacks a pipeline (a graph made without its service): the intent is named by the
+# router but cannot be run.
+WITHOUT_RESEARCH = PIPELINES - {"deep_research"}
+
+
 def test_an_intent_that_is_not_built_falls_back() -> None:
     route = decide(
         decision("deep_research", 0.95, topic="solid-state batteries"),
         threshold=0.7,
-        pipelines=PIPELINES,
+        pipelines=WITHOUT_RESEARCH,
         disabled=NOTHING,
     )
     assert (route.intent, route.source, route.reason) == (
@@ -241,9 +246,20 @@ def test_a_command_becomes_its_route_without_confidence() -> None:
 def test_a_command_for_a_pipeline_that_does_not_exist_falls_back() -> None:
     route = command_route(
         {"intent": "deep_research", "slots": {"topic": "batteries", "output": "chat"}},
-        pipelines=PIPELINES,
+        pipelines=WITHOUT_RESEARCH,
     )
     assert (route.source, route.reason) == ("fallback", "intent_unavailable")
+
+
+def test_research_is_a_built_pipeline() -> None:
+    route = decide(
+        decision("deep_research", 0.95, topic="solid-state batteries", output="pdf"),
+        threshold=0.7,
+        pipelines=PIPELINES,
+        disabled=NOTHING,
+    )
+    assert (route.intent, route.source) == ("deep_research", "router")
+    assert route.slots == {"topic": "solid-state batteries", "output": "pdf"}
 
 
 # -- the model call --------------------------------------------------------------------------------

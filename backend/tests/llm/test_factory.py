@@ -7,7 +7,16 @@ from langchain_core.runnables import RunnableBinding, RunnableWithFallbacks
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 
-ROLES = ["chat", "summarize", "title", "memory_extract", "judge", "router", "long_form"]
+ROLES = [
+    "chat",
+    "summarize",
+    "title",
+    "memory_extract",
+    "judge",
+    "router",
+    "long_form",
+    "research_plan",
+]
 
 
 def real_settings(**overrides: object) -> Settings:
@@ -83,6 +92,7 @@ def test_title_may_use_a_low_temperature_because_its_effort_is_none() -> None:
         ("judge", "gpt-5.5-2026-04-23", "medium", 2000, 90, 2),
         ("router", "gpt-6-luna", "none", 150, 5, 0),
         ("long_form", "gpt-6.1-terra", "medium", 4000, 120, 2),
+        ("research_plan", "gpt-6.1-terra", "low", 1000, 60, 2),
     ],
 )
 def test_role_table_matches_the_design_doc(

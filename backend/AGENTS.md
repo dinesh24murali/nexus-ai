@@ -18,13 +18,15 @@ backend/
 │   ├── api/                ← routers (thin), deps.py (auth + session factory), schemas.py,
 │   │                         chat.py (send/regenerate/cancel/history) + sse.py (typed events, framing),
 │   │                         feedback.py (PUT /messages/{id}/feedback), files.py (upload, list, get),
-│   │                         memories.py (list, add, edit, delete, clear all);
-│   │                         `Message.documents` is filled in chat.py (the /documents endpoints are TASK-042)
+│   │                         memories.py (list, add, edit, delete, clear all),
+│   │                         documents.py (list, get, delete, download: TASK-042);
+│   │                         `Message.documents` is filled in chat.py
 │   ├── services/           ← use cases and transaction boundaries (auth.py; files.py = upload checks, storage,
 │   │                         duplicate/limit, enqueue `ingest_file`; runs.py = run lease,
 │   │                         streaming, cancel, regenerate, drain, pre-run limits; usage.py = spend reads,
 │   │                         budget check, /me/usage, spend alert; feedback.py = rate an answer + Langfuse score; memories.py = the
-│   │                         memories API use cases, same policy as extraction; documents.py = the
+│   │                         memories API use cases, same policy as extraction; research.py = the `deep_research`
+│   │                         pre-check (worst case $0.043, budgets, document day limit); documents.py = the
 │   │                         `generate_document` pipeline's service: day limit, worst-case budget
 │   │                         pre-check, reads of the conversation, row + render job in one transaction)
 │   ├── jobs/               ← queue.py (Postgres SKIP LOCKED), handlers.py (registry: kind -> handler,
@@ -43,7 +45,7 @@ backend/
 │   │                         by chat, forget_confirm = the card), nodes/ (agent, load_context, summarize, approval = interrupt
 │   │                         per call that needs it, tools = the tool loop + cap), tools/ (search_my_files, web_search,
 │   │                         calculator, outcome); intents/generate_document.py (check, gather, search,
-│   │                         compose, persist)
+│   │                         compose, persist), intents/deep_research.py (check, plan, confirm, search, report)
 │   ├── documents/          ← PDF documents: draft.py (`DocumentDraft`, limits, `draft_from_answer`, material
 │   │                         for the model), markup.py (untrusted Markdown -> sanitised HTML), fetcher.py (deny-all
 │   │                         URL fetcher, counts refusals), render.py + worker_main.py (WeasyPrint in a killable
@@ -116,6 +118,13 @@ backend/
 - `generate_document` reads and writes through the injected `DocumentService` (`services/documents.py`); the user id and `assistant_message_id` come from the trusted run config. Every node that can end the turn early returns a fixed chat reply (`document_stop`) and writes nothing; `document_check` resets the per-run `document_*` state keys because the checkpoint keeps them. The model's own `sources` are discarded in code. A brief's search is the chat approval card, and the node that interrupts has no side effect before `interrupt()`
 - A PDF is built from untrusted text, so every layer is tested and mutation-checked: `markup.py` (raw HTML escaped, no images, `http(s)` links only and printed in full, `nh3` last), `fetcher.py` (one bundled stylesheet, everything else refused and counted), `render.py` (child process with a minimal environment, killed at 50 s, <= 30 pages, `.part` then rename; ADR-0011). Anything new the renderer should load goes into `documents/bundled.py::BUNDLED` and its test, never into the page
 - `render_document` is idempotent, owner-scoped (`job.user_id`), and ends in a fixed reason (`render.REASON_*`) on failure; PDFs live under the user's own directory so `purge_user` removes them. Limits are settings (`DOCUMENTS_PER_DAY` 10, `DOCUMENTS_KEEP` 100). `RunService(pipelines=...)` must list what its graph can run
+- The documents API (`api/documents.py`, TASK-042) reads and removes only: a download sends the file the worker wrote through `DocumentsService.pdf_for_download` (path resolved under `UPLOADS_DIR` by `documents/storage.py::resolve`, the same rule as `remove`), the title reaches the header only as a sanitised ASCII `filename` plus an RFC 5987 `filename*`, and a delete removes the row first and the file after the commit. One `DocumentsService` instance serves the graph and the API
+### Deep research (TASK-043)
+- `deep_research` (`graph/intents/deep_research.py`) has ONE approval, the `research_plan` card, and `research_search` reads only `research_approved`, which only `research_confirm` writes from a clear `approve` or a valid `edit`: that is the whole of LLM-T20's control (`research.unapproved_queries` = 0). Never let a model or a search result add a query; never give the planner anything but the topic and the date (tests assert the planner prompt holds no thread text). `research_confirm` is a node of its own so the planner is not called again on resume, and nothing before its `interrupt()` has a side effect
+- The report node streams (`RunService` takes tokens from the `agent` and `research_report` nodes only: a new streaming node must be added to `_ANSWER_NODES`). A node returns one message, so the PDF line is part of the report message. Searches are `tool_start`/`tool_end` events so the cancelled message lists them. Web results reach prompts only as escaped numbered `<web_result>` blocks
+- A new resume value for an approval is validated in `RunService._resume_value` (422, the approval stays pending) AND again in the pipeline (fail closed). Research limits are constants in `deep_research.py` (6 queries, 400 characters, 16k tokens of results); the cost check is `services/research.py`, sharing `budget_refusal` with documents
+- Research tests need no mocks of Postgres: `tests/graph/test_deep_research.py` (fake models, a query-recording searcher), `tests/services/test_research_service.py`, `tests/api/test_chat_research.py` (HTTP, real checkpointer), `tests/evals/test_research_step.py`
+
 - Document tests need no mocks: the real renderer runs in the unit tests (about one second each) and the service and job tests use the real Postgres
 
 ### Limits and moderation

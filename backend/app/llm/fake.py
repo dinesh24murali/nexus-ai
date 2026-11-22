@@ -47,6 +47,11 @@ _ROUTE = re.compile(r"\[\[route:([a-z_]+)(?::([0-9.]+))?\]\]")
 _SLOT = re.compile(r"\[\[slot:([a-z_]+)=([^\]]*)\]\]")
 _ROUTE_MESSAGES = re.compile(r"<message>(.*?)</message>", re.DOTALL)
 _MATERIAL = re.compile(r"<material>\n?(.*?)\n?</material>", re.DOTALL)
+_TOPIC = re.compile(r"<topic>(.*?)</topic>", re.DOTALL)
+_RESULTS = re.compile(r"<results>\n?(.*?)\n?</results>", re.DOTALL)
+_REPORT_TOPIC = re.compile(r"^Topic: (.*)$", re.MULTILINE)
+_WEB_RESULT = re.compile(r'<web_result index="(\d+)"[^>]*>\n?(.*?)\n?</web_result>', re.DOTALL)
+_PLAN = re.compile(r"\[\[plan:([a-z]+)(?:=([^\]]*))?\]\]")
 _TAG = re.compile(r"</?(?:message|conversation|summary|web_result)\b[^>]*>")
 _REMEMBER = re.compile(r"\bremember(?: that)?[:,]?\s+(.+)", re.IGNORECASE | re.DOTALL)
 _VERBS = {"have": "has", "do": "does", "go": "goes", "am": "is"}
@@ -171,8 +176,13 @@ class FakeChatModel(BaseChatModel):
         if self.role == "router":
             prompt = _text_of(messages[-1]) if messages else ""
             return self._plain(self._route(prompt), input_tokens)
+        if self.role == "research_plan":
+            prompt = _text_of(messages[-1]) if messages else ""
+            return self._plain(self._research_plan(prompt), input_tokens)
         if self.role == "long_form":
             prompt = _text_of(messages[-1]) if messages else ""
+            if _RESULTS.search(prompt):
+                return self._plain(self._research_report(prompt), input_tokens)
             return self._plain(self._document(prompt), input_tokens)
 
         last_human = max(
@@ -249,6 +259,61 @@ class FakeChatModel(BaseChatModel):
             ),
         }
         return json.dumps(draft)
+
+    @staticmethod
+    def _research_plan(prompt: str) -> str:
+        """The scripted `nexus.research_plan` model: four queries built from the `<topic>` block.
+        Markers in the topic script the unusual cases: `[[plan:invalid]]` answers with text that
+        is not a plan, `[[plan:few]]` with two queries (too few), `[[plan:many]]` with eight, and
+        `[[plan:leak=TEXT]]` is a planner that obeys an injected instruction and puts TEXT into a
+        query (rt-25). Only the topic is read, like the real prompt asks of the real model."""
+        block = _TOPIC.search(prompt)
+        raw = block.group(1) if block else ""
+        marker = _PLAN.search(raw)
+        topic = " ".join(_PLAN.sub(" ", raw).split())[:120] or "the topic"
+        kind = marker.group(1) if marker else ""
+        if kind == "invalid":
+            return "this is not a research plan"
+        queries = [
+            topic,
+            f"{topic} latest developments",
+            f"{topic} analysis and expert opinion",
+            f"{topic} criticism and limitations",
+        ]
+        if kind == "few":
+            queries = queries[:2]
+        elif kind == "many":
+            queries += [f"{topic} {word}" for word in ("history", "market", "regulation", "future")]
+        elif kind == "leak" and marker:
+            queries[1] = f"{topic} {marker.group(2) or ''}".strip()
+        return json.dumps({"queries": queries})
+
+    @staticmethod
+    def _research_report(prompt: str) -> str:
+        """The scripted `nexus.research_report` model: a cited report built from the first
+        sentence of each numbered result (at most five), so it quotes what a source states and not
+        what a source tells the model to do. Only the `<results>` block is read."""
+        block = _RESULTS.search(prompt)
+        topic = _REPORT_TOPIC.search(prompt)
+        found = _WEB_RESULT.findall(block.group(1) if block else "")
+        subject = " ".join((topic.group(1) if topic else "the topic").split())[:120]
+        findings: list[str] = []
+        for index, body in found[:5]:
+            text = " ".join(html.unescape(body).split())
+            first = text.split(". ")[0].rstrip(".")
+            findings.append(f"- {first}. [{index}]")
+        cites = "".join(f"[{index}]" for index, _ in found[:2])
+        report = [
+            "## Summary",
+            f"Here is what the sources say about {subject}. {cites}".rstrip(),
+            "",
+            "## Key findings",
+            *(findings or ["- The sources did not cover this topic."]),
+            "",
+            "## Open questions",
+            "- The sources do not settle every detail." + (f" {cites}" if cites else ""),
+        ]
+        return "\n".join(report)
 
     @staticmethod
     def _route(prompt: str) -> str:

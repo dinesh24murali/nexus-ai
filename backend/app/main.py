@@ -9,7 +9,7 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
-from app.api import auth, chat, conversations, feedback, files, health, me, memories
+from app.api import auth, chat, conversations, documents, feedback, files, health, me, memories
 from app.core.config import Settings, get_settings
 from app.core.errors import register_exception_handlers
 from app.core.health import default_checks
@@ -27,6 +27,7 @@ from app.services.documents import DocumentsService
 from app.services.feedback import FeedbackService
 from app.services.files import FileService, recent_files_for
 from app.services.memories import MemoryService
+from app.services.research import ResearchService
 from app.services.runs import DRAIN_TIMEOUT_S, RunService, graph_factory_for
 
 _log = structlog.get_logger("nexus.app")
@@ -68,6 +69,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await pool.open()
         tracer = Tracer(settings)
         embedder = lazy_embedder(settings)  # shared by the memory lookup and the memories API
+        # One instance for the document pipeline and the documents API: it holds only the session
+        # factory and the settings.
+        documents_service = DocumentsService(app.state.session_factory, settings)
         runs = RunService(
             factory=app.state.session_factory,
             settings=settings,
@@ -78,13 +82,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 recent_files=recent_files_for(app.state.session_factory),
                 memories=memory_lookup_for(app.state.session_factory, settings, embedder),
                 memory_manager=memory_manager_for(app.state.session_factory, settings, embedder),
-                document_service=DocumentsService(app.state.session_factory, settings),
+                document_service=documents_service,
+                research_service=ResearchService(app.state.session_factory, settings),
             ),
             flags=app.state.flags,
             tracer=tracer,
         )
         app.state.runs = runs
         app.state.feedback = FeedbackService(app.state.session_factory, tracer)
+        app.state.documents = documents_service
         app.state.files = FileService(app.state.session_factory, settings)
         app.state.memories = MemoryService(app.state.session_factory, settings, embedder)
         restore_sigterm = chain_sigterm(runs.begin_drain)  # refuse new runs from the first moment
@@ -121,6 +127,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     api.include_router(chat.router)
     api.include_router(feedback.router)
     api.include_router(files.router)
+    api.include_router(documents.router)
     api.include_router(memories.router)
     app.include_router(api)
     return app

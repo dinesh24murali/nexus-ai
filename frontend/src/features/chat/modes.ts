@@ -31,6 +31,30 @@ export function canRegenerate(message: Pick<Message, 'intent' | 'route_source'>)
   return !(intent === null && message.route_source === 'command')
 }
 
+/** What a `progress` event said about the pipeline that is running (research, documents). */
+export type ProgressInfo = {
+  stage: 'planning' | 'searching' | 'writing' | 'rendering'
+  done?: number | null
+  total?: number | null
+}
+
+/** The words for a stage, shown where "Thinking…" would be until the answer starts streaming. */
+export function progressText(progress: ProgressInfo | null): string | null {
+  if (!progress) return null
+  switch (progress.stage) {
+    case 'planning':
+      return 'Planning the research…'
+    case 'searching':
+      return progress.total
+        ? `Searching the web: ${progress.done ?? 0} of ${progress.total} done…`
+        : 'Searching the web…'
+    case 'writing':
+      return 'Writing the report…'
+    case 'rendering':
+      return 'Preparing the PDF…'
+  }
+}
+
 export type SlashCommand = {
   /** Shown in the menu. */
   name: string

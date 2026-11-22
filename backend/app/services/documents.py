@@ -7,21 +7,29 @@ a run against the user's remaining budget and the global cap (doc 08 section 2.5
 the run's trusted user id; nothing a user wrote is logged.
 """
 
+import asyncio
 import uuid
 from datetime import UTC, datetime, time
 from decimal import ROUND_UP, Decimal
+from pathlib import Path
 
+import structlog
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import Settings
+from app.core.errors import ApiError
+from app.db.models import Document
 from app.db.repositories import conversations, files, messages
 from app.db.repositories import documents as documents_repo
 from app.db.repositories import usage as usage_repo
+from app.documents import storage
 from app.documents.draft import DocumentDraft
 from app.graph.intents.generate_document import DocumentRef, LastAnswer
 from app.jobs import queue
 from app.jobs.handlers import JOBS
 from app.llm.pricing import price_for
+
+_log = structlog.get_logger("nexus.documents")
 
 Factory = async_sessionmaker[AsyncSession]
 
@@ -49,21 +57,53 @@ def day_limit_reply(limit: int) -> str:
     )
 
 
-def user_budget_reply(worst: Decimal, remaining: Decimal) -> str:
+def user_budget_reply(worst: Decimal, remaining: Decimal, what: str = "a document") -> str:
     return (
-        f"I can't start a document right now: it could cost up to ${worst:.2f} and you have "
+        f"I can't start {what} right now: it could cost up to ${worst:.2f} and you have "
         f"${max(remaining, Decimal(0)):.2f} left of today's budget. It resets at midnight UTC."
     )
 
 
-GLOBAL_BUDGET_REPLY = (
-    "I can't start a document right now: the service's daily budget is almost used up. "
-    "Please try again tomorrow."
-)
+def global_budget_reply(what: str = "a document") -> str:
+    return (
+        f"I can't start {what} right now: the service's daily budget is almost used up. "
+        "Please try again tomorrow."
+    )
+
+
+GLOBAL_BUDGET_REPLY = global_budget_reply()
+
+
+async def budget_refusal(
+    session: AsyncSession,
+    settings: Settings,
+    user_id: uuid.UUID,
+    worst: Decimal,
+    *,
+    what: str = "a document",
+) -> str | None:
+    """None when a run that could cost up to `worst` fits both the user's remaining budget and the
+    global cap, else the reply that refuses it (doc 08 section 2.5). Shared by documents and
+    research: a run that has started is never stopped for budget reasons, so this is the check."""
+    day = datetime.now(UTC).date()
+    row = await usage_repo.get_day(session, user_id, day)
+    mine = row.cost_usd if row is not None else Decimal(0)
+    total = await usage_repo.global_cost(session, day)
+    remaining = settings.user_daily_budget_usd - mine
+    if remaining < worst:
+        return user_budget_reply(worst, remaining, what)
+    if settings.global_daily_budget_usd - total < worst:
+        return global_budget_reply(what)
+    return None
 
 
 def _day_start(now: datetime) -> datetime:
     return datetime.combine(now.astimezone(UTC).date(), time.min, tzinfo=UTC)
+
+
+def _not_found() -> ApiError:
+    # One answer for an unknown id, a malformed one and another user's document (never a 403).
+    return ApiError(404, "NOT_FOUND", "Document not found.")
 
 
 class DocumentsService:
@@ -80,17 +120,9 @@ class DocumentsService:
                 return day_limit_reply(self._settings.documents_per_day)
             if kind == "answer":
                 return None  # no model call: about $0, nothing to reserve
-            day = now.astimezone(UTC).date()
-            row = await usage_repo.get_day(session, user_id, day)
-            mine = row.cost_usd if row is not None else Decimal(0)
-            total = await usage_repo.global_cost(session, day)
-        worst = worst_case_usd(self._settings)
-        remaining = self._settings.user_daily_budget_usd - mine
-        if remaining < worst:
-            return user_budget_reply(worst, remaining)
-        if self._settings.global_daily_budget_usd - total < worst:
-            return GLOBAL_BUDGET_REPLY
-        return None
+            return await budget_refusal(
+                session, self._settings, user_id, worst_case_usd(self._settings)
+            )
 
     async def last_answer(
         self, user_id: uuid.UUID, conversation_id: uuid.UUID
@@ -155,3 +187,47 @@ class DocumentsService:
             message_id=row.message_id,
             created_at=row.created_at,
         )
+
+    # ----- the documents API (TASK-042): every call is scoped to the caller's own rows -----
+
+    async def delete(self, user_id: uuid.UUID, document_id: uuid.UUID) -> None:
+        """Remove a document and its PDF. The row goes first: a render that is still running then
+        finds no row to mark ready and removes the file it wrote (`render_document`). The file goes
+        after the commit; if that fails the PDF is an orphan no query can reach, so it is logged,
+        not raised (the same order as `FileService.delete`)."""
+        async with self._factory() as session, session.begin():
+            found, relative = await documents_repo.delete(session, user_id, document_id)
+        if not found:
+            raise _not_found()
+        try:
+            await asyncio.to_thread(storage.remove, self._settings.uploads_dir, relative)
+        except OSError:
+            _log.warning("document_delete_disk_failed", document_id=str(document_id), exc_info=True)
+        _log.info("document_deleted", document_id=str(document_id))
+
+    async def pdf_for_download(
+        self, user_id: uuid.UUID, document_id: uuid.UUID
+    ) -> tuple[Document, Path]:
+        """The caller's rendered document and where its PDF is. 404 for an unknown or foreign id
+        and for a `ready` row whose file is gone (waiting would not help); 409 while it is still
+        being made or when the render failed."""
+        async with self._factory() as session:
+            row = await documents_repo.get(session, user_id, document_id)
+        if row is None:
+            raise _not_found()
+        if row.status != "ready":
+            message = (
+                "This document could not be made, so there is no PDF."
+                if row.status == "failed"
+                else "The PDF is still being prepared."
+            )
+            raise ApiError(409, "DOCUMENT_NOT_READY", message)
+        path = await asyncio.to_thread(self._existing_pdf, row.storage_path)
+        if path is None:
+            _log.warning("document_file_missing", document_id=str(document_id))
+            raise _not_found()
+        return row, path
+
+    def _existing_pdf(self, relative: str | None) -> Path | None:
+        path = storage.resolve(self._settings.uploads_dir, relative)
+        return path if path is not None and path.is_file() else None

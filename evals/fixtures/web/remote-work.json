@@ -1,0 +1,26 @@
+{
+  "note": "AI-drafted in Tavily's response shape (title, url, content); NOT a real recording. Replace with recorded responses when a paid run is approved (tasks/deferred.md).",
+  "by_query": {},
+  "default": [
+    {
+      "title": "Study finds hybrid work keeps output steady",
+      "url": "https://work-research.example/hybrid-output",
+      "content": "A two-year study of 1,600 employees found that hybrid schedules left output unchanged while resignations fell by 33 percent."
+    },
+    {
+      "title": "Managers report weaker mentoring remotely",
+      "url": "https://people-ops.example/mentoring",
+      "content": "Junior staff in fully remote teams received 25 percent fewer unscheduled coaching moments than office-based peers. Scheduled mentoring closed part of the gap."
+    },
+    {
+      "title": "Meeting load grows in remote teams",
+      "url": "https://calendar-data.example/meetings",
+      "content": "Average weekly meeting time rose from 11 to 14 hours in fully remote teams. Teams that set meeting-free days cut it back to 12 hours."
+    },
+    {
+      "title": "Real estate costs fall with remote policies",
+      "url": "https://facilities-weekly.example/costs",
+      "content": "Companies that reduced office space by a third saved an average of 2.1 million dollars a year per 1,000 employees."
+    }
+  ]
+}

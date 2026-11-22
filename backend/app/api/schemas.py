@@ -329,6 +329,11 @@ class DocumentOut(BaseModel):
         )
 
 
+class DocumentPage(BaseModel):
+    items: list[DocumentOut]
+    next_cursor: str | None
+
+
 class MessageUsageOut(BaseModel):
     model: str | None
     prompt_tokens: int

@@ -1,7 +1,7 @@
 openapi: "3.1.0"
 info:
   title: Nexus AI API
-  version: "1.4.0"
+  version: "1.4.1"
   description: |
     REST + Server-Sent Events API for Nexus AI, a self-hostable ChatGPT-style assistant.
 
@@ -22,6 +22,8 @@ info:
     * v1.3.3: `sendMessage` `400` can be `MODERATION_FLAGGED` (input refused by moderation; the message is not stored).
     * v1.4.0: `Message.route_source` (how the pipeline was chosen; with `intent` it tells the client whether an answer can
       be regenerated).
+    * v1.4.1: `listDocuments` documents `422` (out-of-range `limit`), which v1.3.1 missed for this list; `downloadDocument`
+      describes its headers and its `409 DOCUMENT_NOT_READY` / `404` rules (TASK-042).
 servers:
   - url: http://localhost:8000/api/v1
     description: Local development
@@ -509,6 +511,7 @@ paths:
               schema: { $ref: "#/components/schemas/DocumentPage" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "422": { $ref: "#/components/responses/ValidationError" }
         "500": { $ref: "#/components/responses/InternalError" }
 
   /documents/{documentId}:
@@ -544,6 +547,11 @@ paths:
       tags: [documents]
       operationId: downloadDocument
       summary: Download the PDF (the client fetches it with the Bearer token and saves the blob)
+      description: |
+        Sent with `Content-Disposition: attachment` (a safe ASCII `filename` from the title, the full title as
+        `filename*`), `Cache-Control: private, no-store` and `X-Content-Type-Options: nosniff`. `409 DOCUMENT_NOT_READY`
+        while the PDF is still being made or when the render failed; `404` for an unknown or another user's document,
+        and for a ready document whose file is gone.
       responses:
         "200":
           description: PDF file, sent with `Content-Disposition attachment`

@@ -1,58 +1,26 @@
 import { Brain, Globe } from 'lucide-react'
-import { useEffect, useId, useState, type FormEvent } from 'react'
-import type { components } from '../../api/schema'
+import { useId, useState, type FormEvent } from 'react'
 import { Button } from '../../components/ui/Button'
 import { Field } from '../../components/ui/Field'
+import { useExpired, type CardProps, type Decision, type PendingInterrupt } from './approvals'
+import { ResearchPlanCard } from './ResearchPlanCard'
 
-export type PendingInterrupt = components['schemas']['PendingInterrupt']
+export type { Decision, PendingInterrupt }
 
-/**
- * What the user decided. `edit` carries the replacement query (web search); `approve` carries the
- * chosen memory when the card is about forgetting one.
- */
-export type Decision =
-  | { decision: 'approve'; memoryId?: string }
-  | { decision: 'reject' }
-  | { decision: 'edit'; query: string }
-
-type Props = {
-  interrupt: PendingInterrupt
-  onDecide: (decision: Decision) => void
-  /** A decision is on its way: the buttons wait, so one click cannot be sent twice. */
-  busy?: boolean
-  /** The clock, so tests can fix the time. */
-  now?: () => number
-}
+type Props = CardProps
 
 const MAX_QUERY = 400 // the API's limit for an edited query
-const MAX_TIMER_MS = 2 ** 31 - 1 // setTimeout overflows above this
-
-/**
- * True once `expiresAt` has passed, flipping at that moment without a reload. A timer cannot wait
- * longer than `MAX_TIMER_MS`, so a far deadline is waited for in several steps.
- */
-function useExpired(expiresAt: string, now: () => number): boolean {
-  const deadline = new Date(expiresAt).getTime()
-  const [current, setCurrent] = useState(now)
-  const expired = !(deadline > current)
-  useEffect(() => {
-    if (expired) return
-    const timer = window.setTimeout(
-      () => setCurrent(now()),
-      Math.min(deadline - now() + 1, MAX_TIMER_MS),
-    )
-    return () => clearTimeout(timer)
-  }, [deadline, now, expired, current])
-  return expired
-}
 
 /** The run is waiting for you. Which card to show depends on what it wants to do. */
 export function ApprovalCard(props: Props) {
-  return props.interrupt.tool === 'forget_memory' ? (
-    <ForgetMemoryCard {...props} />
-  ) : (
-    <ToolApprovalCard {...props} />
-  )
+  switch (props.interrupt.tool) {
+    case 'forget_memory':
+      return <ForgetMemoryCard {...props} />
+    case 'research_plan':
+      return <ResearchPlanCard {...props} />
+    default:
+      return <ToolApprovalCard {...props} />
+  }
 }
 
 type Candidate = { memoryId: string; content: string }

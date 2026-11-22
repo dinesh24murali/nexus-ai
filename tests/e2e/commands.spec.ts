@@ -6,8 +6,8 @@ import { registerViaApi, type Account } from "./support/api";
  * worker must run with LLM_MODE=fake (docs/02_outputs/06_dev_setup.md): `/pdf` then runs the
  * document pipeline with the scripted model and the real renderer.
  *
- * The document CARD (download, status polling) is TASK-042: here a `/pdf` answer shows its chip and
- * has no Regenerate.
+ * Here a `/pdf` answer shows its chip and has no Regenerate; the document CARD (status polling,
+ * download) and the /documents page are covered by documents.spec.ts (TASK-042).
  */
 
 const box = (page: Page) => page.getByRole("textbox", { name: "Message" });

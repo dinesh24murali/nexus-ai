@@ -67,6 +67,17 @@ class ChatState(TypedDict):
     document_sources: NotRequired[list[Citation]]
     document_draft: NotRequired[dict[str, Any] | None]
     document_kind: NotRequired[str | None]
+    # `deep_research` (TASK-043). All of them are reset by `research_check` at the start of every
+    # research turn (the checkpoint keeps them). `research_stop`: a node ended the turn early with
+    # a reply; `research_queries`: the planner's queries, shown to the user; `research_approved`:
+    # what the user approved (the ONLY queries that are searched); `research_material`: the numbered
+    # `<web_result>` blocks the report is written from (data, not instructions);
+    # `research_sources`: the same results as numbered citations.
+    research_stop: NotRequired[bool]
+    research_queries: NotRequired[list[str]]
+    research_approved: NotRequired[list[str]]
+    research_material: NotRequired[str]
+    research_sources: NotRequired[list[Citation]]
 
 
 class RecentFile(TypedDict):

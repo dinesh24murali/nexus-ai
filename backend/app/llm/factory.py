@@ -27,7 +27,16 @@ from app.llm.fake import (
     FakeWebSearcher,
 )
 
-Role = Literal["chat", "summarize", "title", "memory_extract", "judge", "router", "long_form"]
+Role = Literal[
+    "chat",
+    "summarize",
+    "title",
+    "memory_extract",
+    "judge",
+    "router",
+    "long_form",
+    "research_plan",
+]
 ROLES: tuple[str, ...] = get_args(Role)
 
 # Errors worth trying the fallback model for: the primary is slow or down. Client errors (4xx) are
@@ -75,6 +84,17 @@ def _spec(role: str, s: Settings) -> _Spec:
         case "router":
             # Any failure routes to general_chat, so a retry or a fallback only adds latency.
             return _Spec(s.llm_router_model, "none", 150, 5, 0)
+        case "research_plan":
+            # The chat model at the chat effort, with a small output limit (doc 08 section 3): a
+            # plan is a short list of queries. One role of its own so the limit is not the chat's.
+            return _Spec(
+                s.llm_chat_model,
+                s.llm_chat_reasoning_effort,
+                1000,
+                60,
+                retries,
+                fallback_model=s.llm_fallback_model,
+            )
         case "long_form":
             return _Spec(
                 s.llm_long_form_model,

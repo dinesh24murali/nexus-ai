@@ -183,9 +183,10 @@ describe('ApprovalCard', () => {
   })
 
   it('does not know how to ask about other tools yet, and says so', async () => {
+    // A tool this build has never heard of (a newer server): it can only be rejected.
     const { onDecide, user } = setup({
-      tool: 'research_plan',
-      args: { topic: 'x', queries: ['a'] },
+      tool: 'calendar_event' as PendingInterrupt['tool'],
+      args: { title: 'x' },
     })
 
     expect(screen.getByText(/can't be shown here yet/i)).toBeInTheDocument()

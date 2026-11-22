@@ -49,6 +49,7 @@ from evals.datasets import (
     PerfCase,
     RagCase,
     RedTeamCase,
+    ResearchCase,
     RouterCase,
     SummaryCase,
     ToolsCase,
@@ -105,6 +106,10 @@ METRIC_KEYS = (
     "documents.external_fetches",
     "documents.fact_coverage",
     "ops.cost_per_document_run_usd",
+    "research.unapproved_queries",
+    "research.citation_validity",
+    "research.fact_coverage",
+    "ops.cost_per_research_run_usd",
 )
 SUITE_DATASETS = (
     "chat.golden",
@@ -117,6 +122,7 @@ SUITE_DATASETS = (
     "memory.e2e",
     "router.intents",
     "documents.golden",
+    "research.golden",
 )
 # The metrics each dataset can produce: a metric is "not measured" only if a dataset that should
 # have produced it ran. (`rag.golden` runs only when a RAG environment is given.)
@@ -150,6 +156,14 @@ METRICS_OF: dict[str, tuple[str, ...]] = {
         "documents.external_fetches",
         "documents.fact_coverage",
         "ops.cost_per_document_run_usd",
+    ),
+    "research.golden": (
+        "research.unapproved_queries",
+        "research.citation_validity",
+        "research.fact_coverage",
+        "ops.cost_per_research_run_usd",
+        "tools.approval_enforced",
+        "documents.external_fetches",
     ),
 }
 
@@ -432,6 +446,12 @@ def _metrics(
     values["ops.cost_per_document_run_usd"] = scores.mean("ops.cost_per_document_run_usd")
     # A count, not a mean: one request for a resource outside the bundle anywhere must show.
     values["documents.external_fetches"] = scores.total("documents.external_fetches")
+    # Research: a COUNT of queries that were searched without being approved (one anywhere must
+    # show), and means for the rest.
+    values["research.unapproved_queries"] = scores.total("research.unapproved_queries")
+    values["research.citation_validity"] = scores.mean("research.citation_validity")
+    values["research.fact_coverage"] = scores.mean("research.fact_coverage")
+    values["ops.cost_per_research_run_usd"] = scores.mean("ops.cost_per_research_run_usd")
     if not redteam_complete:  # a gate over part of the attacks would pass for the wrong reason
         for key in _REDTEAM_GATED:
             values[key] = None
@@ -474,6 +494,7 @@ async def run_suite(
     router_model: Runnable[Any, Any] | None = None,
     memory_e2e: Any = None,
     documents_model: Runnable[Any, Any] | None = None,
+    research_models: tuple[Runnable[Any, Any], Runnable[Any, Any]] | None = None,
 ) -> Report:
     n = runs if runs is not None else RUNS_PER_CASE[suite]
     smoke_only = suite == "smoke"
@@ -487,6 +508,7 @@ async def run_suite(
         and (name != "router.intents" or router_model is not None)
         and (name != "memory.e2e" or memory_e2e is not None)
         and (name != "documents.golden" or documents_model is not None)
+        and (name != "research.golden" or research_models is not None)
     ]
     chat = load_dataset("chat.golden", ChatCase, smoke_only=smoke_only, directory=datasets_dir)
     perf = load_dataset("perf.latency", PerfCase, smoke_only=smoke_only, directory=datasets_dir)
@@ -528,6 +550,11 @@ async def run_suite(
     if documents_model is not None:
         loaded["documents.golden"] = load_dataset(
             "documents.golden", DocumentCase, smoke_only=smoke_only, directory=datasets_dir
+        )
+
+    if research_models is not None:
+        loaded["research.golden"] = load_dataset(
+            "research.golden", ResearchCase, smoke_only=smoke_only, directory=datasets_dir
         )
 
     started = time.perf_counter()
@@ -598,6 +625,16 @@ async def run_suite(
         document_cases = loaded["documents.golden"]
         steps["documents.golden"] = lambda: run_documents_golden(
             state, document_cases, model=documents_model
+        )
+    if research_models is not None:
+        from evals.research import run_research_golden  # here: evals.research imports this module
+
+        research_cases = loaded["research.golden"]
+        steps["research.golden"] = lambda: run_research_golden(
+            state,
+            research_cases,
+            plan_model=research_models[0],
+            report_model=research_models[1],
         )
     # rag.golden before perf.latency: latency runs last, with nothing else using the API.
     order = [n for n in selected if n != "perf.latency"] + [
@@ -687,6 +724,8 @@ def _input_of(case: Any) -> Any:
         return case.turns_a
     if isinstance(case, DocumentCase):
         return case.setup.model_dump() | {"source": case.source, "topic": case.topic}
+    if isinstance(case, ResearchCase):
+        return {"topic": case.topic, "output": case.output, "web_fixture": case.web_fixture}
     return case.input
 
 
@@ -794,6 +833,11 @@ async def main_async(args: argparse.Namespace) -> int:
         if not args.no_documents and (not args.dataset or "documents.golden" in args.dataset)
         else None
     )
+    research_models = (
+        (get_model("research_plan", settings=settings), get_model("long_form", settings=settings))
+        if not args.no_research and (not args.dataset or "research.golden" in args.dataset)
+        else None
+    )
     tracer = None if fake or args.no_langfuse else Tracer(settings)
     run_name = f"{args.suite}-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}"
     logger = EvalLogger(
@@ -815,6 +859,7 @@ async def main_async(args: argparse.Namespace) -> int:
             router_model=router_model,
             memory_e2e=memory_e2e,
             documents_model=documents_model,
+            research_models=research_models,
         )
     except DatasetError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -852,6 +897,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--no-documents",
         action="store_true",
         help="skip documents.golden (it renders PDFs with WeasyPrint: no services, but CPU time)",
+    )
+    parser.add_argument(
+        "--no-research",
+        action="store_true",
+        help="skip research.golden (it replays web fixtures and renders PDFs: no services)",
     )
     parser.add_argument(
         "--no-rag",

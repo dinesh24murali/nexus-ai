@@ -24,10 +24,12 @@ frontend/
 │   ├── components/               ← app components (ThemeToggle, Toasts + toast-context, sidebar/: ConversationNav, ConversationList, ConversationItem)
 │   ├── features/                 ← feature folders (conversations/ = TanStack Query hooks; chat/ = ChatView, useChatRun,
 │   │                               MessageList, Composer, Feedback (thumbs), Markdown + CodeBlock + highlight (Shiki), notices, UsageMeter,
-│   │                               ApprovalCard (web-search approve / edit / reject);
+│   │                               ApprovalCard (web-search approve / edit / reject; routes to ResearchPlanCard and the forget card) + approvals.ts (shared types, `useExpired`);
 │   │                               ModeChip + modes.ts (which pipeline answered, the Regenerate rule, the command list),
 │   │                               SlashMenu (the `/` menu in the Composer);
 │   │                               ToolCard + toolCalls.ts (tool call cards, live and stored);
+│   │                               documents/ = DocumentCard (under the answer that made a PDF), DocumentsPage, api.ts hooks
+│   │                               (list, one, delete, download), messages.ts, timing.ts (poll interval);
 │   │                               Citations (chips + snippet popover); files/ = FilesPage, uploads, chips, paperclip;
 │   │                               settings/ = Memory (Settings → Memory page), memories.ts hooks, useMemoryWatch (toast))
 │   ├── styles/tokens.css, theme.css   ← design tokens + Tailwind 4 @theme (docs/02_outputs/07)
@@ -60,8 +62,21 @@ frontend/
 - `route_selected` is kept in `useChatRun` state (`route`) so the live answer shows its chip before the stored message arrives; the stored message has `intent` and `route_source`. Only the pipelines that differ from chat get a chip (`modes.ts::modeLabel`: Memory, Document, Research); a plain chat answer has none. The chip is text with an `sr-only` "Answered by:" prefix
 - **Regenerate follows the API's rule** (`modes.ts::canRegenerate`, the same as `runs.py::_regenerable`): only an answer with no intent or `general_chat`, and not a static reply (`intent` null with `route_source` `command`: `/help`, usage messages). A failed chat answer still gets Retry. Change both together
 - The `/` menu (`SlashMenu`, driven from `Composer`) opens only while the draft is ONE `/word` at the start, so `and/or` and `/etc/hosts` never open it; it only inserts text (the backend parses the command). The textarea keeps focus and points at the highlighted row with `aria-activedescendant`; Enter completes the highlighted command unless the box already holds exactly that command (then it sends), Tab completes, Escape closes until the draft changes, and nothing opens while a run is live. The list is `modes.ts::COMMANDS` (doc 08 section 2.6): a new command is added there
-- Not built yet (TASK-042): the document card (status polling, download) and the `/documents` page; `document_created` and `progress` events are known to `api/stream.ts` and ignored. Until the card exists a `/pdf` answer only says the PDF is being prepared
+- `progress` and `document_created` are handled: see Research plan and Documents below
 - `tests/e2e/commands.spec.ts` needs `LLM_MODE=fake` on api AND worker
+
+### Research plan (TASK-043)
+- `ResearchPlanCard` (`ApprovalCard` routes `tool: 'research_plan'` to it): the topic and the exact queries as text, **Approve and search** / **Edit** / **Don't search**. Editing is a form of one text field per query (at most 6, at least 1, each <= 400 characters, add and remove, blanks are dropped); unchanged queries send a plain approve, changed ones `{decision: 'edit', queries}` which `useChatRun.decide` posts as `edited_args.queries` (the API refuses anything else with 422 and the card stays). Nothing is searched before the answer and nothing else will be: the card says so. An expired plan shows "expired" and no buttons; a plan it cannot read can only be rejected. Like every approval it is read from the conversation (`pending_interrupt`), so it survives a reload
+- `Decision` / `PendingInterrupt` / `useExpired` live in `approvals.ts` (the cards import them there; `ApprovalCard.tsx` re-exports the types)
+- `useChatRun.progress` keeps the last `progress` event and `modes.ts::progressText` turns it into "Planning the research…", "Searching the web: 2 of 4 done…", "Writing the report…", "Preparing the PDF…" where "Thinking…" would be, until the answer starts streaming. The searches are ordinary tool cards, the report an ordinary answer with citation chips and (for a PDF) the document card; the mode chip says Research and Regenerate is hidden (`canRegenerate`)
+- `tests/e2e/research.spec.ts` needs `LLM_MODE=fake` on api AND worker (planner, report and web search are scripted offline; the PDF is made by the real renderer). In the composer the `/` menu completes `/research` first: a bare `/research` needs a second Enter to send
+
+### Documents (TASK-042)
+- `features/documents/`: `api.ts` (`useDocuments` polls every 2 s only while one is `pending`; `useDocument(initial)` seeds a card from the message and polls until the render ends, a 404 is not retried and means "deleted"; `useDeleteDocument`; `useDownloadDocument`), `DocumentCard` (+ `DocumentCards`), `DocumentsPage` (`/documents`: list, status, Download, inline-confirm delete, link to the chat; sidebar link), `messages.ts` (kind labels, size, `fileNameFor`), `timing.ts` (`POLL_MS`, shrunk in tests with `vi.mock('./timing')`)
+- The card is under the answer, live from `document_created` (`useChatRun.documents`; it yields to the stored message with the text, and the stored `message.documents` use the same query key, so it never shows twice and never flickers) and stored from `Message.documents`, which is only a snapshot: the card re-reads `GET /documents/{id}` while pending. The title is model-written: it is rendered as text only
+- **Download = `manager.fetch` (Bearer, one refresh retry) -> `Blob` -> `URL.createObjectURL` -> a hidden `<a download>` click -> revoke.** No token in a URL, no new CSP entry (a `blob:` download is not a fetch: `tests/e2e/documents.spec.ts` proves it in the real browser). The file name is `fileNameFor(title)` (the server sends the same kind of name in its header)
+- A card has no `role="status"` (pages keep one `status`: the running tool call); the progress text is plain text inside the `role="log"` region. Tests: jsdom has no object URLs, so `documents.test.tsx` stubs `URL.createObjectURL` and the anchor's `click`; read a jsdom `Blob` with `FileReader`, not `Response`
+- `tests/e2e/documents.spec.ts` needs `LLM_MODE=fake` on api AND worker (the real renderer makes the PDF); on a dev stack that has already spent today's fake budget the global cap answers 429 `BUDGET_EXCEEDED`: raise `GLOBAL_DAILY_BUDGET_USD` for the run (as `loadtest/compose.loadtest.yml` does)
 
 ### Tool approval (TASK-023)
 - The approval is read from the conversation (`pending_interrupt`), not kept in run state: a run that ends with an `interrupt` event re-reads the conversation, which is also how a reload restores the card. The card shows only while no run is active; `useChatRun.decide` posts to `/runs/resume` and the resumed run streams like any other

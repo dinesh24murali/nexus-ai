@@ -28,6 +28,8 @@ const running = (over: Partial<ChatRun> = {}): ChatRun => ({
   replacesMessageId: null,
   toolCalls: [],
   route: null,
+  documents: [],
+  progress: null,
   notice: null,
   ...over,
 })

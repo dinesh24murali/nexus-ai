@@ -1,0 +1,31 @@
+{
+  "note": "AI-drafted in Tavily's response shape (title, url, content); NOT a real recording. Replace with recorded responses when a paid run is approved (tasks/deferred.md).",
+  "by_query": {},
+  "default": [
+    {
+      "title": "Go keeps compile times short",
+      "url": "https://lang-notes.example/go-compile",
+      "content": "Go compiles large command-line tools in seconds, which suits fast iteration. Rust builds of similar size often take minutes in release mode."
+    },
+    {
+      "title": "Rust prevents data races at compile time",
+      "url": "https://lang-notes.example/rust-safety",
+      "content": "Rust's ownership rules reject data races before the program runs. Go relies on a race detector that only finds races during tests."
+    },
+    {
+      "title": "Binary size comparison",
+      "url": "https://bench-lab.example/binary-size",
+      "content": "A small Go tool produced a 4 MB binary while the Rust version was 1.5 MB after stripping. Both start in under 10 milliseconds."
+    },
+    {
+      "title": "Hiring and learning curve",
+      "url": "https://dev-survey.example/learning",
+      "content": "Developers reported reaching productivity in Go in about two weeks and in Rust in about two months."
+    },
+    {
+      "title": "Ecosystem for CLI parsing",
+      "url": "https://crates-and-modules.example/cli",
+      "content": "Both ecosystems offer mature argument-parsing libraries. Rust's clap and Go's cobra are each used by thousands of tools."
+    }
+  ]
+}

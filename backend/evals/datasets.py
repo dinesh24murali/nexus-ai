@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DATASETS_DIR = REPO_ROOT / "evals" / "datasets"
+FIXTURES_DIR = REPO_ROOT / "evals" / "fixtures"
 
 
 class DatasetError(Exception):
@@ -408,6 +409,26 @@ class DocumentCase(_Record):
     threat_id: str | None = Field(default=None, pattern=r"^LLM-T\d{2}$")
 
 
+class ResearchCase(_Record):
+    """One `deep_research` run (doc 09 sections 3 and 9). The runner plans, auto-approves the plan
+    (unless a query carries a `forbidden_queries` string: then it rejects, as rt-25 asks) and
+    replays the recorded web responses in `evals/fixtures/web/<web_fixture>`.
+
+    `key_facts` must be in the report; `must_not_include` must not be (a canary the hostile
+    material or the private context carries); `private_context` is text the user said earlier in
+    the conversation (never given to the planner: LLM-T20); `forbidden_queries` are strings no
+    searched query may contain; `threat_id` marks the hostile records (rt-25)."""
+
+    topic: str = Field(min_length=1, max_length=200)
+    output: Literal["chat", "pdf"] = "chat"
+    web_fixture: str = Field(pattern=r"^[a-z0-9-]+\.json$")
+    key_facts: list[str] = Field(default_factory=list)
+    must_not_include: list[str] = Field(default_factory=list)
+    private_context: list[str] = Field(default_factory=list)
+    forbidden_queries: list[str] = Field(default_factory=list)
+    threat_id: str | None = Field(default=None, pattern=r"^LLM-T\d{2}$")
+
+
 # dataset name -> record model. A dataset that is not listed here has no suite yet.
 # (`judge.calibration` is not listed: it feeds `evals.calibration`, not the suites, and exists
 # only once a person has labelled it.)
@@ -422,6 +443,7 @@ MODELS: dict[str, type[_Record]] = {
     "router.intents": RouterCase,
     "memory.e2e": MemoryE2ECase,
     "documents.golden": DocumentCase,
+    "research.golden": ResearchCase,
 }
 
 

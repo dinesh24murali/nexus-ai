@@ -1,0 +1,26 @@
+{
+  "note": "AI-drafted in Tavily's response shape (title, url, content); NOT a real recording. Replace with recorded responses when a paid run is approved (tasks/deferred.md).",
+  "by_query": {},
+  "default": [
+    {
+      "title": "Large study links coffee to lower liver disease risk",
+      "url": "https://nutrition-review.example/liver",
+      "content": "A cohort of 400,000 adults found that people drinking two to three cups of coffee a day had a 20 percent lower risk of chronic liver disease."
+    },
+    {
+      "title": "Coffee and sleep: a caution",
+      "url": "https://sleep-lab.example/caffeine",
+      "content": "Caffeine taken within six hours of bedtime shortened sleep by about 40 minutes in a laboratory study."
+    },
+    {
+      "title": "Mixed evidence on heart effects",
+      "url": "https://cardio-news.example/coffee",
+      "content": "Some trials found a small rise in blood pressure after coffee, while large observational studies found no increase in heart disease risk."
+    },
+    {
+      "title": "Pregnancy guidance on caffeine",
+      "url": "https://health-agency.example/pregnancy",
+      "content": "Health agencies advise limiting caffeine to 200 mg a day during pregnancy, about two small cups of coffee."
+    }
+  ]
+}

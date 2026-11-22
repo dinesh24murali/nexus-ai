@@ -1,5 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query'
-import { Brain, FileText, LogOut } from 'lucide-react'
+import { Brain, FileText, FileType2, LogOut } from 'lucide-react'
 import { NavLink, Outlet, useNavigate } from 'react-router'
 import { ConversationNav } from '../components/sidebar/ConversationNav'
 import { ThemeToggle } from '../components/ThemeToggle'
@@ -37,6 +37,15 @@ export function AppShell() {
           >
             <FileText className="size-4" aria-hidden />
             Files
+          </NavLink>
+          <NavLink
+            to="/documents"
+            className={({ isActive }) =>
+              `mt-1 flex items-center gap-2 rounded-md px-2 py-2 text-label hover:bg-neutral-200/60 dark:hover:bg-neutral-800 ${isActive ? 'bg-neutral-200/60 dark:bg-neutral-800' : 'text-fg-muted'}`
+            }
+          >
+            <FileType2 className="size-4" aria-hidden />
+            Documents
           </NavLink>
           <NavLink
             to="/settings/memory"

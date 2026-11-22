@@ -26,7 +26,8 @@ schema = schemathesis.openapi.from_path(SPEC).include(
     path_regex=(
         r"^/(healthz|readyz|auth/.*|me(/password|/usage)?|conversations(/\{conversationId\})?"
         r"|conversations/\{conversationId\}/(messages|regenerate|runs/(cancel|resume))"
-        r"|messages/\{messageId\}/feedback|memories(/\{memoryId\})?)$"
+        r"|messages/\{messageId\}/feedback|memories(/\{memoryId\})?"
+        r"|documents(/\{documentId\}(/download)?)?)$"
     )
 )
 
@@ -111,6 +112,8 @@ def test_api_conforms_to_the_spec(case: Any, live_server_url: str) -> None:
         # instruction or a sensitive category, a documented 422 (tests/api/test_memories.py); the
         # cursor is opaque and server-issued (a bad one is the documented 400).
         "GET /memories",
+        # documents: the list cursor is opaque and server-issued (a bad one is the documented 400).
+        "GET /documents",
         "POST /memories",
         "PATCH /memories/{memoryId}",
     ):

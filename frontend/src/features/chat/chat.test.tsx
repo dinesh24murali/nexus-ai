@@ -47,7 +47,7 @@ const msg = (role: Msg['role'], content: string, extra: Partial<Msg> = {}): Msg 
 
 type Pending = {
   interrupt_id: string
-  tool: 'web_search' | 'forget_memory'
+  tool: 'web_search' | 'research_plan' | 'forget_memory'
   args: Record<string, unknown>
   created_at: string
   expires_at: string
@@ -1090,5 +1090,124 @@ describe('slash menu', () => {
     live.push(usageEvent())
     live.push(done())
     live.end()
+  })
+})
+
+// ---------------------------------------------------------------- deep research (TASK-043)
+
+const PLAN: Pending = {
+  interrupt_id: 'int_plan1',
+  tool: 'research_plan',
+  args: { topic: 'solid-state batteries', queries: ['query one', 'query two', 'query three'] },
+  created_at: '2026-11-21T10:00:00Z',
+  expires_at: '2099-01-01T00:00:00Z',
+}
+
+const planCard = () => screen.getByRole('group', { name: 'Research plan' })
+
+describe('deep research', () => {
+  it('shows the plan as a card, and approving posts the decision and streams the report', async () => {
+    const { server } = await open({
+      messages: [msg('user', '/research solid-state batteries')],
+      pending: PLAN,
+      onResume: () => {
+        server.pending = null
+        server.messages.push(msg('assistant', 'The report [1]', { intent: 'deep_research' }))
+        return sseResponse([
+          { ...runStarted(), user_message_id: null },
+          { type: 'progress', stage: 'searching', done: 3, total: 3 },
+          token('The report [1]'),
+          usageEvent(),
+          done(),
+        ])
+      },
+    })
+    const user = userEvent.setup()
+    await waitFor(() => expect(planCard()).toBeInTheDocument())
+    expect(within(planCard()).getAllByRole('listitem')).toHaveLength(3)
+
+    await user.click(screen.getByRole('button', { name: 'Approve and search' }))
+
+    await seen('The report [1]')
+    expect(posts(server, '/runs/resume')[0]?.body).toEqual({
+      interrupt_id: 'int_plan1',
+      decision: 'approve',
+    })
+    await waitFor(() =>
+      expect(screen.queryByRole('group', { name: 'Research plan' })).not.toBeInTheDocument(),
+    )
+    expect(screen.getByText('Research')).toBeInTheDocument() // the mode chip
+    expect(screen.queryByRole('button', { name: 'Regenerate' })).not.toBeInTheDocument()
+  })
+
+  it('posts the edited queries as edited_args.queries', async () => {
+    const { server } = await open({
+      messages: [msg('user', '/research solid-state batteries')],
+      pending: PLAN,
+      onResume: () => {
+        server.pending = null
+        server.messages.push(msg('assistant', 'Done', { intent: 'deep_research' }))
+        return answerStream('Done')
+      },
+    })
+    const user = userEvent.setup()
+    await waitFor(() => expect(planCard()).toBeInTheDocument())
+
+    await user.click(screen.getByRole('button', { name: 'Edit' }))
+    await user.clear(screen.getByRole('textbox', { name: 'Search query 1' }))
+    await user.type(screen.getByRole('textbox', { name: 'Search query 1' }), 'my own query')
+    await user.click(screen.getByRole('button', { name: 'Remove query 3' }))
+    await user.click(screen.getByRole('button', { name: 'Search with these queries' }))
+
+    await seen('Done')
+    expect(posts(server, '/runs/resume')[0]?.body).toEqual({
+      interrupt_id: 'int_plan1',
+      decision: 'edit',
+      edited_args: { queries: ['my own query', 'query two'] },
+    })
+  })
+
+  it('rejecting posts the decision', async () => {
+    const { server } = await open({
+      messages: [msg('user', '/research solid-state batteries')],
+      pending: PLAN,
+      onResume: () => {
+        server.pending = null
+        server.messages.push(msg('assistant', 'Okay.', { intent: 'deep_research' }))
+        return answerStream('Okay.')
+      },
+    })
+    const user = userEvent.setup()
+    await waitFor(() => expect(planCard()).toBeInTheDocument())
+
+    await user.click(screen.getByRole('button', { name: "Don't search" }))
+
+    await seen('Okay.')
+    expect(posts(server, '/runs/resume')[0]?.body).toEqual({
+      interrupt_id: 'int_plan1',
+      decision: 'reject',
+    })
+  })
+
+  it('says what the run is doing while it works, instead of "Thinking…"', async () => {
+    const stream = liveStream()
+    const { box } = await open({ onSend: () => stream.response })
+    const user = userEvent.setup()
+
+    await user.type(box(), '/research solid-state batteries{Enter}')
+    stream.push(runStarted())
+    await seen('Thinking…')
+
+    stream.push({ type: 'progress', stage: 'planning', done: null, total: null })
+    await seen('Planning the research…')
+    stream.push({ type: 'progress', stage: 'searching', done: 2, total: 4 })
+    await seen('Searching the web: 2 of 4 done…')
+    stream.push({ type: 'progress', stage: 'writing', done: null, total: null })
+    await seen('Writing the report…')
+
+    stream.push(token('# Report'))
+    await waitFor(() => expect(screen.queryByText('Writing the report…')).not.toBeInTheDocument())
+    stream.push(done())
+    stream.end()
   })
 })

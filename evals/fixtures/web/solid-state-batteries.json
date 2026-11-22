@@ -1,0 +1,31 @@
+{
+  "note": "AI-drafted in Tavily's response shape (title, url, content); NOT a real recording. Replace with recorded responses when a paid run is approved (tasks/deferred.md).",
+  "by_query": {},
+  "default": [
+    {
+      "title": "Solid-state cells reach 400 Wh/kg in pilot lines",
+      "url": "https://energy-review.example/solid-state-pilot",
+      "content": "A pilot line has produced solid-state cells with an energy density of 400 Wh/kg, about 60 percent above typical lithium-ion cells. The cells were tested for 800 charge cycles."
+    },
+    {
+      "title": "Why solid-state batteries are still expensive",
+      "url": "https://battery-costs.example/analysis",
+      "content": "Solid-state cells cost roughly three times more than lithium-ion cells because ceramic electrolytes are hard to manufacture at scale. Analysts expect costs to fall below 150 dollars per kWh only after 2030."
+    },
+    {
+      "title": "Automakers announce solid-state timelines",
+      "url": "https://auto-news.example/timelines",
+      "content": "Two large automakers plan small-volume cars with solid-state packs by 2027. Mass-market models are not expected before 2030."
+    },
+    {
+      "title": "Dendrite growth remains the main failure mode",
+      "url": "https://materials-journal.example/dendrites",
+      "content": "Lithium dendrites can pierce the solid electrolyte at high charging rates and cause short circuits. Researchers report that a thin interlayer reduces this failure by about half."
+    },
+    {
+      "title": "Safety claims for solid-state packs",
+      "url": "https://safety-watch.example/claims",
+      "content": "Solid-state packs do not use flammable liquid electrolytes, which lowers fire risk. Independent crash testing data is still limited."
+    }
+  ]
+}

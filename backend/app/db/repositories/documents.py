@@ -10,19 +10,28 @@ import uuid
 from collections.abc import Sequence
 from datetime import datetime
 
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy import delete as sql_delete
-from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Document
+from app.db.repositories.conversations import (  # cursors are (timestamp, id) keysets
+    InvalidCursorError,
+    decode_cursor,
+    encode_cursor,
+)
 
 __all__ = [
+    "InvalidCursorError",
     "beyond_newest",
     "count_since",
     "create",
+    "decode_cursor",
+    "delete",
     "delete_ids",
     "for_messages",
     "get",
+    "list_page",
     "mark_failed",
     "mark_ready",
 ]
@@ -57,6 +66,44 @@ async def create(
 async def get(session: AsyncSession, user_id: uuid.UUID, document_id: uuid.UUID) -> Document | None:
     stmt = select(Document).where(Document.user_id == user_id, Document.id == document_id)
     return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def list_page(
+    session: AsyncSession,
+    user_id: uuid.UUID,
+    *,
+    limit: int,
+    cursor: tuple[datetime, uuid.UUID] | None,
+) -> tuple[list[Document], str | None]:
+    """Newest first. Keyset pagination on (created_at DESC, id ASC), as the user index."""
+    stmt = select(Document).where(Document.user_id == user_id)
+    if cursor is not None:
+        created_at, last_id = cursor
+        stmt = stmt.where(
+            or_(
+                Document.created_at < created_at,
+                and_(Document.created_at == created_at, Document.id > last_id),
+            )
+        )
+    stmt = stmt.order_by(Document.created_at.desc(), Document.id.asc()).limit(limit + 1)
+    rows = list((await session.execute(stmt)).scalars())
+    items = rows[:limit]
+    next_cursor = encode_cursor(items[-1].created_at, items[-1].id) if len(rows) > limit else None
+    return items, next_cursor
+
+
+async def delete(
+    session: AsyncSession, user_id: uuid.UUID, document_id: uuid.UUID
+) -> tuple[bool, str | None]:
+    """Remove the caller's document. Returns (found, storage path) so the caller can remove the
+    file; (False, None) for an unknown id and for another user's, which look the same."""
+    stmt = (
+        sql_delete(Document)
+        .where(Document.user_id == user_id, Document.id == document_id)
+        .returning(Document.storage_path)
+    )
+    row = (await session.execute(stmt)).first()
+    return (row is not None, row[0] if row else None)
 
 
 async def count_since(session: AsyncSession, user_id: uuid.UUID, since: datetime) -> int:

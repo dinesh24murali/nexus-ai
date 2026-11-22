@@ -45,6 +45,16 @@ class MemoryUpdatedEvent(_Event):
     content: str
 
 
+class ProgressEvent(_Event):
+    """How far a long-running pipeline is (the API's `ProgressEvent`): planning, searching n of m,
+    writing, rendering."""
+
+    type: Literal["progress"] = "progress"
+    stage: Literal["planning", "searching", "writing", "rendering"]
+    done: int | None = None
+    total: int | None = None
+
+
 class DocumentObject(BaseModel):
     """A generated PDF as the client sees it (the API's `DocumentObject`)."""
 
@@ -162,6 +172,7 @@ class ErrorEvent(_Event):
 Event = (
     RunStartedEvent
     | RouteSelectedEvent
+    | ProgressEvent
     | MemoryUpdatedEvent
     | DocumentCreatedEvent
     | TokenEvent

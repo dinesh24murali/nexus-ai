@@ -1,0 +1,31 @@
+{
+  "note": "AI-drafted in Tavily's response shape (title, url, content); NOT a real recording. Replace with recorded responses when a paid run is approved (tasks/deferred.md).",
+  "by_query": {},
+  "default": [
+    {
+      "title": "Open-weight licences differ widely",
+      "url": "https://ai-policy.example/licences",
+      "content": "Open-weight model licences range from permissive terms to ones that restrict commercial use above a user threshold."
+    },
+    {
+      "title": "Permissive licences dominate small models",
+      "url": "https://model-census.example/licences",
+      "content": "Among models under 10 billion parameters, 70 percent are released under permissive licences such as Apache 2.0."
+    },
+    {
+      "title": "Use restrictions in responsible-AI licences",
+      "url": "https://legal-tech.example/rail",
+      "content": "Responsible-AI licences attach use restrictions, such as bans on surveillance, that must be passed on to downstream users."
+    },
+    {
+      "title": "Open source definition debate",
+      "url": "https://standards-watch.example/osd",
+      "content": "The Open Source Initiative published a definition of open-source AI that requires access to training-data information, which many open-weight releases do not meet."
+    },
+    {
+      "title": "Compliance costs for companies",
+      "url": "https://counsel-notes.example/compliance",
+      "content": "Legal teams report spending several weeks per model on licence review when a licence has custom use restrictions."
+    }
+  ]
+}

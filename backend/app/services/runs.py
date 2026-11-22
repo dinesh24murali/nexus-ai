@@ -52,6 +52,7 @@ from app.api.sse import (
     InterruptEvent,
     MemoryUpdatedEvent,
     PendingInterrupt,
+    ProgressEvent,
     RouteSelectedEvent,
     RunStartedEvent,
     TokenEvent,
@@ -69,6 +70,7 @@ from app.db.repositories import usage as usage_repo
 from app.graph.builder import build_graph
 from app.graph.commands import ParsedCommand, StaticReply, parse_command, unavailable_reply
 from app.graph.intents import PIPELINES
+from app.graph.intents.deep_research import PlanError, ResearchChecker, clean_queries
 from app.graph.intents.generate_document import DocumentService
 from app.graph.intents.manage_memory import MemoryManager
 from app.graph.nodes.load_context import MemoryLookup, RecentFiles
@@ -101,7 +103,12 @@ _TRACED_PROMPTS = (
     "nexus.summarize",
     "nexus.route",
     "nexus.document",
+    "nexus.research_plan",
+    "nexus.research_report",
 )
+# The nodes whose model tokens are the answer: the chat agent, and the research report (doc 08
+# section 5). The planner, the router, the summariser and the document composer stay silent.
+_ANSWER_NODES = frozenset({"agent", "research_report"})
 _RATE_WINDOW_S = 60
 _RATE_LIMITED_MESSAGE = "You're sending messages too quickly. Please wait a moment."
 
@@ -182,6 +189,7 @@ def graph_factory_for(
     memories: MemoryLookup | None = None,
     memory_manager: MemoryManager | None = None,
     document_service: DocumentService | None = None,
+    research_service: ResearchChecker | None = None,
 ) -> GraphFactory:
     """The production graph: factory-built models, the Postgres checkpointer, the file-search tool
     (when a retriever is given), `web_search` (when Tavily is configured, or in fake mode) and the
@@ -190,7 +198,8 @@ def graph_factory_for(
     (`TOOLS_DISABLED`), not here. `memories` reads the user's long-term memories into the late
     context message. The router model is always built (ADR-0010); `ROUTER_DISABLED` is a per-run
     switch. `memory_manager` is what `manage_memory` acts through; `document_service` is what
-    `generate_document` reads and writes (the pipeline is absent without it)."""
+    `generate_document` reads and writes (the pipeline is absent without it); `research_service`
+    is the pre-check of `deep_research` (the pipeline is absent without it)."""
 
     def build(model_override: str | None) -> Graph:
         chat = get_model("chat", settings=settings, model_override=model_override)
@@ -206,6 +215,11 @@ def graph_factory_for(
             memory_manager=memory_manager,
             document_service=document_service,
             document_model=get_model("long_form", settings=settings) if document_service else None,
+            research_service=research_service,
+            research_plan_model=(
+                get_model("research_plan", settings=settings) if research_service else None
+            ),
+            research_model=get_model("long_form", settings=settings) if research_service else None,
             settings=settings,
         )
 
@@ -252,6 +266,8 @@ def _resume_value(
     """The value `interrupt()` returns inside the graph, validated against the approval."""
     if pending.get("tool") == "forget_memory":
         return _forget_resume_value(pending, decision, edited_args)
+    if pending.get("tool") == "research_plan":
+        return _research_resume_value(decision, edited_args)
     if decision != "edit":
         return {"decision": decision}
     query = (edited_args or {}).get("query")
@@ -261,6 +277,22 @@ def _resume_value(
     if not 1 <= len(query) <= MAX_QUERY_CHARS:
         raise _bad_edit(f"edited_args.query must be 1 to {MAX_QUERY_CHARS} characters")
     return {"decision": "edit", "args": {"query": query}}
+
+
+def _research_resume_value(decision: str, edited_args: dict[str, Any] | None) -> Any:
+    """A `research_plan` decision: approve the plan as shown, reject it, or edit the queries (1 to
+    6, each 1 to 400 characters). A bad list is a 422 and the approval stays pending, so a typo
+    cannot lose the card; nothing but these queries can ever be searched."""
+    if decision != "edit":
+        return {"decision": decision}
+    try:
+        queries = clean_queries((edited_args or {}).get("queries"), minimum=1)
+    except PlanError:
+        raise _bad_edit(
+            "edited_args.queries must be 1 to 6 different queries of 1 to 400 characters",
+            "queries",
+        ) from None
+    return {"decision": "edit", "args": {"queries": queries}}
 
 
 def _forget_resume_value(
@@ -887,7 +919,7 @@ class RunService:
                 continue
             chunk, meta = payload
             # The summariser is tagged `nostream`; the node filter is the second line of defence.
-            if not isinstance(meta, dict) or meta.get("langgraph_node") != "agent":
+            if not isinstance(meta, dict) or meta.get("langgraph_node") not in _ANSWER_NODES:
                 continue
             if not isinstance(chunk, AIMessageChunk):
                 continue
@@ -933,6 +965,12 @@ class RunService:
                 )
                 run.intent, run.route_source = routed.intent, routed.source
                 run.events.put_nowait(routed)
+            case "progress":
+                run.events.put_nowait(
+                    ProgressEvent(
+                        stage=payload["stage"], done=payload.get("done"), total=payload.get("total")
+                    )
+                )
             case "document_created":
                 run.events.put_nowait(
                     DocumentCreatedEvent(
@@ -1144,8 +1182,9 @@ class RunService:
             return
         if run.intent == "manage_memory":
             return  # the user managed memories directly: nothing to extract from this turn
-        if run.intent == "generate_document" and run.route_source == "command":
-            return  # `/pdf`, `/brief ...`: a command, not something the user told Nexus about them
+        if run.intent in ("generate_document", "deep_research") and run.route_source == "command":
+            return  # `/pdf`, `/brief ...`, `/research ...`: a command, not something the user
+            # told Nexus about themselves
         user = await users.get_by_id(session, run.user_id)
         if user is None or not user.memory_enabled:
             return

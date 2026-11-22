@@ -3,12 +3,13 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useApiClient } from '../../api/client'
 import { openStream } from '../../api/stream'
 import { useAuthManager } from '../../lib/auth-context'
+import type { DocumentObject } from '../documents/api'
 import { useConversationKeys } from '../conversations/api'
 import type { Conversation } from '../conversations/api'
 import { useChatKeys } from './api'
 import type { Decision, PendingInterrupt } from './ApprovalCard'
 import { useMemoryWatch } from '../settings/useMemoryWatch'
-import type { RouteInfo } from './modes'
+import type { ProgressInfo, RouteInfo } from './modes'
 import { noticeFromError, type Notice } from './notices'
 import { TITLE_REFRESH_DELAYS_MS, TOKEN_BATCH_MS } from './timing'
 import type { ToolCallView } from './toolCalls'
@@ -28,6 +29,10 @@ export type ChatRun = {
   toolCalls: ToolCallView[]
   /** Which pipeline answers this run (`route_selected`); null until it is said, and for a resume. */
   route: RouteInfo | null
+  /** The PDFs this run made (`document_created`); they yield to the stored message like the text. */
+  documents: DocumentObject[]
+  /** The stage a long pipeline reported last (`progress`); null for a plain answer. */
+  progress: ProgressInfo | null
   notice: Notice | null
 }
 
@@ -41,6 +46,8 @@ const IDLE: ChatRun = {
   replacesMessageId: null,
   toolCalls: [],
   route: null,
+  documents: [],
+  progress: null,
   notice: null,
 }
 
@@ -166,6 +173,18 @@ export function useChatRun(conversationId: string) {
                 ...s,
                 route: { intent: event.intent, source: event.source },
               }))
+            } else if (event.type === 'progress') {
+              setState((s) => ({
+                ...s,
+                progress: { stage: event.stage, done: event.done, total: event.total },
+              }))
+            } else if (event.type === 'document_created') {
+              setState((s) => ({
+                ...s,
+                documents: s.documents.some((d) => d.id === event.document.id)
+                  ? s.documents
+                  : [...s.documents, event.document],
+              }))
             } else if (event.type === 'token') {
               run.text += event.delta
               run.timer ??= window.setTimeout(flush, TOKEN_BATCH_MS)
@@ -254,7 +273,13 @@ export function useChatRun(conversationId: string) {
         {
           interrupt_id: interrupt.interrupt_id,
           decision: decision.decision,
-          ...(decision.decision === 'edit' ? { edited_args: { query: decision.query } } : {}),
+          ...(decision.decision === 'edit'
+            ? {
+                edited_args: decision.queries
+                  ? { queries: decision.queries }
+                  : { query: decision.query },
+              }
+            : {}),
           ...(decision.decision === 'approve' && decision.memoryId
             ? { edited_args: { memory_id: decision.memoryId } }
             : {}),

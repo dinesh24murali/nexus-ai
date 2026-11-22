@@ -118,13 +118,6 @@ def test_a_memory_answer_cannot_be_regenerated(chat: Chat) -> None:
     assert r.status_code == 409 and r.json()["error"]["code"] == "REGENERATE_NOT_SUPPORTED"
 
 
-def test_a_command_for_a_feature_that_is_not_built_is_explained(chat: Chat) -> None:
-    events = frames(send(*chat[:2], chat[2], "/research why is the sky blue").text)
-
-    assert "not available yet" in answer(events)
-    assert [e["event"] for e in events][-1] == "done"
-
-
 # -- documents (TASK-041) ------------------------------------------------------------------------
 
 

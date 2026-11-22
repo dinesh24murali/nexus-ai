@@ -9,6 +9,7 @@ from typing import Any
 import psycopg
 import pytest
 from app.core.config import Settings
+from app.core.errors import ApiError
 from app.documents.draft import DocumentDraft, Section
 from app.services import documents as service
 from app.services.documents import DocumentsService, worst_case_usd
@@ -345,3 +346,94 @@ def test_the_day_boundary_is_utc() -> None:
     late = datetime(2026, 11, 22, 23, 59, tzinfo=UTC).astimezone(UTC)
     assert service._day_start(late) == datetime(2026, 11, 22, tzinfo=UTC)
     assert service._day_start(late + timedelta(minutes=2)) == datetime(2026, 11, 23, tzinfo=UTC)
+
+
+# ---------- the documents API's reads and deletes (TASK-042)
+
+
+def _row(
+    db: psycopg.Connection[Any],
+    settings: Settings,
+    owner: str,
+    *,
+    status: str = "ready",
+    with_file: bool = True,
+) -> uuid.UUID:
+    document_id = uuid.uuid4()
+    relative = f"{owner}/documents/{document_id}.pdf" if status == "ready" else None
+    if relative and with_file:
+        (settings.uploads_dir / relative).parent.mkdir(parents=True, exist_ok=True)
+        (settings.uploads_dir / relative).write_bytes(b"%PDF-1.7")
+    db.execute(
+        "INSERT INTO documents (id, user_id, title, kind, status, draft, storage_path)"
+        " VALUES (%s, %s, 'T', 'answer', %s, '{}'::jsonb, %s)",
+        (document_id, owner, status, relative),
+    )
+    return document_id
+
+
+async def test_delete_removes_the_row_and_the_pdf_of_the_caller(
+    docs: DocumentsService, db: psycopg.Connection[Any], user: str, settings: Settings
+) -> None:
+    document_id = _row(db, settings, user)
+    pdf = settings.uploads_dir / user / "documents" / f"{document_id}.pdf"
+    assert pdf.is_file()
+
+    await docs.delete(uuid.UUID(user), document_id)
+
+    assert count(db, "documents") == 0
+    assert not pdf.exists()
+
+
+async def test_delete_of_someone_elses_document_is_a_404_and_changes_nothing(
+    docs: DocumentsService,
+    db: psycopg.Connection[Any],
+    make_user: Any,
+    settings: Settings,
+) -> None:
+    owner, other = make_user("a@example.com"), make_user("b@example.com")
+    document_id = _row(db, settings, str(owner))
+
+    with pytest.raises(ApiError) as caught:
+        await docs.delete(uuid.UUID(str(other)), document_id)
+
+    assert caught.value.status_code == 404
+    assert count(db, "documents") == 1
+    assert (settings.uploads_dir / str(owner) / "documents" / f"{document_id}.pdf").is_file()
+
+
+async def test_pdf_for_download_gives_the_row_and_the_file(
+    docs: DocumentsService, db: psycopg.Connection[Any], user: str, settings: Settings
+) -> None:
+    document_id = _row(db, settings, user)
+
+    row, path = await docs.pdf_for_download(uuid.UUID(user), document_id)
+
+    assert row.id == document_id
+    assert path.read_bytes() == b"%PDF-1.7"
+
+
+@pytest.mark.parametrize(
+    ("status", "with_file", "code", "http"),
+    [
+        ("pending", False, "DOCUMENT_NOT_READY", 409),
+        ("failed", False, "DOCUMENT_NOT_READY", 409),
+        ("ready", False, "NOT_FOUND", 404),
+    ],
+)
+async def test_pdf_for_download_refuses_what_has_no_file(
+    docs: DocumentsService,
+    db: psycopg.Connection[Any],
+    user: str,
+    settings: Settings,
+    status: str,
+    with_file: bool,
+    code: str,
+    http: int,
+) -> None:
+    document_id = _row(db, settings, user, status=status, with_file=with_file)
+
+    with pytest.raises(ApiError) as caught:
+        await docs.pdf_for_download(uuid.UUID(user), document_id)
+
+    assert (caught.value.status_code, caught.value.code) == (http, code)

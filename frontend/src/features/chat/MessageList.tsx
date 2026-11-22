@@ -1,11 +1,12 @@
 import { AlertTriangle, RefreshCw } from 'lucide-react'
 import { Button } from '../../components/ui/Button'
 import { cn } from '../../lib/cn'
+import { DocumentCards } from '../documents/DocumentCard'
 import type { Message } from './api'
 import { Citations } from './Citations'
 import { Feedback } from './Feedback'
 import { Markdown } from './Markdown'
-import { canRegenerate } from './modes'
+import { canRegenerate, progressText } from './modes'
 import { ModeChip } from './ModeChip'
 import { ToolCalls } from './ToolCard'
 import { toView } from './toolCalls'
@@ -57,6 +58,7 @@ function AssistantBubble({ message, isLast, canRetry, onRegenerate }: AssistantP
       )}
       {message.content && <Markdown text={message.content} />}
       {message.citations && <Citations citations={message.citations} />}
+      <DocumentCards documents={message.documents} />
       {message.status === 'cancelled' && <Label tone="muted">Stopped</Label>}
       {failed && (
         <Label tone="warning">
@@ -150,9 +152,10 @@ export function MessageList({
             <Markdown text={run.streamingText} streaming />
           ) : (
             <p role="status" className="text-fg-muted">
-              {run.stopping ? 'Stopping…' : 'Thinking…'}
+              {run.stopping ? 'Stopping…' : (progressText(run.progress) ?? 'Thinking…')}
             </p>
           )}
+          <DocumentCards documents={run.documents} />
         </article>
       )}
     </div>

@@ -159,3 +159,59 @@ def test_files_are_invisible_and_undeletable_for_other_users(
     # Alice's file survived Bob's attempt, and she can still read and delete it.
     assert client.get(f"{API}/files/{fid}", headers=alice).status_code == 200
     assert client.delete(f"{API}/files/{fid}", headers=alice).status_code == 204
+
+
+def test_documents_of_another_user_are_invisible_and_untouchable(
+    client: TestClient,
+    two_users: tuple[dict[str, str], dict[str, str]],
+    db: psycopg.Connection[Any],
+    settings: Any,
+) -> None:
+    """TASK-042 IDOR: Bob gets 404 on Alice's document, its download and its delete, the answer is
+    the one for a document that never existed, and Alice's PDF is still there afterwards."""
+    from .test_conversations import user_id
+    from .test_documents import PDF, make_document, stored_files
+
+    alice, bob = two_users
+    document_id = make_document(db, settings, user_id(db, "alice@example.com"), title="Alice only")
+    assert len(stored_files(settings)) == 1
+
+    reads = (
+        client.get(f"{API}/documents/{document_id}", headers=bob),
+        client.get(f"{API}/documents/{document_id}/download", headers=bob),
+        client.delete(f"{API}/documents/{document_id}", headers=bob),
+    )
+    ghost = client.get(f"{API}/documents/{uuid4()}", headers=bob)
+    for r in reads:
+        assert r.status_code == 404 and r.json()["error"]["code"] == "NOT_FOUND"
+        assert "Alice" not in r.text
+        assert {k: v for k, v in r.json()["error"].items() if k != "request_id"} == {
+            k: v for k, v in ghost.json()["error"].items() if k != "request_id"
+        }
+    assert client.get(f"{API}/documents", headers=bob).json() == {"items": [], "next_cursor": None}
+
+    # Untouched for the owner: the row, the bytes and the file on disk.
+    mine = client.get(f"{API}/documents/{document_id}/download", headers=alice)
+    assert mine.status_code == 200 and mine.content == PDF
+    assert len(stored_files(settings)) == 1
+    assert db.execute("SELECT count(*) FROM documents").fetchone() == (1,)
+
+
+def test_a_document_cursor_cannot_be_replayed_by_another_user(
+    client: TestClient,
+    two_users: tuple[dict[str, str], dict[str, str]],
+    db: psycopg.Connection[Any],
+    settings: Any,
+) -> None:
+    from .test_conversations import user_id
+    from .test_documents import make_document
+
+    alice, bob = two_users
+    for minute in range(3):
+        make_document(db, settings, user_id(db, "alice@example.com"), minutes=minute)
+    cursor = client.get(f"{API}/documents", headers=alice, params={"limit": 1}).json()[
+        "next_cursor"
+    ]
+    assert cursor
+    leaked = client.get(f"{API}/documents", headers=bob, params={"cursor": cursor}).json()
+    assert leaked == {"items": [], "next_cursor": None}

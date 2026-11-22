@@ -12,6 +12,7 @@ from app.core.net import client_ip
 from app.core.security import InvalidTokenError, TokenExpiredError, decode_access_token
 from app.db.models import User
 from app.db.repositories import users
+from app.services.documents import DocumentsService
 from app.services.feedback import FeedbackService
 from app.services.files import FileService
 from app.services.memories import MemoryService
@@ -40,6 +41,11 @@ def get_feedback(request: Request) -> FeedbackService:
     return service
 
 
+def get_documents(request: Request) -> DocumentsService:
+    service: DocumentsService = request.app.state.documents
+    return service
+
+
 def get_files(request: Request) -> FileService:
     service: FileService = request.app.state.files
     return service
@@ -60,6 +66,7 @@ ClientIpDep = Annotated[str, Depends(get_client_ip)]
 RunsDep = Annotated[RunService, Depends(get_runs)]
 FeedbackDep = Annotated[FeedbackService, Depends(get_feedback)]
 FilesDep = Annotated[FileService, Depends(get_files)]
+DocumentsDep = Annotated[DocumentsService, Depends(get_documents)]
 MemoriesDep = Annotated[MemoryService, Depends(get_memories)]
 
 

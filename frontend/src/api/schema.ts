@@ -369,7 +369,13 @@ export interface paths {
             };
             cookie?: never;
         };
-        /** Download the PDF (the client fetches it with the Bearer token and saves the blob) */
+        /**
+         * Download the PDF (the client fetches it with the Bearer token and saves the blob)
+         * @description Sent with `Content-Disposition: attachment` (a safe ASCII `filename` from the title, the full title as
+         *     `filename*`), `Cache-Control: private, no-store` and `X-Content-Type-Options: nosniff`. `409 DOCUMENT_NOT_READY`
+         *     while the PDF is still being made or when the render failed; `404` for an unknown or another user's document,
+         *     and for a ready document whose file is gone.
+         */
         get: operations["downloadDocument"];
         put?: never;
         post?: never;
@@ -2365,6 +2371,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
+            422: components["responses"]["ValidationError"];
             500: components["responses"]["InternalError"];
         };
     };

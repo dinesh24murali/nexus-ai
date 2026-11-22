@@ -255,10 +255,6 @@ test("memory by chat: remember, list and /help answer without the chat model", a
   await say(page, "/help");
   await expect(page.getByText(/I'm Nexus\. I can chat/)).toBeVisible();
   await expect(page.getByText("/memory forget <text>")).toBeVisible();
-
-  // A command that is not available yet says so instead of falling through to the model.
-  await say(page, "/research why is the sky blue");
-  await expect(page.getByText(/is not available yet/)).toBeVisible();
 });
 
 test("forgetting a memory asks first: keep it, then forget it", async ({
