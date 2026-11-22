@@ -9,7 +9,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
@@ -381,6 +381,33 @@ class CalibrationCase(_Record):
     note: str = ""
 
 
+class DocumentSetup(BaseModel):
+    """The world of one document case: the conversation (`thread`), the previous answer and its
+    sources (`last_answer`), or what the approved web search returns (`web`, for `topic`)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    thread: list[Turn] = Field(default_factory=list)
+    last_answer: str | None = None
+    last_answer_citations: list[dict[str, Any]] = Field(default_factory=list)
+    web: list[SetupWebResult] = Field(default_factory=list)
+
+
+class DocumentCase(_Record):
+    """One `generate_document` run (doc 09 section 3). `key_facts` must be in the PDF text;
+    `must_not_include` must not be (a canary planted in hostile material, rt-23); `threat_id` marks
+    the hostile records."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source: Literal["thread", "last_answer", "topic"]
+    topic: str | None = None
+    setup: DocumentSetup = Field(default_factory=DocumentSetup)
+    key_facts: list[str] = Field(default_factory=list)
+    must_not_include: list[str] = Field(default_factory=list)
+    threat_id: str | None = Field(default=None, pattern=r"^LLM-T\d{2}$")
+
+
 # dataset name -> record model. A dataset that is not listed here has no suite yet.
 # (`judge.calibration` is not listed: it feeds `evals.calibration`, not the suites, and exists
 # only once a person has labelled it.)
@@ -394,6 +421,7 @@ MODELS: dict[str, type[_Record]] = {
     "memory.extract": MemoryExtractCase,
     "router.intents": RouterCase,
     "memory.e2e": MemoryE2ECase,
+    "documents.golden": DocumentCase,
 }
 
 

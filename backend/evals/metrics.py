@@ -44,6 +44,13 @@ def citation_validity(answer: str, available: Iterable[int]) -> float:
     return sum(m in valid for m in markers) / len(markers)
 
 
+def markers_resolve(text: str, available: Iterable[int]) -> bool:
+    """Every `[n]` marker in `text` has an entry among `available`. No marker is fine (a document
+    need not cite)."""
+    have = set(available)
+    return all(int(m) in have for m in _MARKER.findall(text))
+
+
 def mean(values: Sequence[float]) -> float | None:
     return math.fsum(values) / len(values) if values else None
 

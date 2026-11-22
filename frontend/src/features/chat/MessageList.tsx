@@ -5,6 +5,8 @@ import type { Message } from './api'
 import { Citations } from './Citations'
 import { Feedback } from './Feedback'
 import { Markdown } from './Markdown'
+import { canRegenerate } from './modes'
+import { ModeChip } from './ModeChip'
 import { ToolCalls } from './ToolCard'
 import { toView } from './toolCalls'
 import type { ChatRun } from './useChatRun'
@@ -45,8 +47,11 @@ function AssistantBubble({ message, isLast, canRetry, onRegenerate }: AssistantP
   const interrupted = failed && message.finish_reason === 'server_restart'
   // A failed answer is not an answer to rate, and an empty one has nothing to rate.
   const ratable = !failed && message.content !== ''
+  // Only a chat answer can be asked for again; the API refuses the rest (409).
+  const offerRegenerate = isLast && canRetry && canRegenerate(message)
   return (
     <article aria-label="Nexus reply" className="text-body-lg">
+      <ModeChip intent={message.intent} source={message.route_source} />
       {message.tool_calls && message.tool_calls.length > 0 && (
         <ToolCalls calls={message.tool_calls.map(toView)} className="mb-3" />
       )}
@@ -60,10 +65,10 @@ function AssistantBubble({ message, isLast, canRetry, onRegenerate }: AssistantP
             : "This answer didn't finish."}
         </Label>
       )}
-      {(ratable || (isLast && canRetry)) && (
+      {(ratable || offerRegenerate) && (
         <div className="mt-2 flex items-center gap-1 -ml-2">
           {ratable && <Feedback message={message} />}
-          {isLast && canRetry && (
+          {offerRegenerate && (
             <Button variant="ghost" size="sm" onClick={onRegenerate}>
               <RefreshCw className="size-3.5" aria-hidden />
               {failed ? 'Retry' : 'Regenerate'}
@@ -139,6 +144,7 @@ export function MessageList({
       {run.pendingUser !== null && !userStored && <UserBubble text={run.pendingUser} />}
       {run.running && !answerStored && (
         <article aria-label="Nexus reply" className="text-body-lg">
+          <ModeChip intent={run.route?.intent} source={run.route?.source} />
           <ToolCalls calls={run.toolCalls} className="mb-3" />
           {run.streamingText ? (
             <Markdown text={run.streamingText} streaming />

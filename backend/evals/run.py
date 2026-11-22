@@ -43,6 +43,7 @@ from evals.datasets import (
     ChatCase,
     Dataset,
     DatasetError,
+    DocumentCase,
     MemoryE2ECase,
     MemoryExtractCase,
     PerfCase,
@@ -100,6 +101,10 @@ METRIC_KEYS = (
     "router.slot_accuracy",
     "router.fallback_rate",
     "router.latency_p95_ms",
+    "documents.render_success",
+    "documents.external_fetches",
+    "documents.fact_coverage",
+    "ops.cost_per_document_run_usd",
 )
 SUITE_DATASETS = (
     "chat.golden",
@@ -111,6 +116,7 @@ SUITE_DATASETS = (
     "memory.extract",
     "memory.e2e",
     "router.intents",
+    "documents.golden",
 )
 # The metrics each dataset can produce: a metric is "not measured" only if a dataset that should
 # have produced it ran. (`rag.golden` runs only when a RAG environment is given.)
@@ -139,6 +145,12 @@ METRICS_OF: dict[str, tuple[str, ...]] = {
     ),
     "memory.e2e": ("memory.e2e_recall",),
     "router.intents": tuple(k for k in METRIC_KEYS if k.startswith("router.")),
+    "documents.golden": (
+        "documents.render_success",
+        "documents.external_fetches",
+        "documents.fact_coverage",
+        "ops.cost_per_document_run_usd",
+    ),
 }
 
 
@@ -415,6 +427,11 @@ def _metrics(
         }
     )
     values["router.latency_p95_ms"] = scores.percentile("router.latency_p95_ms", 95)
+    values["documents.render_success"] = scores.mean("documents.render_success")
+    values["documents.fact_coverage"] = scores.mean("documents.fact_coverage")
+    values["ops.cost_per_document_run_usd"] = scores.mean("ops.cost_per_document_run_usd")
+    # A count, not a mean: one request for a resource outside the bundle anywhere must show.
+    values["documents.external_fetches"] = scores.total("documents.external_fetches")
     if not redteam_complete:  # a gate over part of the attacks would pass for the wrong reason
         for key in _REDTEAM_GATED:
             values[key] = None
@@ -456,6 +473,7 @@ async def run_suite(
     memory_model: Runnable[Any, Any] | None = None,
     router_model: Runnable[Any, Any] | None = None,
     memory_e2e: Any = None,
+    documents_model: Runnable[Any, Any] | None = None,
 ) -> Report:
     n = runs if runs is not None else RUNS_PER_CASE[suite]
     smoke_only = suite == "smoke"
@@ -468,6 +486,7 @@ async def run_suite(
         and (name != "memory.extract" or memory_model is not None)
         and (name != "router.intents" or router_model is not None)
         and (name != "memory.e2e" or memory_e2e is not None)
+        and (name != "documents.golden" or documents_model is not None)
     ]
     chat = load_dataset("chat.golden", ChatCase, smoke_only=smoke_only, directory=datasets_dir)
     perf = load_dataset("perf.latency", PerfCase, smoke_only=smoke_only, directory=datasets_dir)
@@ -504,6 +523,11 @@ async def run_suite(
     if router_model is not None:
         loaded["router.intents"] = load_dataset(
             "router.intents", RouterCase, smoke_only=smoke_only, directory=datasets_dir
+        )
+
+    if documents_model is not None:
+        loaded["documents.golden"] = load_dataset(
+            "documents.golden", DocumentCase, smoke_only=smoke_only, directory=datasets_dir
         )
 
     started = time.perf_counter()
@@ -565,6 +589,15 @@ async def run_suite(
         router_cases = loaded["router.intents"]
         steps["router.intents"] = lambda: run_router_intents(
             state, router_cases, model=router_model
+        )
+    if documents_model is not None:
+        from evals.documents import (
+            run_documents_golden,
+        )  # here: evals.documents imports this module
+
+        document_cases = loaded["documents.golden"]
+        steps["documents.golden"] = lambda: run_documents_golden(
+            state, document_cases, model=documents_model
         )
     # rag.golden before perf.latency: latency runs last, with nothing else using the API.
     order = [n for n in selected if n != "perf.latency"] + [
@@ -652,6 +685,8 @@ def _input_of(case: Any) -> Any:
         return case.user_message
     if isinstance(case, MemoryE2ECase):
         return case.turns_a
+    if isinstance(case, DocumentCase):
+        return case.setup.model_dump() | {"source": case.source, "topic": case.topic}
     return case.input
 
 
@@ -754,6 +789,11 @@ async def main_async(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 2
+    documents_model = (
+        get_model("long_form", settings=settings)
+        if not args.no_documents and (not args.dataset or "documents.golden" in args.dataset)
+        else None
+    )
     tracer = None if fake or args.no_langfuse else Tracer(settings)
     run_name = f"{args.suite}-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}"
     logger = EvalLogger(
@@ -774,6 +814,7 @@ async def main_async(args: argparse.Namespace) -> int:
             memory_model=memory_model,
             router_model=router_model,
             memory_e2e=memory_e2e,
+            documents_model=documents_model,
         )
     except DatasetError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -806,6 +847,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--no-memory-e2e",
         action="store_true",
         help="skip memory.e2e (it stores memories for a throwaway user, so it needs Postgres)",
+    )
+    parser.add_argument(
+        "--no-documents",
+        action="store_true",
+        help="skip documents.golden (it renders PDFs with WeasyPrint: no services, but CPU time)",
     )
     parser.add_argument(
         "--no-rag",

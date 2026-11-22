@@ -25,6 +25,8 @@ frontend/
 │   ├── features/                 ← feature folders (conversations/ = TanStack Query hooks; chat/ = ChatView, useChatRun,
 │   │                               MessageList, Composer, Feedback (thumbs), Markdown + CodeBlock + highlight (Shiki), notices, UsageMeter,
 │   │                               ApprovalCard (web-search approve / edit / reject);
+│   │                               ModeChip + modes.ts (which pipeline answered, the Regenerate rule, the command list),
+│   │                               SlashMenu (the `/` menu in the Composer);
 │   │                               ToolCard + toolCalls.ts (tool call cards, live and stored);
 │   │                               Citations (chips + snippet popover); files/ = FilesPage, uploads, chips, paperclip;
 │   │                               settings/ = Memory (Settings → Memory page), memories.ts hooks, useMemoryWatch (toast))
@@ -53,6 +55,13 @@ frontend/
 - The draft text lives in the page (`Composer` is controlled) so a send refused after the home-page hand-off can put it back
 - Ratings: `Feedback.tsx` (thumbs under a complete or stopped answer, not a failed or empty one) + `feedback.ts` (`useRate`: the rating shows at once, goes back with a message if the server refuses). The API cannot withdraw a rating, so pressing the chosen thumb again sends nothing. Anything that renders `MessageList` needs the query and auth providers
 - Tests: `renderApp(path, handler, {strict: true})` runs under StrictMode; `liveStream()` feeds a stream event by event; use `seen(text)` rather than `expect(await findByText(..)).toBeInTheDocument()` for text that moves from the live bubble to the stored message. `tests/e2e/chat.spec.ts` needs the stack in `LLM_MODE=fake` with `LLM_FAKE_TOKEN_DELAY_S=0.05` and fails loudly otherwise
+
+### Modes and slash commands (TASK-040)
+- `route_selected` is kept in `useChatRun` state (`route`) so the live answer shows its chip before the stored message arrives; the stored message has `intent` and `route_source`. Only the pipelines that differ from chat get a chip (`modes.ts::modeLabel`: Memory, Document, Research); a plain chat answer has none. The chip is text with an `sr-only` "Answered by:" prefix
+- **Regenerate follows the API's rule** (`modes.ts::canRegenerate`, the same as `runs.py::_regenerable`): only an answer with no intent or `general_chat`, and not a static reply (`intent` null with `route_source` `command`: `/help`, usage messages). A failed chat answer still gets Retry. Change both together
+- The `/` menu (`SlashMenu`, driven from `Composer`) opens only while the draft is ONE `/word` at the start, so `and/or` and `/etc/hosts` never open it; it only inserts text (the backend parses the command). The textarea keeps focus and points at the highlighted row with `aria-activedescendant`; Enter completes the highlighted command unless the box already holds exactly that command (then it sends), Tab completes, Escape closes until the draft changes, and nothing opens while a run is live. The list is `modes.ts::COMMANDS` (doc 08 section 2.6): a new command is added there
+- Not built yet (TASK-042): the document card (status polling, download) and the `/documents` page; `document_created` and `progress` events are known to `api/stream.ts` and ignored. Until the card exists a `/pdf` answer only says the PDF is being prepared
+- `tests/e2e/commands.spec.ts` needs `LLM_MODE=fake` on api AND worker
 
 ### Tool approval (TASK-023)
 - The approval is read from the conversation (`pending_interrupt`), not kept in run state: a run that ends with an `interrupt` event re-reads the conversation, which is also how a reload restores the card. The card shows only while no run is active; `useChatRun.decide` posts to `/runs/resume` and the resumed run streams like any other

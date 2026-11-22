@@ -82,6 +82,17 @@ def test_every_event_we_emit_matches_the_spec(stream_event_validator: Any) -> No
             )
         ),
         sse.ErrorEvent(code="LLM_UNAVAILABLE", message="try again", retryable=True),
+        sse.DocumentCreatedEvent(
+            document=sse.DocumentObject(
+                id=uuid4(),
+                title="Chat summary",
+                kind="thread_summary",
+                status="pending",
+                conversation_id=uuid4(),
+                message_id=uuid4(),
+                created_at=datetime(2026, 11, 22, 10, 5, tzinfo=UTC),
+            )
+        ),
         sse.InterruptEvent(
             interrupt=sse.PendingInterrupt(
                 interrupt_id="int_9a8b7c",

@@ -144,7 +144,7 @@ def test_a_confidence_outside_zero_to_one_is_invalid(confidence: float) -> None:
 
 def test_an_intent_that_is_not_built_falls_back() -> None:
     route = decide(
-        decision("generate_document", 0.95, source="thread"),
+        decision("deep_research", 0.95, topic="solid-state batteries"),
         threshold=0.7,
         pipelines=PIPELINES,
         disabled=NOTHING,
@@ -240,7 +240,8 @@ def test_a_command_becomes_its_route_without_confidence() -> None:
 
 def test_a_command_for_a_pipeline_that_does_not_exist_falls_back() -> None:
     route = command_route(
-        {"intent": "generate_document", "slots": {"source": "thread"}}, pipelines=PIPELINES
+        {"intent": "deep_research", "slots": {"topic": "batteries", "output": "chat"}},
+        pipelines=PIPELINES,
     )
     assert (route.source, route.reason) == ("fallback", "intent_unavailable")
 

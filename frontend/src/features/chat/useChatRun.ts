@@ -8,6 +8,7 @@ import type { Conversation } from '../conversations/api'
 import { useChatKeys } from './api'
 import type { Decision, PendingInterrupt } from './ApprovalCard'
 import { useMemoryWatch } from '../settings/useMemoryWatch'
+import type { RouteInfo } from './modes'
 import { noticeFromError, type Notice } from './notices'
 import { TITLE_REFRESH_DELAYS_MS, TOKEN_BATCH_MS } from './timing'
 import type { ToolCallView } from './toolCalls'
@@ -25,6 +26,8 @@ export type ChatRun = {
   replacesMessageId: string | null
   /** The tool calls of this run so far, in the order they started. */
   toolCalls: ToolCallView[]
+  /** Which pipeline answers this run (`route_selected`); null until it is said, and for a resume. */
+  route: RouteInfo | null
   notice: Notice | null
 }
 
@@ -37,6 +40,7 @@ const IDLE: ChatRun = {
   assistantMessageId: null,
   replacesMessageId: null,
   toolCalls: [],
+  route: null,
   notice: null,
 }
 
@@ -156,6 +160,11 @@ export function useChatRun(conversationId: string) {
                 ...s,
                 userMessageId: event.user_message_id,
                 assistantMessageId: event.assistant_message_id,
+              }))
+            } else if (event.type === 'route_selected') {
+              setState((s) => ({
+                ...s,
+                route: { intent: event.intent, source: event.source },
               }))
             } else if (event.type === 'token') {
               run.text += event.delta

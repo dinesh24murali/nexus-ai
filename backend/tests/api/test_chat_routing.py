@@ -119,10 +119,65 @@ def test_a_memory_answer_cannot_be_regenerated(chat: Chat) -> None:
 
 
 def test_a_command_for_a_feature_that_is_not_built_is_explained(chat: Chat) -> None:
-    events = frames(send(*chat[:2], chat[2], "/pdf").text)
+    events = frames(send(*chat[:2], chat[2], "/research why is the sky blue").text)
 
     assert "not available yet" in answer(events)
     assert [e["event"] for e in events][-1] == "done"
+
+
+# -- documents (TASK-041) ------------------------------------------------------------------------
+
+
+def test_pdf_creates_a_document_that_the_message_list_reports(chat: Chat) -> None:
+    client, headers, cid = chat
+    frames(send(client, headers, cid, "What did we decide about the launch?").text)
+
+    events = frames(send(client, headers, cid, "/pdf").text)
+
+    assert [e["event"] for e in events[:3]] == ["run_started", "route_selected", "document_created"]
+    assert events[1]["data"]["intent"] == "generate_document"
+    document = events[2]["data"]["document"]
+    assert document["status"] == "pending" and document["kind"] == "thread_summary"
+    assert document["conversation_id"] == cid
+    assert document["message_id"] == events[0]["data"]["assistant_message_id"]
+    # The stored answer carries the document, newest message first in the listing.
+    newest = client.get(f"{API}/conversations/{cid}/messages", headers=headers).json()["items"][0]
+    assert newest["intent"] == "generate_document" and newest["route_source"] == "command"
+    assert [d["id"] for d in newest["documents"]] == [document["id"]]
+    # And it cannot be regenerated.
+    refused = client.post(f"{API}/conversations/{cid}/regenerate", headers=headers)
+    assert (
+        refused.status_code == 409 and refused.json()["error"]["code"] == "REGENERATE_NOT_SUPPORTED"
+    )
+
+
+def test_messages_without_a_document_list_an_empty_array(chat: Chat) -> None:
+    client, headers, cid = chat
+    frames(send(client, headers, cid, "hello").text)
+
+    items = client.get(f"{API}/conversations/{cid}/messages", headers=headers).json()["items"]
+
+    assert [m["documents"] for m in items] == [[], []]
+    assert items[0]["route_source"] == "router" and items[1]["route_source"] is None
+
+
+def test_another_users_document_never_shows_in_my_message_list(
+    chat: Chat, client: TestClient, make_user: Any
+) -> None:
+    mine_client, mine_headers, mine_cid = chat
+    frames(send(mine_client, mine_headers, mine_cid, "hello").text)
+    frames(send(mine_client, mine_headers, mine_cid, "/pdf").text)
+    other_headers = auth(client, make_user, "other@example.com")
+    other_cid = new_conversation(client, other_headers)
+    frames(send(client, other_headers, other_cid, "hello").text)
+
+    theirs = client.get(f"{API}/conversations/{other_cid}/messages", headers=other_headers)
+
+    assert [m["documents"] for m in theirs.json()["items"]] == [[], []]
+    assert (
+        client.get(f"{API}/conversations/{mine_cid}/messages", headers=other_headers).status_code
+        == 404
+    )
 
 
 # -- forget --------------------------------------------------------------------------------------

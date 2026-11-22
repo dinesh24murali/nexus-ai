@@ -179,3 +179,49 @@ async def delete_message(session: AsyncSession, user_id: uuid.UUID, message_id: 
         delete(Message).where(Message.user_id == user_id, Message.id == message_id)
     )
     return bool(result.rowcount)  # type: ignore[attr-defined]
+
+
+async def last_chat_answer(
+    session: AsyncSession, user_id: uuid.UUID, conversation_id: uuid.UUID
+) -> Message | None:
+    """The newest answer worth turning into a document: complete, with text, and written by chat
+    or research. A memory answer, a document announcement and a static reply (`/help`, a usage
+    message: no intent, `route_source` `command`) are skipped."""
+    stmt = (
+        select(Message)
+        .where(
+            Message.user_id == user_id,
+            Message.conversation_id == conversation_id,
+            Message.role == "assistant",
+            Message.status == "complete",
+            Message.content != "",
+            or_(
+                Message.intent.in_(("general_chat", "deep_research")),
+                and_(Message.intent.is_(None), Message.route_source.is_(None)),
+            ),
+        )
+        .order_by(Message.created_at.desc(), Message.id.desc())
+        .limit(1)
+    )
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def recent_texts(
+    session: AsyncSession, user_id: uuid.UUID, conversation_id: uuid.UUID, limit: int
+) -> list[tuple[str, str]]:
+    """(role, text) of the newest `limit` messages with text, oldest first. The newest message is
+    the one that asked for the document, so it is left out when it is the user's."""
+    stmt = (
+        select(Message.role, Message.content)
+        .where(
+            Message.user_id == user_id,
+            Message.conversation_id == conversation_id,
+            Message.content != "",
+        )
+        .order_by(Message.created_at.desc(), Message.id.desc())
+        .limit(limit + 1)
+    )
+    rows = [(r.role, r.content) for r in (await session.execute(stmt)).all()]
+    if rows and rows[0][0] == "user":
+        rows = rows[1:]
+    return list(reversed(rows[:limit]))

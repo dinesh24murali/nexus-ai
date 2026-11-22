@@ -28,6 +28,8 @@ type Msg = {
   status: 'complete' | 'cancelled' | 'failed'
   finish_reason?: string | null
   feedback?: -1 | 1 | null
+  intent?: 'general_chat' | 'manage_memory' | 'generate_document' | 'deep_research' | null
+  route_source?: 'router' | 'command' | 'fallback' | null
   created_at: string
 }
 
@@ -972,5 +974,121 @@ describe('tool approval', () => {
     await waitFor(() =>
       expect(screen.queryByRole('group', { name: 'Search the web?' })).not.toBeInTheDocument(),
     )
+  })
+})
+
+describe('mode chip', () => {
+  const routed = (intent: 'manage_memory' | 'generate_document', source: 'command' | 'router') =>
+    ({ type: 'route_selected', intent, source, confidence: null }) as const
+
+  it('shows the chip on the live answer, then on the stored one, once', async () => {
+    const live = liveStream()
+    const { user, box, server } = await open({ onSend: () => live.response })
+
+    await user.type(box(), '/memory{Enter}')
+    live.push(runStarted())
+    live.push(routed('manage_memory', 'command'))
+    live.push(token('Here is what I remember'))
+    await seen('Memory')
+    expect(screen.queryByRole('button', { name: 'Regenerate' })).toBeNull()
+
+    server.messages.push(
+      msg('user', '/memory'),
+      msg('assistant', 'Here is what I remember', {
+        intent: 'manage_memory',
+        route_source: 'command',
+      }),
+    )
+    live.push(usageEvent())
+    live.push(done())
+    live.end()
+
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull())
+    // "Memory" is also a navigation link: count the chip inside the conversation only.
+    const log = within(screen.getByRole('log', { name: 'Conversation' }))
+    expect(log.getAllByText('Memory')).toHaveLength(1)
+    expect(screen.queryByRole('button', { name: 'Regenerate' })).toBeNull()
+  })
+
+  it('shows no chip for a router that answered with chat', async () => {
+    const { user, box } = await open()
+    await user.type(box(), 'hello{Enter}')
+    await seen('Echo: hello')
+    expect(screen.queryByText(/Answered by/)).toBeNull()
+    expect(screen.getByRole('button', { name: 'Regenerate' })).toBeInTheDocument()
+  })
+})
+
+describe('slash menu', () => {
+  it('opens on a slash, narrows as you type and inserts the command without sending', async () => {
+    const { user, box, server } = await open()
+
+    await user.type(box(), '/')
+    const menu = screen.getByRole('listbox', { name: 'Commands' })
+    expect(within(menu).getAllByRole('option').length).toBeGreaterThanOrEqual(8)
+    expect(box()).toHaveAttribute('aria-controls', menu.id)
+
+    await user.type(box(), 'br')
+    expect(within(menu).getAllByRole('option')).toHaveLength(1)
+    await user.click(within(menu).getByRole('option', { name: /\/brief/ }))
+
+    expect(box()).toHaveValue('/brief ')
+    expect(screen.queryByRole('listbox')).toBeNull() // the command is complete: the menu is done
+    expect(posts(server, '/messages')).toHaveLength(0) // nothing was sent
+  })
+
+  it('moves with the arrows and completes with Enter, which does not send', async () => {
+    const { user, box, server } = await open()
+    await user.type(box(), '/pd')
+    expect(box()).toHaveAttribute('aria-activedescendant', screen.getAllByRole('option')[0]!.id)
+
+    await user.keyboard('{ArrowDown}')
+    expect(screen.getAllByRole('option')[1]).toHaveAttribute('aria-selected', 'true')
+    await user.keyboard('{Enter}')
+
+    expect(box()).toHaveValue('/pdf last')
+    expect(posts(server, '/messages')).toHaveLength(0)
+  })
+
+  it('sends a command that is already typed in full instead of answering the menu', async () => {
+    const { user, box, server } = await open()
+    await user.type(box(), '/pdf{Enter}')
+
+    await waitFor(() => expect(posts(server, '/messages')).toHaveLength(1))
+    expect(posts(server, '/messages')[0]!.body).toEqual({ content: '/pdf' })
+  })
+
+  it('closes on Escape until the draft changes, and Enter then sends', async () => {
+    const { user, box, server } = await open()
+    await user.type(box(), '/me')
+    await user.keyboard('{Escape}')
+    expect(screen.queryByRole('listbox')).toBeNull()
+
+    await user.type(box(), 'x') // `/mex` matches nothing; the menu stays closed
+    expect(screen.queryByRole('listbox')).toBeNull()
+    await user.keyboard('{Enter}')
+    await waitFor(() => expect(posts(server, '/messages')).toHaveLength(1))
+  })
+
+  it('does not open for a slash that is not a first word', async () => {
+    const { user, box } = await open()
+    await user.type(box(), 'try and/or')
+    expect(screen.queryByRole('listbox')).toBeNull()
+    await user.clear(box())
+    await user.type(box(), '/etc/hosts')
+    expect(screen.queryByRole('listbox')).toBeNull()
+  })
+
+  it('does not offer commands while a run is live', async () => {
+    const live = liveStream()
+    const { user, box } = await open({ onSend: () => live.response })
+    await user.type(box(), 'go{Enter}')
+    live.push(runStarted())
+    await screen.findByRole('button', { name: 'Stop' })
+    await user.type(box(), '/')
+    expect(screen.queryByRole('listbox')).toBeNull()
+    live.push(usageEvent())
+    live.push(done())
+    live.end()
   })
 })

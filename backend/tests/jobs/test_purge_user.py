@@ -4,6 +4,7 @@ Real Postgres (rows, LangGraph checkpoints, the memory store), real Qdrant and t
 directory; the embeddings are the offline fake."""
 
 import uuid
+from pathlib import Path
 from typing import Any
 
 import psycopg
@@ -60,6 +61,7 @@ class World:
         )
         self.threads: dict[str, list[str]] = {}
         self.file_ids: dict[str, uuid.UUID] = {}
+        self.pdfs: dict[str, list[Path]] = {}
 
     @property
     def ctx(self) -> JobContext:
@@ -137,6 +139,28 @@ class World:
             (file_id, user, f"sha-{label}", relative),
         )
         await ingest(self.index, uid, [f"{label} alpha", f"{label} beta"], file_id=file_id)
+        # A generated document: its row (user-scoped, cascades), its PDF on disk and one that
+        # outlived its conversation (`conversation_id` NULL).
+        self.pdfs[user] = []
+        for n in range(2):
+            doc = uuid.uuid4()
+            relative = f"{user}/documents/{doc}.pdf"
+            pdf = self.settings.uploads_dir / relative
+            pdf.parent.mkdir(parents=True, exist_ok=True)
+            pdf.write_bytes(b"%PDF-1.7 " + label.encode())
+            db.execute(
+                "INSERT INTO documents (id, user_id, conversation_id, title, kind, status, draft,"
+                " storage_path) VALUES"
+                " (%s, %s, %s, %s, 'thread_summary', 'ready', '{}'::jsonb, %s)",
+                (
+                    doc,
+                    user,
+                    self.threads[user][0] if n == 0 else None,
+                    f"{label} doc {n}",
+                    relative,
+                ),
+            )
+            self.pdfs[user].append(pdf)
         # Memories in the LangGraph store.
         async with open_memory_store(self.settings.database_url, self.embedder) as store:
             await remember(store, uid, f"{label} likes tea")
@@ -249,6 +273,7 @@ async def test_the_purge_leaves_nothing_of_the_user_in_any_store(world: World) -
         2,
     )
     assert await w.points(leaver) == 2 and w.disk(leaver)
+    assert w.user_scoped_rows(leaver)["documents"] == 2 and all(p.is_file() for p in w.pdfs[leaver])
     stayer_before = w.user_scoped_rows(stayer)
 
     await ask_to_leave(w, leaver)
@@ -262,6 +287,8 @@ async def test_the_purge_leaves_nothing_of_the_user_in_any_store(world: World) -
     assert w.memory_items(leaver) == 0 and w.memory_vectors(leaver) == 0
     assert await w.points(leaver) == 0
     assert not w.disk(leaver)
+    # Generated documents: no row (the catalogue check above) and no PDF file.
+    assert not any(p.exists() for p in w.pdfs[leaver])
     # The rate-limit counter that was keyed by the user.
     row = w.db.execute(
         "SELECT count(*) FROM rate_limits WHERE key LIKE %s", (f"%{leaver}%",)
@@ -275,6 +302,7 @@ async def test_the_purge_leaves_nothing_of_the_user_in_any_store(world: World) -
     assert (w.memory_items(stayer), w.memory_vectors(stayer)) == (2, 2)
     assert await w.points(stayer) == 2
     assert w.disk(stayer)
+    assert w.user_scoped_rows(stayer)["documents"] == 2 and all(p.is_file() for p in w.pdfs[stayer])
 
 
 async def test_running_the_purge_again_changes_nothing_and_does_not_fail(world: World) -> None:

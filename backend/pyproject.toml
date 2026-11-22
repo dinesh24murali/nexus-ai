@@ -12,6 +12,8 @@ dependencies = [
     "langfuse>=5.2.0",
     "langgraph>=1.2.24",
     "langgraph-checkpoint-postgres>=3.2.1",
+    "markdown-it-py>=4.3.0",
+    "nh3>=0.3.8",
     "psycopg[binary,pool]>=3.3.9",
     "pydantic-settings>=2.16.3",
     "pyjwt>=2.15.1",
@@ -24,6 +26,7 @@ dependencies = [
     "structlog>=26.1.0",
     "tiktoken>=0.14.0",
     "uvicorn[standard]>=0.54.0",
+    "weasyprint>=70.0",
 ]
 
 [dependency-groups]
@@ -69,6 +72,16 @@ python_version = "3.14"
 strict = true
 plugins = ["pydantic.mypy"]
 files = ["app", "tests", "evals"]
+
+[[tool.mypy.overrides]]
+# WeasyPrint ships no type information; only the renderer's child process and its URL fetcher use it.
+module = ["weasyprint", "weasyprint.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# The fetcher subclasses WeasyPrint's (untyped) URLFetcher and URLFetchingError.
+module = ["app.documents.fetcher"]
+disallow_subclassing_any = false
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

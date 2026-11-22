@@ -5,7 +5,7 @@ evolve them without Postgres enum gymnastics.
 
 Not here, on purpose:
   * LangGraph tables (`checkpoints*`, `store`) come from `checkpointer.setup()` / `store.setup()`.
-  * v1.1 pieces (`documents`, `messages.intent`, `messages.route_source`) arrive with M7.
+  * `documents` (TASK-041) holds generated PDFs: the draft, its render state and the file path.
 """
 
 import uuid
@@ -203,6 +203,42 @@ class File(Base):
     error: Mapped[str | None] = mapped_column(Text)
     page_count: Mapped[int | None] = mapped_column(Integer)  # PDFs only; null when unknown
     chunk_count: Mapped[int | None] = mapped_column(Integer)  # null until the file is indexed
+    created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = _updated_at()
+
+
+class Document(Base):
+    """A generated PDF (doc 08 section 2.5). The row is written as `pending` with the draft; the
+    `render_document` job makes the file and marks it `ready` or `failed`."""
+
+    __tablename__ = "documents"
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('thread_summary', 'answer', 'news_brief', 'research_report')", name="kind"
+        ),
+        CheckConstraint("status IN ('pending', 'ready', 'failed')", name="status"),
+        Index("ix_documents_user_created", "user_id", text("created_at DESC"), "id"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    # Null once the conversation is deleted: a document outlives the chat it came from.
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("conversations.id", ondelete="SET NULL")
+    )
+    # The assistant message that announced it. Not a foreign key: the document is written while the
+    # run is still going and the message is stored when the run ends.
+    message_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, server_default="pending", default="pending")
+    draft: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    storage_path: Mapped[str | None] = mapped_column(Text)  # relative to UPLOADS_DIR
+    page_count: Mapped[int | None] = mapped_column(Integer)
+    size_bytes: Mapped[int | None] = mapped_column(Integer)
+    error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = _created_at()
     updated_at: Mapped[datetime] = _updated_at()
 

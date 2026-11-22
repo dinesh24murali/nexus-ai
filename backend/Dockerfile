@@ -23,6 +23,12 @@ ENV TIKTOKEN_CACHE_DIR=/app/.tiktoken
 RUN /app/.venv/bin/python -c "import tiktoken; tiktoken.get_encoding('o200k_base')"
 
 FROM python:3.14-slim-bookworm AS runtime
+# PDF rendering (WeasyPrint, TASK-041): Pango for text layout, HarfBuzz subsetting for embedded
+# fonts, and one bundled font family (DejaVu) so a PDF looks the same on every host.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz-subset0 fontconfig fonts-dejavu-core \
+ && rm -rf /var/lib/apt/lists/*
 RUN groupadd --system --gid 10001 nexus \
  && useradd --system --uid 10001 --gid nexus --home-dir /app --shell /usr/sbin/nologin nexus
 WORKDIR /app

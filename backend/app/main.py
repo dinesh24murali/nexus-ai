@@ -23,6 +23,7 @@ from app.memory.manage import memory_manager_for
 from app.memory.read import memory_lookup_for
 from app.rag.embedder import Embedder
 from app.rag.retriever import lazy_retriever
+from app.services.documents import DocumentsService
 from app.services.feedback import FeedbackService
 from app.services.files import FileService, recent_files_for
 from app.services.memories import MemoryService
@@ -77,6 +78,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 recent_files=recent_files_for(app.state.session_factory),
                 memories=memory_lookup_for(app.state.session_factory, settings, embedder),
                 memory_manager=memory_manager_for(app.state.session_factory, settings, embedder),
+                document_service=DocumentsService(app.state.session_factory, settings),
             ),
             flags=app.state.flags,
             tracer=tracer,

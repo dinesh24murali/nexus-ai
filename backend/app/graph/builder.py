@@ -5,12 +5,14 @@
                                   |                                                    |  ^
                                   |                              (tool calls) -> [approval ->] tools
                                   +-> manage_memory [-> forget_confirm] -> END
+                                  +-> document_check -> document_gather | document_search (approval)
+                                        -> document_compose -> document_persist -> END
 
 `router` (ADR-0010) picks the pipeline for a new message while `load_context` runs; `dispatch`
-waits for both and sends `manage_memory` messages to their own pipeline, everything else to the
-chat agent below. Without a router model or a route the message is a chat message, which is how
-the graph behaved before routing existed. A resume continues inside the pipeline that paused
-(LangGraph resumes at the interrupted node), so it never routes again.
+waits for both and sends `manage_memory` and `generate_document` messages to their own pipelines,
+everything else to the chat agent below. Without a router model or a route the message is a chat
+message, which is how the graph behaved before routing existed. A resume continues inside the
+pipeline that paused (LangGraph resumes at the interrupted node), so it never routes again.
 
 The `tools` node exists when at least one tool is given: file search (`retriever`), web search
 (`web_searcher`) or the calculator. A message with calls that need the user's approval
@@ -31,6 +33,17 @@ from langgraph.graph.state import CompiledStateGraph
 from app.core.config import Settings
 from app.graph.calls import disabled_tools
 from app.graph.intents import FALLBACK_INTENT
+from app.graph.intents.generate_document import (
+    DocumentService,
+    after_check,
+    after_compose,
+    after_step,
+    make_check_node,
+    make_compose_node,
+    make_gather_node,
+    make_persist_node,
+    make_search_node,
+)
 from app.graph.intents.manage_memory import (
     MemoryManager,
     after_manage_memory,
@@ -69,6 +82,8 @@ def build_graph(
     memories: MemoryLookup | None = None,
     router_model: Runnable[Any, Any] | None = None,
     memory_manager: MemoryManager | None = None,
+    document_service: DocumentService | None = None,
+    document_model: Runnable[Any, Any] | None = None,
     router_timeout_s: float = ROUTER_TIMEOUT_S,
     tool_timeout_s: float = TOOL_TIMEOUT_S,
     settings: Settings | None = None,
@@ -107,12 +122,22 @@ def build_graph(
                 bound[names] = chat_model.bind_tools(subset)  # type: ignore[attr-defined]
         return bound[names]
 
-    pipelines = frozenset({FALLBACK_INTENT} | ({"manage_memory"} if memory_manager else set()))
+    documents_on = document_service is not None
+    pipelines = frozenset(
+        {FALLBACK_INTENT}
+        | ({"manage_memory"} if memory_manager else set())
+        | ({"generate_document"} if documents_on else set())
+    )
 
-    def dispatch_to(state: ChatState) -> Literal["summarize", "agent", "manage_memory"]:
+    def dispatch_to(
+        state: ChatState,
+    ) -> Literal["summarize", "agent", "manage_memory", "document_check"]:
         route = state.get("route") or {}
-        if route.get("intent") == "manage_memory" and "manage_memory" in pipelines:
+        intent = route.get("intent")
+        if intent == "manage_memory" and "manage_memory" in pipelines:
             return "manage_memory"
+        if intent == "generate_document" and "generate_document" in pipelines:
+            return "document_check"
         too_long = count_messages(state["messages"]) > summarize_trigger_tokens
         return "summarize" if too_long else "agent"
 
@@ -137,6 +162,23 @@ def build_graph(
         builder.add_conditional_edges("manage_memory", after_manage_memory, ["forget_confirm", END])
         builder.add_edge("forget_confirm", END)
         destinations.append("manage_memory")
+    if document_service is not None:
+        builder.add_node("document_check", make_check_node(document_service))
+        builder.add_node("document_gather", make_gather_node(document_service))
+        builder.add_node("document_search", make_search_node(web_searcher))
+        builder.add_node(
+            "document_compose",
+            make_compose_node(document_model or get_model("long_form", settings=settings)),
+        )
+        builder.add_node("document_persist", make_persist_node(document_service))
+        builder.add_conditional_edges(
+            "document_check", after_check, ["document_gather", "document_search", END]
+        )
+        builder.add_conditional_edges("document_gather", after_step, ["document_compose", END])
+        builder.add_conditional_edges("document_search", after_step, ["document_compose", END])
+        builder.add_conditional_edges("document_compose", after_compose, ["document_persist", END])
+        builder.add_edge("document_persist", END)
+        destinations.append("document_check")
     builder.add_conditional_edges("dispatch", dispatch_to, destinations)
     builder.add_edge("summarize", "agent")
     if not specs:

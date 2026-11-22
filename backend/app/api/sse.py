@@ -45,6 +45,30 @@ class MemoryUpdatedEvent(_Event):
     content: str
 
 
+class DocumentObject(BaseModel):
+    """A generated PDF as the client sees it (the API's `DocumentObject`)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: uuid.UUID
+    title: str
+    kind: Literal["thread_summary", "answer", "news_brief", "research_report"]
+    status: Literal["pending", "ready", "failed"]
+    conversation_id: uuid.UUID | None = None
+    message_id: uuid.UUID | None = None
+    page_count: int | None = None
+    size_bytes: int | None = None
+    error: str | None = None
+    created_at: datetime
+
+
+class DocumentCreatedEvent(_Event):
+    """A document was created; it is `pending` until the render job finishes (poll the API)."""
+
+    type: Literal["document_created"] = "document_created"
+    document: DocumentObject
+
+
 class TokenEvent(_Event):
     type: Literal["token"] = "token"
     delta: str
@@ -139,6 +163,7 @@ Event = (
     RunStartedEvent
     | RouteSelectedEvent
     | MemoryUpdatedEvent
+    | DocumentCreatedEvent
     | TokenEvent
     | ToolStartEvent
     | ToolEndEvent

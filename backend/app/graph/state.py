@@ -1,7 +1,7 @@
 """Graph state (docs/02_outputs/08 section 2.1), the v1 subset.
 
-Keys added later (`route`, `forget_candidates`) are optional, so existing checkpoints stay
-readable.
+Keys added later (`route`, `forget_candidates`, `document_*`) are optional, so existing
+checkpoints stay readable.
 """
 
 from typing import Annotated, Any, Literal, NotRequired, TypedDict
@@ -57,6 +57,16 @@ class ChatState(TypedDict):
     # `manage_memory` forget: the memories (id and text, best match first) offered to the user in
     # the confirmation card. Written by `manage_memory`, read by `forget_confirm`.
     forget_candidates: NotRequired[list[dict[str, str]]]
+    # `generate_document` (TASK-041). All five are reset by `document_check` at the start of every
+    # document turn: the checkpoint keeps them, and a stale draft would skip the model.
+    # `document_stop`: a node ended the turn early with a reply; `document_material`: what the model
+    # composes from (data, not instructions); `document_sources`: the numbered web results of a
+    # brief; `document_draft`: the `DocumentDraft` as a dict; `document_kind`: the documents.kind.
+    document_stop: NotRequired[bool]
+    document_material: NotRequired[str]
+    document_sources: NotRequired[list[Citation]]
+    document_draft: NotRequired[dict[str, Any] | None]
+    document_kind: NotRequired[str | None]
 
 
 class RecentFile(TypedDict):

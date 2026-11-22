@@ -12,6 +12,7 @@ tool call for a tool that requires approval (e.g. `web_search`).
 
 import asyncio
 import hashlib
+import html
 import json
 import math
 import re
@@ -45,6 +46,8 @@ _USER_BLOCK = re.compile(r"<user_message>\n?(.*?)\n?</user_message>", re.DOTALL)
 _ROUTE = re.compile(r"\[\[route:([a-z_]+)(?::([0-9.]+))?\]\]")
 _SLOT = re.compile(r"\[\[slot:([a-z_]+)=([^\]]*)\]\]")
 _ROUTE_MESSAGES = re.compile(r"<message>(.*?)</message>", re.DOTALL)
+_MATERIAL = re.compile(r"<material>\n?(.*?)\n?</material>", re.DOTALL)
+_TAG = re.compile(r"</?(?:message|conversation|summary|web_result)\b[^>]*>")
 _REMEMBER = re.compile(r"\bremember(?: that)?[:,]?\s+(.+)", re.IGNORECASE | re.DOTALL)
 _VERBS = {"have": "has", "do": "does", "go": "goes", "am": "is"}
 
@@ -168,6 +171,9 @@ class FakeChatModel(BaseChatModel):
         if self.role == "router":
             prompt = _text_of(messages[-1]) if messages else ""
             return self._plain(self._route(prompt), input_tokens)
+        if self.role == "long_form":
+            prompt = _text_of(messages[-1]) if messages else ""
+            return self._plain(self._document(prompt), input_tokens)
 
         last_human = max(
             (i for i, m in enumerate(messages) if isinstance(m, HumanMessage)), default=-1
@@ -216,6 +222,33 @@ class FakeChatModel(BaseChatModel):
             op = {"op": "create", "id": None, "content": content, "category": "preference"}
             return json.dumps({"ops": [op]})
         return json.dumps({"ops": []})
+
+    @staticmethod
+    def _document(prompt: str) -> str:
+        """The scripted `nexus.document` model: a two-section draft built from the `<material>`
+        block. The text is copied out unescaped, like a model that quotes its source, so hostile
+        material (rt-23) reaches the renderer. `[[doc:invalid]]` in the material answers with text
+        that is not a draft; a web result is cited as [1]."""
+        block = _MATERIAL.search(prompt)
+        material = block.group(1) if block else ""
+        if "[[doc:invalid]]" in material:
+            return "this is not a document draft"
+        quoted = " ".join(html.unescape(_TAG.sub(" ", material)).split())[:1500]
+        web = "<web_result" in material
+        cite = " [1]" if web else ""
+        draft = {
+            "title": "Fake brief" if web else "Fake document",
+            "sections": [
+                {"heading": "Summary", "body_md": f"{quoted}{cite}"},
+                {"heading": "Details", "body_md": "Fake document body."},
+            ],
+            "sources": (
+                [{"index": 1, "title": "Results", "url": "https://news.example.com/latest"}]
+                if web
+                else []
+            ),
+        }
+        return json.dumps(draft)
 
     @staticmethod
     def _route(prompt: str) -> str:

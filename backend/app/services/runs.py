@@ -44,6 +44,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.api.sse import (
     Citation,
     CitationEvent,
+    DocumentCreatedEvent,
+    DocumentObject,
     DoneEvent,
     ErrorEvent,
     Event,
@@ -67,6 +69,7 @@ from app.db.repositories import usage as usage_repo
 from app.graph.builder import build_graph
 from app.graph.commands import ParsedCommand, StaticReply, parse_command, unavailable_reply
 from app.graph.intents import PIPELINES
+from app.graph.intents.generate_document import DocumentService
 from app.graph.intents.manage_memory import MemoryManager
 from app.graph.nodes.load_context import MemoryLookup, RecentFiles
 from app.graph.state import MAX_TOOL_CALLS
@@ -92,7 +95,13 @@ HEARTBEAT_INTERVAL_S = 10.0  # ADR-0006
 DRAIN_TIMEOUT_S = 90.0  # ADR-0006
 _FORCE_STOP_WAIT_S = 10.0
 _RETRY_AFTER_S = "10"
-_TRACED_PROMPTS = ("nexus.system", "nexus.context", "nexus.summarize", "nexus.route")
+_TRACED_PROMPTS = (
+    "nexus.system",
+    "nexus.context",
+    "nexus.summarize",
+    "nexus.route",
+    "nexus.document",
+)
 _RATE_WINDOW_S = 60
 _RATE_LIMITED_MESSAGE = "You're sending messages too quickly. Please wait a moment."
 
@@ -172,6 +181,7 @@ def graph_factory_for(
     recent_files: RecentFiles | None = None,
     memories: MemoryLookup | None = None,
     memory_manager: MemoryManager | None = None,
+    document_service: DocumentService | None = None,
 ) -> GraphFactory:
     """The production graph: factory-built models, the Postgres checkpointer, the file-search tool
     (when a retriever is given), `web_search` (when Tavily is configured, or in fake mode) and the
@@ -179,7 +189,8 @@ def graph_factory_for(
     chat model) and not the start of the API. Which tools a run may use is decided per run
     (`TOOLS_DISABLED`), not here. `memories` reads the user's long-term memories into the late
     context message. The router model is always built (ADR-0010); `ROUTER_DISABLED` is a per-run
-    switch. `memory_manager` is what `manage_memory` acts through."""
+    switch. `memory_manager` is what `manage_memory` acts through; `document_service` is what
+    `generate_document` reads and writes (the pipeline is absent without it)."""
 
     def build(model_override: str | None) -> Graph:
         chat = get_model("chat", settings=settings, model_override=model_override)
@@ -193,6 +204,8 @@ def graph_factory_for(
             memories=memories,
             router_model=get_model("router", settings=settings),
             memory_manager=memory_manager,
+            document_service=document_service,
+            document_model=get_model("long_form", settings=settings) if document_service else None,
             settings=settings,
         )
 
@@ -326,6 +339,7 @@ class RunService:
         tracer: Tracer | None = None,
         moderator: Moderator | None = None,
         heartbeat_s: float = HEARTBEAT_INTERVAL_S,
+        pipelines: frozenset[str] = PIPELINES,
     ) -> None:
         self._factory = factory
         self._settings = settings
@@ -334,6 +348,9 @@ class RunService:
         self._tracer = tracer
         self._moderator = moderator or Moderator(settings)
         self._heartbeat_s = heartbeat_s
+        # The pipelines the graph this service drives can run: a slash command for any other is
+        # explained ("not available yet") instead of silently answered by chat.
+        self._pipelines = pipelines
         self._graphs: dict[str, Graph] = {}
         self._runs: dict[uuid.UUID, Run] = {}  # conversation id -> its active run (this process)
         self._draining = False
@@ -570,19 +587,18 @@ class RunService:
             == "1",
         )
 
-    @staticmethod
     def _command_for(
-        content: str, routing: RoutingFlags
+        self, content: str, routing: RoutingFlags
     ) -> tuple[ParsedCommand | None, StaticReply | None]:
         """The slash command at the start of a message, as (a pipeline to run, an answer that
         needs none). A command whose pipeline is not built or is switched off gets an explanation,
         never a silent fallback to chat."""
-        parsed = parse_command(content, available=PIPELINES - routing.disabled_intents)
+        parsed = parse_command(content, available=self._pipelines - routing.disabled_intents)
         if isinstance(parsed, StaticReply):
             return None, parsed
         if parsed is None:
             return None, None
-        if parsed.intent not in PIPELINES:
+        if parsed.intent not in self._pipelines:
             return None, unavailable_reply(parsed, disabled=False)
         if parsed.intent in routing.disabled_intents:
             return None, unavailable_reply(parsed, disabled=True)
@@ -802,6 +818,7 @@ class RunService:
             "thread_id": str(run.conversation_id),
             "user_id": str(run.user_id),  # trusted per-run value; never taken from model output
             "user_display_name": display_name,
+            "assistant_message_id": str(run.assistant_message_id),  # trusted: ties a document to it
             "today": datetime.now(UTC).date().isoformat(),
             "disabled_tools": sorted(run.disabled),  # TOOLS_DISABLED, a trusted per-run value
             "router_disabled": run.routing.router_disabled,
@@ -916,6 +933,12 @@ class RunService:
                 )
                 run.intent, run.route_source = routed.intent, routed.source
                 run.events.put_nowait(routed)
+            case "document_created":
+                run.events.put_nowait(
+                    DocumentCreatedEvent(
+                        document=DocumentObject.model_validate(payload["document"])
+                    )
+                )
             case "memory_updated":
                 run.events.put_nowait(
                     MemoryUpdatedEvent(action=payload["action"], content=payload["content"])
@@ -1121,6 +1144,8 @@ class RunService:
             return
         if run.intent == "manage_memory":
             return  # the user managed memories directly: nothing to extract from this turn
+        if run.intent == "generate_document" and run.route_source == "command":
+            return  # `/pdf`, `/brief ...`: a command, not something the user told Nexus about them
         user = await users.get_by_id(session, run.user_id)
         if user is None or not user.memory_enabled:
             return

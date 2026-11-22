@@ -27,6 +27,7 @@ const running = (over: Partial<ChatRun> = {}): ChatRun => ({
   assistantMessageId: null,
   replacesMessageId: null,
   toolCalls: [],
+  route: null,
   notice: null,
   ...over,
 })
@@ -35,7 +36,7 @@ const running = (over: Partial<ChatRun> = {}): ChatRun => ({
 // is sent: no test here presses a thumb).
 const manager = new AuthManager({ fetch: vi.fn() as unknown as typeof fetch, locks: null })
 
-function show(messages: Message[], run: ChatRun) {
+function show(messages: Message[], run: ChatRun, onRegenerate: () => void = () => undefined) {
   render(
     <QueryClientProvider client={new QueryClient()}>
       <AuthContext.Provider value={manager}>
@@ -45,7 +46,7 @@ function show(messages: Message[], run: ChatRun) {
           hasEarlier={false}
           loadingEarlier={false}
           onLoadEarlier={() => undefined}
-          onRegenerate={() => undefined}
+          onRegenerate={onRegenerate}
         />
       </AuthContext.Provider>
     </QueryClientProvider>,
@@ -169,5 +170,77 @@ describe('MessageList tool calls', () => {
     expect(
       log.getByRole('list', { name: 'Tool calls' }).querySelectorAll('[role="group"]'),
     ).toHaveLength(1)
+  })
+})
+
+describe('MessageList mode chip and Regenerate', () => {
+  const idle = running({ running: false })
+  const answer = (over: Partial<Message>): Message => ({
+    ...msg('a1', 'assistant', 'Answer'),
+    ...over,
+  })
+
+  it('shows a chip for a pipeline answer and none for a chat answer', () => {
+    const log = show(
+      [msg('u1', 'user', '/pdf'), answer({ intent: 'generate_document', route_source: 'command' })],
+      idle,
+    )
+    expect(log.getByText('Document')).toBeInTheDocument()
+    expect(log.getByTitle('chosen by your command')).toBeInTheDocument()
+  })
+
+  it('shows no chip on a chat answer', () => {
+    const log = show(
+      [msg('u1', 'user', 'hi'), answer({ intent: 'general_chat', route_source: 'router' })],
+      idle,
+    )
+    expect(log.queryByText('Document')).toBeNull()
+    expect(log.queryByText('Memory')).toBeNull()
+    expect(log.queryByText(/Answered by/)).toBeNull()
+  })
+
+  it.each([
+    ['a chat answer', { intent: 'general_chat', route_source: 'router' }, true],
+    ['an answer from before routing', {}, true],
+    ['a memory answer', { intent: 'manage_memory', route_source: 'router' }, false],
+    ['a document answer', { intent: 'generate_document', route_source: 'command' }, false],
+    ['a research answer', { intent: 'deep_research', route_source: 'router' }, false],
+    ['a /help reply', { intent: null, route_source: 'command' }, false],
+  ] as const)('%s: Regenerate shown = %s', (_name, fields, shown) => {
+    const log = show([msg('u1', 'user', 'q'), answer(fields as Partial<Message>)], idle)
+    expect(log.queryByRole('button', { name: 'Regenerate' }) !== null).toBe(shown)
+  })
+
+  it('still offers Retry for a failed chat answer, never for a failed document', () => {
+    const failedChat = show(
+      [msg('u1', 'user', 'q'), answer({ status: 'failed', intent: null, content: '' })],
+      idle,
+    )
+    expect(failedChat.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+  })
+
+  it('shows the chip on the live answer from the route event, before the answer is stored', () => {
+    const log = show(
+      [],
+      running({
+        pendingUser: '/memory',
+        streamingText: 'Here is',
+        route: { intent: 'manage_memory', source: 'command' },
+      }),
+    )
+    expect(log.getByText('Memory')).toBeInTheDocument()
+    expect(log.queryByRole('button', { name: 'Regenerate' })).toBeNull()
+  })
+
+  it('shows the chip once when the run hands over to the stored answer', () => {
+    const log = show(
+      [msg('u1', 'user', '/pdf'), answer({ intent: 'generate_document', route_source: 'command' })],
+      running({
+        userMessageId: 'u1',
+        assistantMessageId: 'a1',
+        route: { intent: 'generate_document', source: 'command' },
+      }),
+    )
+    expect(log.getAllByText('Document')).toHaveLength(1)
   })
 })

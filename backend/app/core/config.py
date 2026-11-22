@@ -70,6 +70,11 @@ class Settings(BaseSettings):
     max_upload_bytes: int = Field(default=20 * 1024 * 1024, ge=1)
     max_files_per_user: int = Field(default=50, ge=1)
 
+    # Generated PDF documents (docs/02_outputs/08 section 9): created per user per UTC day, and how
+    # many of the newest are kept (older ones are removed by the daily `cleanup_documents` task).
+    documents_per_day: int = Field(default=10, ge=1)
+    documents_keep: int = Field(default=100, ge=1)
+
     # Web search (the `web_search` tool, Tavily). Empty: the tool is not offered. In LLM_MODE=fake
     # an offline stand-in is used, whatever this says.
     tavily_api_key: SecretStr = SecretStr("")

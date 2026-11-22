@@ -15,6 +15,7 @@ from typing import Any, cast
 
 import structlog
 from langchain_core.runnables import Runnable, RunnableConfig
+from pydantic import ValidationError
 from qdrant_client import AsyncQdrantClient
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -23,6 +24,11 @@ from app.core.config import Settings
 from app.core.runtime_flags import RuntimeFlags
 from app.db.models import User
 from app.db.repositories import conversations, files, messages, rate_limits, usage, users
+from app.db.repositories import documents as documents_repo
+from app.documents import storage
+from app.documents.draft import DocumentDraft
+from app.documents.markup import document_html
+from app.documents.render import REASON_FAILED, RenderError, render_pdf
 from app.jobs import queue
 from app.jobs.queue import ClaimedJob
 from app.llm.factory import Role, build_embeddings_client, get_model
@@ -327,6 +333,76 @@ async def _fail_file(ctx: JobContext, user_id: uuid.UUID, file_id: uuid.UUID, re
         await files.mark_failed(session, user_id, file_id, reason)
 
 
+async def render_document(ctx: JobContext, job: ClaimedJob) -> None:
+    """Render one document's draft to a PDF (TASK-041, doc 08 section 5, doc 10 LLM-T18).
+
+    Idempotent: a document that is already `ready` with its file is left alone. A render that
+    cannot work (too long, too slow, nothing usable) fails for good with a fixed reason the user
+    sees; any other error is retried by the queue and the last attempt marks the document failed.
+    The renderer runs in a child process that is killed at its time limit and can load nothing but
+    its bundled stylesheet. Logs carry ids and counts, never text.
+    """
+    if job.user_id is None:
+        raise ValueError("render_document needs a user")
+    user_id = job.user_id
+    document_id = uuid.UUID(str(job.payload["document_id"]))
+
+    async with ctx.factory() as session:
+        row = await documents_repo.get(session, user_id, document_id)
+    if row is None:
+        return  # deleted (or never this user's): nothing to do
+    uploads = ctx.settings.uploads_dir
+    if (
+        row.status == "ready"
+        and row.storage_path
+        and await asyncio.to_thread((uploads / row.storage_path).is_file)
+    ):
+        return
+    try:
+        draft = DocumentDraft.model_validate(row.draft)
+    except ValidationError:
+        await _fail_document(ctx, user_id, document_id, REASON_FAILED)
+        return
+
+    relative = storage.relative_path(user_id, document_id)
+    out = uploads / relative
+    await asyncio.to_thread(out.parent.mkdir, parents=True, exist_ok=True)
+    try:
+        rendered = await render_pdf(document_html(draft, created_on=row.created_at.date()), out)
+    except RenderError as exc:
+        await _fail_document(ctx, user_id, document_id, exc.reason)
+        _log.info("render_refused", document_id=str(document_id), reason=exc.reason)
+        return
+    except Exception:
+        if job.attempts >= job.max_attempts:
+            await _fail_document(ctx, user_id, document_id, REASON_FAILED)
+        raise
+    if rendered.denied:
+        # The sanitiser should leave nothing to load: a request here is what the
+        # `documents.external_fetches` gate and the runbook (doc 10 section 6) look for.
+        _log.warning("render_denied_fetches", document_id=str(document_id), count=rendered.denied)
+    async with ctx.factory() as session, session.begin():
+        still_there = await documents_repo.mark_ready(
+            session,
+            user_id,
+            document_id,
+            storage_path=relative,
+            page_count=rendered.pages,
+            size_bytes=rendered.size_bytes,
+        )
+    if not still_there:  # deleted while we worked: leave no file behind
+        await asyncio.to_thread(storage.remove, uploads, relative)
+        return
+    _log.info("render_done", document_id=str(document_id), pages=rendered.pages)
+
+
+async def _fail_document(
+    ctx: JobContext, user_id: uuid.UUID, document_id: uuid.UUID, reason: str
+) -> None:
+    async with ctx.factory() as session, session.begin():
+        await documents_repo.mark_failed(session, user_id, document_id, reason)
+
+
 class PurgeBlockedError(RuntimeError):
     """The user still has a job running; the purge waits (the queue retries it with back-off)."""
 
@@ -374,6 +450,8 @@ JOBS: dict[str, JobSpec] = {
     "ingest_file": JobSpec(ingest_file, timeout_s=300, max_attempts=3),
     # Doc 08 section 9 lists 2 for this job: 2 attempts, as `ingest_file` reads its 3 as 3 attempts.
     "extract_memories": JobSpec(extract_memories, timeout_s=120, max_attempts=2),
+    # Doc 08 section 9: 60 s, 2 attempts. The renderer's own limit (50 s) is below the job's.
+    "render_document": JobSpec(render_document, timeout_s=60, max_attempts=2),
     # Waits out a running job of the user (back-off), so it needs many attempts (TASK-028).
     "purge_user": JobSpec(purge_user, timeout_s=600, max_attempts=PURGE_ATTEMPTS),
 }

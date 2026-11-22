@@ -9,6 +9,7 @@ from typing import Any
 import psycopg
 import pytest
 from app.api.sse import (
+    DocumentCreatedEvent,
     DoneEvent,
     InterruptEvent,
     MemoryUpdatedEvent,
@@ -17,7 +18,7 @@ from app.api.sse import (
     UsageEvent,
 )
 from app.core.errors import ApiError
-from app.llm.fake import FakeChatModel
+from app.llm.fake import FakeChatModel, FakeWebSearcher
 
 from tests.graph.memory_support import StubManager
 from tests.graph.support import RecordingFake
@@ -249,7 +250,7 @@ async def test_a_malformed_command_gets_a_usage_reply_and_no_pipeline(make_env: 
     assert router.requests == [] and manager.saved == []
 
 
-@pytest.mark.parametrize("command", ["/pdf", "/pdf last", "/brief rust", "/research why?"])
+@pytest.mark.parametrize("command", ["/research why?"])
 async def test_a_command_for_a_pipeline_that_is_not_built_says_so(
     make_env: Any, command: str
 ) -> None:
@@ -260,6 +261,20 @@ async def test_a_command_for_a_pipeline_that_is_not_built_says_so(
     text = "".join(e.delta for e in events if isinstance(e, TokenEvent))
     assert "not available yet" in text
     assert "route_selected" not in types(events) and router.requests == []
+
+
+@pytest.mark.parametrize("command", ["/pdf", "/pdf last", "/brief rust"])
+async def test_a_document_command_without_the_document_pipeline_says_so(
+    make_env: Any, command: str
+) -> None:
+    """A service whose graph has no document service explains the command instead of letting chat
+    answer it as text."""
+    env, router, _ = await routed_env(make_env, chat=ExplodingChat(role="chat"))
+
+    events = await collect(await env.send(command))
+
+    assert "not available yet" in "".join(e.delta for e in events if isinstance(e, TokenEvent))
+    assert router.requests == []
 
 
 async def test_a_command_for_a_switched_off_intent_says_so(make_env: Any) -> None:
@@ -490,3 +505,223 @@ async def test_the_resume_applies_a_switch_flipped_while_the_card_waited(make_en
 
     assert manager.deleted == []
     assert "switched off" in env.messages()[-1][1]
+
+
+# -- documents (TASK-041) ------------------------------------------------------------------------
+
+
+async def documents_env(make_env: Any, **options: Any) -> Env:
+    env: Env = await make_env(
+        router=RecordingFake(role="router"),
+        memory_manager=StubManager(),
+        long_form_documents=True,
+        web=FakeWebSearcher(),
+        **options,
+    )
+    return env
+
+
+def doc_rows(db: psycopg.Connection[Any], env: Env) -> list[tuple[Any, ...]]:
+    return db.execute(
+        "SELECT kind, status, title, message_id, conversation_id FROM documents"
+        " WHERE user_id = %s ORDER BY created_at",
+        (env.user,),
+    ).fetchall()
+
+
+async def test_pdf_makes_a_pending_document_announced_by_the_answer(
+    make_env: Any, db: psycopg.Connection[Any]
+) -> None:
+    env = await documents_env(make_env)
+    await collect(await env.send("Tell me about launch dates"))
+
+    events = await collect(await env.send("/pdf"))
+
+    assert types(events)[:3] == ["run_started", "route_selected", "document_created"]
+    routed, created = events[1], events[2]
+    assert isinstance(routed, RouteSelectedEvent)
+    assert (routed.intent, routed.source) == ("generate_document", "command")
+    assert isinstance(created, DocumentCreatedEvent)
+    assert created.document.status == "pending" and created.document.kind == "thread_summary"
+    assert types(events)[-2:] == ["usage", "done"]
+    # The row, tied to this run's assistant message, and its render job.
+    ((kind, status, title, message_id, conversation_id),) = doc_rows(db, env)
+    assert (kind, status, conversation_id) == ("thread_summary", "pending", env.cid)
+    assert message_id == events[0].assistant_message_id  # type: ignore[union-attr]
+    assert "render_document" in job_kinds(db)
+    # The answer says so, is stored as a document answer and cannot be regenerated.
+    assert stored(db, env)[-1] == ("assistant", "generate_document", "command")
+    text = env.messages()[-1][1]
+    assert title in text
+    with pytest.raises(ApiError) as refused:
+        await env.service.start_regenerate(env.user, "Marco", env.cid)
+    assert refused.value.code == "REGENERATE_NOT_SUPPORTED"
+
+
+async def test_a_document_command_is_not_mined_for_memories(
+    make_env: Any, db: psycopg.Connection[Any]
+) -> None:
+    env = await documents_env(make_env)
+    await collect(await env.send("hello"))
+    assert "extract_memories" in job_kinds(db)  # an ordinary message is
+    db.execute("DELETE FROM jobs WHERE kind = 'extract_memories'")
+
+    await collect(await env.send("/pdf"))
+
+    assert "extract_memories" not in job_kinds(db)
+
+
+async def test_pdf_last_uses_the_previous_answer_with_no_model_call_for_the_document(
+    make_env: Any, db: psycopg.Connection[Any]
+) -> None:
+    env = await documents_env(make_env)
+    await collect(await env.send("hello"))
+    first_answer = env.messages()[1][1]
+
+    events = await collect(await env.send("/pdf last"))
+
+    assert "document_created" in types(events)
+    ((kind, *_),) = doc_rows(db, env)
+    assert kind == "answer"
+    row = db.execute("SELECT draft FROM documents").fetchone()
+    assert row and first_answer.split()[0] in str(row[0])
+
+
+async def test_pdf_with_nothing_to_convert_says_so_and_makes_nothing(
+    make_env: Any, db: psycopg.Connection[Any]
+) -> None:
+    env = await documents_env(make_env)
+
+    events = await collect(await env.send("/pdf last"))
+
+    assert "document_created" not in types(events)
+    assert "earlier answer" in env.messages()[-1][1]
+    assert doc_rows(db, env) == [] and "render_document" not in job_kinds(db)
+    assert stored(db, env)[-1] == ("assistant", "generate_document", "command")  # still a turn
+
+
+async def test_a_brief_pauses_at_the_search_card_and_the_resume_makes_the_document(
+    make_env: Any, db: psycopg.Connection[Any]
+) -> None:
+    env = await documents_env(make_env)
+
+    first = await collect(await env.send("/brief Rust 2024"))
+
+    assert types(first)[-1] == "interrupt" and "document_created" not in types(first)
+    card = first[-1]
+    assert isinstance(card, InterruptEvent) and card.interrupt.tool == "web_search"
+    assert card.interrupt.args == {"query": "Rust 2024"}
+    assert doc_rows(db, env) == []
+    assert env.lease() == (None, None)  # a paused run holds no lease
+
+    second = await collect(
+        await env.resume(card.interrupt.interrupt_id, "edit", {"query": "Rust 2024 edition"})
+    )
+
+    assert "document_created" in types(second) and types(second)[-1] == "done"
+    ((kind, *_),) = doc_rows(db, env)
+    assert kind == "news_brief"
+    calls = db.execute("SELECT tool_calls FROM messages WHERE role = 'assistant'").fetchall()
+    assert "Rust 2024 edition" in str(calls)  # the card's edit is what ran, and it is on the answer
+    assert stored(db, env)[-1] == ("assistant", "generate_document", "command")
+
+
+async def test_rejecting_the_brief_search_makes_nothing(
+    make_env: Any, db: psycopg.Connection[Any]
+) -> None:
+    env = await documents_env(make_env)
+    first = await collect(await env.send("/brief Rust 2024"))
+    card = first[-1]
+    assert isinstance(card, InterruptEvent)
+
+    await collect(await env.resume(card.interrupt.interrupt_id, "reject"))
+
+    assert doc_rows(db, env) == [] and "render_document" not in job_kinds(db)
+
+
+async def test_a_router_chosen_document_request_works_like_the_command(
+    make_env: Any, db: psycopg.Connection[Any]
+) -> None:
+    env = await documents_env(make_env)
+    await collect(await env.send("hello"))
+
+    events = await collect(
+        await env.send("[[route:generate_document]][[slot:source=thread]] make that a pdf")
+    )
+
+    routed = events[1]
+    assert isinstance(routed, RouteSelectedEvent) and routed.source == "router"
+    assert "document_created" in types(events)
+    assert stored(db, env)[-1] == ("assistant", "generate_document", "router")
+
+
+async def test_the_day_limit_refuses_the_eleventh_document_with_a_reply(
+    make_env: Any, db: psycopg.Connection[Any]
+) -> None:
+    env = await documents_env(make_env, settings_update={"documents_per_day": 2})
+    await collect(await env.send("hello"))
+    for _ in range(2):
+        await collect(await env.send("/pdf"))
+
+    events = await collect(await env.send("/pdf"))
+
+    assert "document_created" not in types(events) and types(events)[-1] == "done"
+    assert "limit of 2 documents" in env.messages()[-1][1]
+    assert len(doc_rows(db, env)) == 2
+
+
+async def test_a_document_run_is_billed_to_the_user_like_any_other_run(
+    make_env: Any, db: psycopg.Connection[Any]
+) -> None:
+    env = await documents_env(make_env)
+    await collect(await env.send("hello"))
+    before = env.usage_today()
+
+    events = await collect(await env.send("/pdf"))
+
+    usage = next(e for e in events if isinstance(e, UsageEvent))
+    assert usage.usage.prompt_tokens > 0  # the long_form call is counted
+    assert env.usage_today()[1] > before[1]
+
+
+async def test_a_cancel_before_the_document_is_written_creates_nothing(
+    make_env: Any, db: psycopg.Connection[Any]
+) -> None:
+    import asyncio
+
+    slow = SlowLongForm(role="long_form")
+    env = await documents_env(make_env, long_form=slow)
+    await collect(await env.send("hello"))
+
+    run = await env.send("/pdf")
+    await asyncio.wait_for(slow.started.wait(), 5)
+    assert await env.service.cancel(env.user, env.cid)
+    events = await collect(run)
+
+    assert events[-1].type == "done" and events[-1].finish_reason == "cancelled"
+    assert doc_rows(db, env) == [] and "render_document" not in job_kinds(db)
+
+
+class SlowLongForm(FakeChatModel):
+    """A `long_form` model that waits (so a test can cancel while it composes)."""
+
+    started: Any = None
+
+    def __init__(self, **kwargs: Any) -> None:
+        import asyncio
+
+        super().__init__(**kwargs)
+        object.__setattr__(self, "started", asyncio.Event())
+
+    async def _astream(self, *args: Any, **kwargs: Any) -> Any:
+        self.started.set()
+        import asyncio
+
+        await asyncio.sleep(30)
+        yield  # pragma: no cover
+
+    async def _agenerate(self, *args: Any, **kwargs: Any) -> Any:
+        import asyncio
+
+        self.started.set()
+        await asyncio.sleep(30)

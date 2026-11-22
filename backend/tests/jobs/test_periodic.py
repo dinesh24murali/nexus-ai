@@ -70,6 +70,7 @@ def test_the_standard_schedule_matches_the_design() -> None:
         "requeue_stale_jobs": 30,
         "cleanup_invites": 86_400,
         "cleanup_rate_limits": 86_400,
+        "cleanup_documents": 86_400,
     }
     assert timedelta(seconds=60) == periodic.RUN_STALE_AFTER
     assert timedelta(minutes=2) == periodic.JOB_STALE_AFTER

@@ -257,7 +257,7 @@ test("memory by chat: remember, list and /help answer without the chat model", a
   await expect(page.getByText("/memory forget <text>")).toBeVisible();
 
   // A command that is not available yet says so instead of falling through to the model.
-  await say(page, "/pdf");
+  await say(page, "/research why is the sky blue");
   await expect(page.getByText(/is not available yet/)).toBeVisible();
 });
 

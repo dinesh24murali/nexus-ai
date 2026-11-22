@@ -18,14 +18,18 @@ backend/
 │   ├── api/                ← routers (thin), deps.py (auth + session factory), schemas.py,
 │   │                         chat.py (send/regenerate/cancel/history) + sse.py (typed events, framing),
 │   │                         feedback.py (PUT /messages/{id}/feedback), files.py (upload, list, get),
-│   │                         memories.py (list, add, edit, delete, clear all)
+│   │                         memories.py (list, add, edit, delete, clear all);
+│   │                         `Message.documents` is filled in chat.py (the /documents endpoints are TASK-042)
 │   ├── services/           ← use cases and transaction boundaries (auth.py; files.py = upload checks, storage,
 │   │                         duplicate/limit, enqueue `ingest_file`; runs.py = run lease,
 │   │                         streaming, cancel, regenerate, drain, pre-run limits; usage.py = spend reads,
 │   │                         budget check, /me/usage, spend alert; feedback.py = rate an answer + Langfuse score; memories.py = the
-│   │                         memories API use cases, same policy as extraction)
+│   │                         memories API use cases, same policy as extraction; documents.py = the
+│   │                         `generate_document` pipeline's service: day limit, worst-case budget
+│   │                         pre-check, reads of the conversation, row + render job in one transaction)
 │   ├── jobs/               ← queue.py (Postgres SKIP LOCKED), handlers.py (registry: kind -> handler,
-│   │                         timeout, attempts), periodic.py (reaper, stale-job requeue, cleanups)
+│   │                         timeout, attempts; `render_document` too), periodic.py (reaper, stale-job
+│   │                         requeue, cleanups incl. `cleanup_documents`)
 │   ├── db/                 ← base, models, session, repositories/ (every query is owner-scoped)
 │   ├── core/               ← config, logging, errors, security, ratelimit, budgets (policy), runtime_flags, health, net
 │   ├── cli.py              ← admin CLI (python -m app.cli); worker.py (job loops + periodic); migrate.py
@@ -38,7 +42,12 @@ backend/
 │   │                         commands.py (slash-command parser, pure), intents/ (PIPELINES; manage_memory = list/save/forget
 │   │                         by chat, forget_confirm = the card), nodes/ (agent, load_context, summarize, approval = interrupt
 │   │                         per call that needs it, tools = the tool loop + cap), tools/ (search_my_files, web_search,
-│   │                         calculator, outcome)
+│   │                         calculator, outcome); intents/generate_document.py (check, gather, search,
+│   │                         compose, persist)
+│   ├── documents/          ← PDF documents: draft.py (`DocumentDraft`, limits, `draft_from_answer`, material
+│   │                         for the model), markup.py (untrusted Markdown -> sanitised HTML), fetcher.py (deny-all
+│   │                         URL fetcher, counts refusals), render.py + worker_main.py (WeasyPrint in a killable
+│   │                         child process), storage.py (`<UPLOADS_DIR>/<user>/documents/<id>.pdf`), assets/
 │   ├── rag/                ← formats.py, parsers.py (PDF/DOCX/TXT/MD), chunker.py (800/120 tokens), embedder.py,
 │   │                         retriever.py (query -> tenant-filtered passages),
 │   │                         index.py (Qdrant: alias `documents`, tenant payload); ingestion job is in jobs/handlers.py
@@ -102,6 +111,12 @@ backend/
 ### Account deletion (TASK-028)
 - `DELETE /me` (`services/accounts.py`) only schedules: one transaction sets `pending_deletion`, revokes every refresh token, cancels the user's queued jobs and queues `purge_user`. The erasure is the job (`jobs/handlers.py::purge_user`): external stores first (Qdrant by `user_id`, memory store, the user's uploads directory), then one Postgres transaction that ends with the `users` row (FK cascade does the rest). Every step is idempotent, the job waits while another job of the user is running, and it refuses a user who is not `pending_deletion`
 - A new table with a `user_id` needs `ON DELETE CASCADE` (or an explicit step in the purge): `tests/jobs/test_purge_user.py` finds user-owned tables from the catalogue and fails if any row of the user survives. A new store that holds user data (a vector collection, a directory) needs its own purge step and a line in that test
+
+### Documents (TASK-041)
+- `generate_document` reads and writes through the injected `DocumentService` (`services/documents.py`); the user id and `assistant_message_id` come from the trusted run config. Every node that can end the turn early returns a fixed chat reply (`document_stop`) and writes nothing; `document_check` resets the per-run `document_*` state keys because the checkpoint keeps them. The model's own `sources` are discarded in code. A brief's search is the chat approval card, and the node that interrupts has no side effect before `interrupt()`
+- A PDF is built from untrusted text, so every layer is tested and mutation-checked: `markup.py` (raw HTML escaped, no images, `http(s)` links only and printed in full, `nh3` last), `fetcher.py` (one bundled stylesheet, everything else refused and counted), `render.py` (child process with a minimal environment, killed at 50 s, <= 30 pages, `.part` then rename; ADR-0011). Anything new the renderer should load goes into `documents/bundled.py::BUNDLED` and its test, never into the page
+- `render_document` is idempotent, owner-scoped (`job.user_id`), and ends in a fixed reason (`render.REASON_*`) on failure; PDFs live under the user's own directory so `purge_user` removes them. Limits are settings (`DOCUMENTS_PER_DAY` 10, `DOCUMENTS_KEEP` 100). `RunService(pipelines=...)` must list what its graph can run
+- Document tests need no mocks: the real renderer runs in the unit tests (about one second each) and the service and job tests use the real Postgres
 
 ### Limits and moderation
 - A chat send/regenerate passes, in order: drain check, `ratelimit.hit` (atomic), `usage.ensure_within_budgets`, `Moderator.check` (sends only), then the lease. Refusals (`RATE_LIMITED`, `BUDGET_EXCEEDED` with `details.scope`, `MODERATION_FLAGGED`) happen before anything is written. New run-starting endpoints must go through `RunService._admit`

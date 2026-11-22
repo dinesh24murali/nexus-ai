@@ -2,6 +2,7 @@
 
 import re
 import uuid
+from collections.abc import Sequence
 from datetime import date, datetime
 from typing import Annotated, Any, Literal, Self
 
@@ -298,6 +299,36 @@ class FeedbackOut(BaseModel):
     created_at: datetime
 
 
+class DocumentOut(BaseModel):
+    """A generated PDF (the API's `DocumentObject`)."""
+
+    id: uuid.UUID
+    title: str
+    kind: Literal["thread_summary", "answer", "news_brief", "research_report"]
+    status: Literal["pending", "ready", "failed"]
+    conversation_id: uuid.UUID | None
+    message_id: uuid.UUID | None
+    page_count: int | None
+    size_bytes: int | None
+    error: str | None
+    created_at: datetime
+
+    @classmethod
+    def from_model(cls, d: Any) -> DocumentOut:
+        return cls(
+            id=d.id,
+            title=d.title,
+            kind=d.kind,
+            status=d.status,
+            conversation_id=d.conversation_id,
+            message_id=d.message_id,
+            page_count=d.page_count,
+            size_bytes=d.size_bytes,
+            error=d.error,
+            created_at=d.created_at,
+        )
+
+
 class MessageUsageOut(BaseModel):
     model: str | None
     prompt_tokens: int
@@ -318,7 +349,8 @@ class MessageOut(BaseModel):
     feedback: int | None
     usage: MessageUsageOut | None
     intent: str | None
-    documents: list[Any]
+    route_source: str | None
+    documents: list[DocumentOut]
     created_at: datetime
 
     @model_serializer(mode="wrap")
@@ -329,7 +361,9 @@ class MessageOut(BaseModel):
         return data
 
     @classmethod
-    def from_model(cls, m: Any, feedback: int | None = None) -> MessageOut:
+    def from_model(
+        cls, m: Any, feedback: int | None = None, documents: Sequence[Any] = ()
+    ) -> MessageOut:
         usage = None
         if m.role == "assistant" and m.model is not None:
             usage = MessageUsageOut(
@@ -351,7 +385,8 @@ class MessageOut(BaseModel):
             feedback=feedback,
             usage=usage,
             intent=m.intent,
-            documents=[],
+            route_source=m.route_source,
+            documents=[DocumentOut.from_model(d) for d in documents],
             created_at=m.created_at,
         )
 

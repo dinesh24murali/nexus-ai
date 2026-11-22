@@ -13,6 +13,7 @@ from app.api.deps import CurrentUserDep, FactoryDep, RunsDep
 from app.api.schemas import MessageOut, MessagePage, ResumeRunRequest, SendMessageRequest
 from app.core.errors import ApiError
 from app.db.repositories import conversations, feedback, messages
+from app.db.repositories import documents as documents_repo
 from app.services.runs import Run
 
 router = APIRouter(prefix="/conversations", tags=["chat"])
@@ -143,7 +144,8 @@ async def list_messages(
             session, current.id, cid, limit=limit, cursor=decoded
         )
         ratings = await feedback.scores_for(session, current.id, [m.id for m in items])
+        made = await documents_repo.for_messages(session, current.id, [m.id for m in items])
     return MessagePage(
-        items=[MessageOut.from_model(m, ratings.get(m.id)) for m in items],
+        items=[MessageOut.from_model(m, ratings.get(m.id), made.get(m.id, ())) for m in items],
         next_cursor=next_cursor,
     )

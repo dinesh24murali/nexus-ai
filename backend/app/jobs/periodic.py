@@ -16,6 +16,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import Settings
 from app.db.repositories import conversations, invites, messages, rate_limits
+from app.db.repositories import documents as documents_repo
+from app.documents import storage
 from app.jobs import queue
 
 _log = structlog.get_logger("nexus.periodic")
@@ -91,10 +93,25 @@ async def cleanup_rate_limits(factory: Factory) -> int:
         )
 
 
+async def cleanup_documents(factory: Factory, settings: Settings) -> int:
+    """Keep each user's newest `documents_keep` documents (100): older rows go first, then their
+    PDFs. A crash between the two leaves an orphan file under the user's own directory, which the
+    account purge removes; it never leaves a row that points at a missing file."""
+    async with factory() as session, session.begin():
+        old = await documents_repo.beyond_newest(session, settings.documents_keep)
+        removed = await documents_repo.delete_ids(session, [doc_id for doc_id, _, _ in old])
+    for _, _, path in old:
+        await asyncio.to_thread(storage.remove, settings.uploads_dir, path)
+    if removed:
+        _log.info("documents_cleaned", count=removed)
+    return removed
+
+
 def standard_tasks(settings: Settings, factory: Factory) -> list[Task]:
     return [
         Task("reap_stale_runs", 30, lambda: reap_stale_runs(factory)),
         Task("requeue_stale_jobs", 30, lambda: requeue_stale_jobs(factory)),
         Task("cleanup_invites", 86_400, lambda: cleanup_invites(factory)),
         Task("cleanup_rate_limits", 86_400, lambda: cleanup_rate_limits(factory)),
+        Task("cleanup_documents", 86_400, lambda: cleanup_documents(factory, settings)),
     ]

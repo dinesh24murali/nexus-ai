@@ -350,10 +350,12 @@ Starts after M6 so the v1 core ships hardened first. Every task ships with its e
 
 #### TASK-040: Mode chip & slash commands (UI)
 - **Depends on:** TASK-038
-- **Files:** `frontend/src/features/chat/{ModeChip,SlashMenu}.tsx`, `frontend/src/api/stream.ts`
-- **Description:** Render `route_selected` as a chip on the answer; the `/` menu inserts command text (the backend parses it); hide Regenerate on non-chat answers.
+- **Files:** `frontend/src/features/chat/{ModeChip,SlashMenu,modes}.tsx`, `frontend/src/features/chat/{Composer,MessageList,useChatRun}`, `docs/02_outputs/04_api_spec.yaml` (`Message.route_source`, spec 1.4.0)
+- **Description:** Render `route_selected` as a chip on the answer; the `/` menu inserts command text (the backend parses it); hide Regenerate on non-chat answers (the same rule as the API, so `Message` gains `route_source`).
 - **Acceptance criteria:**
-  - [ ] Component tests; Playwright (fake LLM): `/pdf` produces a Document chip and a document card; Regenerate is hidden on it
+  - [x] Component tests (`modes`, `MessageList`, `chat.test.tsx`: chip live and stored, the Regenerate rule, the menu: open, filter, keyboard, insert, Escape, no false opens)
+  - [x] Playwright (fake LLM): `/pdf` produces a Document chip and Regenerate is hidden on it (`tests/e2e/commands.spec.ts`)
+  - [-] ... and a document card — **the card is TASK-042's (`DocumentCard`); deferred as D33**
 
 ### Documents & research  [012-documents-research]
 
@@ -361,11 +363,14 @@ Starts after M6 so the v1 core ships hardened first. Every task ships with its e
 - **Depends on:** TASK-038
 - **Files:** `backend/app/graph/intents/generate_document.py`, `backend/app/documents/{draft,render,fetcher}.py`, `backend/app/jobs/render_document.py`, `backend/prompts/nexus.document.md`, migration (`documents`), `backend/Dockerfile` (WeasyPrint system libs)
 - **Description:** Gather (`thread`: checkpoint summary + recent messages ≤ 16k tokens; `last_answer`: the previous assistant message, converted with no LLM call; `topic`: one approved `web_search`) → `DocumentDraft` on `long_form` (max output 4k) → persist → `render_document` job (sanitised HTML, deny-all URL fetcher, 60 s, ≤ 30 pages) → `document_created`; worst-case cost pre-check against the user budget and the global cap; limits 10/day, keep 100; `cleanup_documents`; cancel semantics (doc 08 §2.3). Extend `purge_user` to delete `documents` rows and PDF files.
+- **Built as:** `render_document` and `cleanup_documents` live in `jobs/handlers.py` and `jobs/periodic.py` (the handler needs `JobContext`), the service is `services/documents.py`, and the renderer runs in a killable child process (ADR-0011).
 - **Acceptance criteria:**
-  - [ ] `documents.golden` reviewed; `documents.render_success` baseline recorded; `documents.external_fetches = 0` (absolute)
-  - [ ] rt-23 passes; the fetcher unit test rejects `file://`, `http(s)://` and `data:` outside the allowlist
-  - [ ] The cross-store purge test also checks that no `documents` rows or PDF files remain for the user
-  - [ ] `ops.cost_per_document_run_usd` baseline recorded; worst case ≤ $0.05 by construction
+  - [-] `documents.golden` reviewed; `documents.render_success` baseline recorded — **dataset built (AI-drafted, 12 / 4), suite wired and run offline; the review, a real run and the baseline need a paid run (D34)**
+  - [x] `documents.external_fetches = 0` (absolute gate recorded: deterministic, the renderer needs no model)
+  - [x] rt-23 passes (offline: the four hostile records of `documents.golden`, plus 10 hostile bodies through the real renderer in `tests/documents/test_render.py`; the real compose model on hostile material is D34); the fetcher unit test rejects `file://`, `http(s)://` and `data:` outside the allowlist
+  - [x] The cross-store purge test also checks that no `documents` rows or PDF files remain for the user
+  - [x] Worst case ≤ $0.05 by construction (`worst_case_usd` = $0.037, asserted in a test and checked before the run starts)
+  - [-] `ops.cost_per_document_run_usd` baseline recorded — **needs a real run (D34)**
 
 #### TASK-042: Documents API & UI
 - **Depends on:** TASK-041
