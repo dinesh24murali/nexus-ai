@@ -1,0 +1,15 @@
+{
+  "name": "nexus-ai-e2e",
+  "private": true,
+  "description": "Repo-root tooling for end-to-end tests (tests/e2e) and DOM checks (verify/scripts). App code lives in frontend/ and backend/.",
+  "scripts": {
+    "e2e": "bash verify/scripts/run-e2e.sh"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.60.0",
+    "@types/node": "^24.0.0",
+    "playwright": "^1.60.0",
+    "ts-node": "^10.9.2",
+    "typescript": "~5.9.3"
+  }
+}

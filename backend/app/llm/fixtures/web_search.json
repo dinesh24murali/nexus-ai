@@ -1,0 +1,11 @@
+{
+  "turns": [
+    {
+      "text": "",
+      "tool_calls": [{"name": "web_search", "args": {"query": "Go release notes"}}]
+    },
+    {
+      "text": "According to the search results, the latest Go release focuses on tooling and runtime improvements [1]."
+    }
+  ]
+}

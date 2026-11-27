@@ -1,0 +1,11 @@
+{
+  "note": "AI-drafted in Tavily's response shape (title, url, content); NOT a real recording. Replace with recorded responses when a paid run is approved (tasks/deferred.md).",
+  "by_query": {},
+  "default": [
+    {
+      "title": "A short mention of the Kellerwald trail",
+      "url": "https://hiking-notes.example/kellerwald",
+      "content": "The Kellerwald trail is a 38 km route with two mountain huts. Little else is published about it."
+    }
+  ]
+}

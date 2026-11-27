@@ -1,0 +1,9 @@
+{
+  "turns": [
+    {"text": "", "tool_calls": [
+      {"name": "web_search", "args": {"query": "first query"}},
+      {"name": "web_search", "args": {"query": "second query"}}
+    ]},
+    {"text": "Compared both searches."}
+  ]
+}

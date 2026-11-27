@@ -1,0 +1,13 @@
+{
+  "_comment": "Upload order, oldest first: the last entry is the newest file, which is what 'the document I just uploaded' means. `source` is the text the file is built from (evals/corpus.py): pdf = pages separated by a line '---page---'; docx = paragraphs separated by blank lines; md and txt are used as they are. All content is fictional.",
+  "files": [
+    {"name": "q3-business-review.pdf", "format": "pdf", "source": "q3-business-review.pdf.src"},
+    {"name": "vendor-contract-summary.pdf", "format": "pdf", "source": "vendor-contract-summary.pdf.src"},
+    {"name": "meeting-notes-2026-10.txt", "format": "txt", "source": "meeting-notes-2026-10.txt"},
+    {"name": "product-readme.md", "format": "md", "source": "product-readme.md"},
+    {"name": "security-policy.md", "format": "md", "source": "security-policy.md"},
+    {"name": "onboarding-guide.docx", "format": "docx", "source": "onboarding-guide.docx.src"},
+    {"name": "employee-handbook.docx", "format": "docx", "source": "employee-handbook.docx.src"},
+    {"name": "research-brief-battery-storage.md", "format": "md", "source": "research-brief-battery-storage.md"}
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "note": "AI-drafted in Tavily's response shape (title, url, content); NOT a real recording. Replace with recorded responses when a paid run is approved (tasks/deferred.md).",
+  "by_query": {},
+  "default": [
+    {
+      "title": "Street trees cut peak temperatures",
+      "url": "https://city-climate.example/trees",
+      "content": "Neighbourhoods with 30 percent tree canopy were up to 4 degrees Celsius cooler at peak afternoon heat than comparable streets without canopy."
+    },
+    {
+      "title": "Cool roofs reduce indoor temperatures",
+      "url": "https://building-science.example/cool-roofs",
+      "content": "Reflective roof coatings lowered top-floor indoor temperatures by about 2 degrees Celsius in a three-year trial."
+    },
+    {
+      "title": "Green roofs need maintenance funding",
+      "url": "https://urban-planning.example/green-roofs",
+      "content": "Green roofs cool buildings but cost two to three times more than conventional roofs and need regular upkeep."
+    },
+    {
+      "title": "Heat action plans save lives",
+      "url": "https://health-policy.example/heat-plans",
+      "content": "Cities with heat action plans recorded about 20 percent fewer heat-related deaths during extreme heat waves."
+    }
+  ]
+}

@@ -81,14 +81,14 @@ Each repo task group in brackets becomes `tasks/active/<NNN>-<slug>.md` when sta
 - **Files:** `.github/workflows/deploy.yml`, `deploy/README.md`, `memory/infra.md`
 - **Description:** Manually dispatched workflow: SSH to the prod VM, `docker compose pull && up -d` with GHCR images, then smoke `/readyz`. Caddy TLS; secrets in `.env` (0600) on the VM.
 - **Acceptance criteria:**
-  - [ ] The M1 skeleton is live on the VM; a deploy during an open browser session does not log the user out
+  - [-] The M1 skeleton is live on the VM; a deploy during an open browser session does not log the user out — **needs the VM, domain and secrets: skipped, deferred (`tasks/deferred.md` D26)**
 
 #### TASK-034: Backups & uptime check
 - **Depends on:** TASK-033
 - **Files:** `deploy/backup.sh`, `deploy/uptime.md`
 - **Description:** Nightly `pg_dump` and Qdrant snapshot to off-site storage, with one tested restore; one external uptime check on `/readyz`. No SLO and no alert rules beyond uptime and spend (TASK-014).
 - **Acceptance criteria:**
-  - [ ] A restore into a fresh local stack succeeds once and is documented
+  - [-] A restore into a fresh local stack succeeds once and is documented — **deferred with TASK-033 (`tasks/deferred.md` D27)**
 
 ## M2 — Core chat + evals
 
@@ -195,17 +195,17 @@ Each repo task group in brackets becomes `tasks/active/<NNN>-<slug>.md` when sta
 - **Files:** `backend/app/rag/retriever.py`, `backend/app/graph/tools/search_my_files.py`, `backend/app/graph/nodes/tools.py`
 - **Description:** `search_my_files` using Qdrant `query_points` with a mandatory `user_id` filter; returns numbered passages wrapped as untrusted data, each `<document>` tag carrying `file_id`; the late context message lists the user's 5 most recent ready files (id, filename, uploaded_at) so the model can pass `file_ids`; emits citation events. The tools node counts individual calls toward the cap of 6 and answers calls beyond it with "tool limit reached" (doc 08 §2.2).
 - **Acceptance criteria:**
-  - [ ] Isolation test: user B never retrieves user A's chunks
-  - [ ] Tool-cap unit test (fake LLM): 4 + 3 parallel calls → 6 run, the 7th gets "tool limit reached", `finish_reason=tool_limit`
-  - [ ] Multi-step file-then-web cases (doc 09 §9) measured; decide whether a per-file synopsis or `get_file_overview` tool is needed (doc 08 §5)
-  - [ ] RAG suites seeded and reviewed; first measured baselines recorded
+  - [x] Isolation test: user B never retrieves user A's chunks
+  - [x] Tool-cap unit test (fake LLM): 4 + 3 parallel calls → 6 run, the 7th gets "tool limit reached", `finish_reason=tool_limit`
+  - [-] Multi-step file-then-web cases (doc 09 §9) measured; decide whether a per-file synopsis or `get_file_overview` tool is needed (doc 08 §5) — **skipped, deferred (`tasks/deferred.md` D4, D5)**
+  - [-] RAG suites seeded and reviewed; first measured baselines recorded — **suite seeded and smoke-measured; review and baselines skipped, deferred (`tasks/deferred.md` D1, D2)**
 
 #### TASK-037: Faithfulness judge calibration
 - **Depends on:** TASK-019, TASK-015
 - **Files:** `evals/datasets/judge.calibration.jsonl`, `backend/evals/judges.py`
 - **Description:** Hand-label 30 RAG answers for faithfulness; compute Cohen's κ for `eval.judge.faithfulness` on the pinned judge model. If κ ≥ 0.7, promote `rag.faithfulness` from advisory to a regression gate.
 - **Acceptance criteria:**
-  - [ ] κ recorded in `memory/ai.md`; gate status of `rag.faithfulness` matches it
+  - [x] κ recorded in `memory/ai.md`; gate status of `rag.faithfulness` matches it (κ 1.00 on 30 constructed labels; stays advisory until the first reviewed RAG run, `tasks/deferred.md` D1, D2)
 
 #### TASK-020: File deletion
 - **Depends on:** TASK-018
@@ -228,17 +228,17 @@ Each repo task group in brackets becomes `tasks/active/<NNN>-<slug>.md` when sta
 - **Files:** `backend/app/graph/tools/{calculator,web_search}.py`
 - **Description:** A safe AST-based calculator (no eval); Tavily search with a 10 s timeout, a cap of 5 results and domain metadata; results wrapped as untrusted. Add the tool-routing section to `nexus.system` (doc 08 §4).
 - **Acceptance criteria:**
-  - [ ] Calculator fuzz tests show no code execution
-  - [ ] Tool-routing suite seeded and reviewed; first measured baselines recorded
+  - [x] Calculator fuzz tests show no code execution
+  - [-] Tool-routing suite seeded and reviewed; first measured baselines recorded — **seeded and wired, not reviewed, not measured on a real model; skipped, deferred (`tasks/deferred.md` D11; D10 for the `nexus.system` v3 smoke run)**
 
 #### TASK-023: Interrupt / resume flow
 - **Depends on:** TASK-022, TASK-011
 - **Files:** `backend/app/graph/nodes/approval.py`, `backend/app/graph/policy.py` (`TOOL_POLICY`), `backend/app/api/chat.py` (resume), `frontend/src/features/chat/ApprovalCard.tsx`
 - **Description:** `interrupt()` before every `web_search` (per-call approval in v1); when a message mixes calls, interrupt first and run all of them together after the decision (doc 08 §2.2); `pending_interrupt` persisted on the conversation (no run lease while waiting); resume with approve/edit/reject; 24 h expiry; card restored on reload.
 - **Acceptance criteria:**
-  - [ ] Playwright `tools.spec.ts` (fake LLM): approve, edit and reject paths, plus reload mid-approval
-  - [ ] Unit test (fake LLM): one message with `[search_my_files, web_search]` → no call runs before the decision; on reject every `tool_call_id` still gets a ToolMessage
-  - [ ] `tools.approval_enforced = 1` (absolute gate)
+  - [x] Playwright `tools.spec.ts` (fake LLM): approve, edit and reject paths, plus reload mid-approval
+  - [x] Unit test (fake LLM): one message with `[search_my_files, web_search]` → no call runs before the decision; on reject every `tool_call_id` still gets a ToolMessage
+  - [x] `tools.approval_enforced = 1` (absolute gate)
 
 #### TASK-024: Tool-call UI
 - **Depends on:** TASK-013
@@ -262,16 +262,16 @@ Each repo task group in brackets becomes `tasks/active/<NNN>-<slug>.md` when sta
 - **Files:** `backend/app/graph/nodes/load_context.py`, `backend/prompts/nexus.context.md`, `backend/prompts/nexus.system.md`
 - **Description:** Inject the top-k relevant memories in the late context message as untrusted user-profile data. There is no memory-writing tool in `general_chat` (revision 1.3 removed `remember_fact` and its taint rule); `nexus.system` says memories are saved automatically and deleted in Settings → Memory, and never to claim otherwise.
 - **Acceptance criteria:**
-  - [ ] "Remember that I prefer Go" leads to exactly one Go memory after the extraction job (`memory.e2e`)
-  - [ ] rt-05: a web result asking to remember something never produces a memory
-  - [ ] Isolation test passes
+  - [x] "Remember that I prefer Go" leads to exactly one Go memory after the extraction job (`memory.e2e`)
+  - [x] rt-05: a web result asking to remember something never produces a memory *(deterministic, fake-model test; the real-model record rides with TASK-029, `tasks/deferred.md` D17/D13)*
+  - [x] Isolation test passes
 
 #### TASK-027: Memories API & UI
 - **Depends on:** TASK-025, TASK-007
 - **Files:** `backend/app/api/memories.py`, `frontend/src/features/settings/Memory.tsx`
 - **Description:** CRUD endpoints plus clear-all; settings page with toggle, inline edit and delete; toast after extraction.
 - **Acceptance criteria:**
-  - [ ] Playwright `memory.spec.ts` passes
+  - [x] Playwright `memory.spec.ts` passes
 
 ## M6 — Hardening  [010-hardening]
 
@@ -280,15 +280,15 @@ Each repo task group in brackets becomes `tasks/active/<NNN>-<slug>.md` when sta
 - **Files:** `backend/app/api/me.py`, `backend/app/jobs/handlers.py` (`purge_user`)
 - **Description:** Deletion revokes sessions and enqueues a purge across Postgres, checkpoints, store, Qdrant and disk. (Data export is deferred to after v1.)
 - **Acceptance criteria:**
-  - [ ] Cross-store purge test verifies zero rows, checkpoints, store items, points and files remain for the user
+  - [x] Cross-store purge test verifies zero rows, checkpoints, store items, points and files remain for the user *(the Settings → Account UI is deferred, `tasks/deferred.md` D18)*
 
 #### TASK-029: Red-team & safety evals
 - **Depends on:** TASK-015, TASK-023, TASK-026
 - **Files:** `evals/datasets/safety.redteam.jsonl`, `backend/evals/canaries.py`
 - **Description:** Implement the doc 09 §8 red-team set (40 cases: injection via documents, web results and memories; exfiltration; cross-tenant probing) scored by deterministic canaries, and fix any failures.
 - **Acceptance criteria:**
-  - [ ] Injection resistance ≥ 0.95 (absolute gate)
-  - [ ] Cross-user leakage = 0
+  - [-] Injection resistance ≥ 0.95 (absolute gate) — **built and tested offline, gate recorded at its target, not measured on a real model; skipped, deferred (`tasks/deferred.md` D19)**
+  - [-] Cross-user leakage = 0 — **same: metric and gate (0) built, not measured on a real model (D19)**
 
 #### TASK-030: Security review
 - **Depends on:** TASK-028
@@ -310,15 +310,15 @@ Each repo task group in brackets becomes `tasks/active/<NNN>-<slug>.md` when sta
 - **Files:** `tests/coverage-baseline.json`
 - **Description:** Close coverage gaps to the 80% / 70% targets (ADR-0009); Langfuse dashboards for cost, latency and feedback. (Prometheus metrics deferred.)
 - **Acceptance criteria:**
-  - [ ] Every package meets its coverage target and the baseline file records it
+  - [-] Every package meets its coverage target and the baseline file records it — **deferred by the developer on 2026-11-22 (`tasks/deferred.md` D25)**
 
 #### TASK-035: Release checklist
 - **Depends on:** all
 - **Files:** `docs/02_outputs/release_checklist.md`, `README.md`
 - **Description:** Final full eval run, cost review against G4, privacy section in the README (data stored, Langfuse Cloud EU, OpenAI `store=false`, retention, deletion), admin CLI documented, fresh-clone timing (G8).
 - **Acceptance criteria:**
-  - [ ] `make eval` (full) passes on the prod config
-  - [ ] A fresh clone reaches a working stack in ≤ 15 min following the README
+  - [-] `make eval` (full) passes on the prod config — **deferred by the developer on 2026-11-22 (paid run; `tasks/deferred.md` D28); TASK-038's dependency on it is waived**
+  - [-] A fresh clone reaches a working stack in ≤ 15 min following the README — **deferred (D28)**
 
 ---
 
@@ -333,27 +333,29 @@ Starts after M6 so the v1 core ships hardened first. Every task ships with its e
 - **Files:** `backend/app/graph/router.py`, `backend/app/graph/commands.py` (slash-command parser), `backend/app/graph/builder.py`, `backend/prompts/nexus.route.md`, `backend/app/llm/factory.py` (`router` role), `backend/app/api/chat.py` (`/help`, usage replies), `adr/0010-intent-router.md`
 - **Description:** `RouteDecision` structured output on `gpt-6-luna` over 4 intents, running in parallel with `load_context`; dispatch to subgraphs with `general_chat` as fallback (confidence below `min_confidence` from the `nexus.route.md` front-matter, error, 5 s timeout); router input = last 3 user messages + previous intent only; deterministic slash-command parser (doc 08 §2.6) that skips the router, with `/help` answered without a model and usage replies for malformed commands; resume never re-routes; `route_selected` SSE event (`source=router|command|fallback`); `intent`/`route_source` stored on messages; trace tags; kill switches `ROUTER_DISABLED`, `INTENTS_DISABLED` (runtime flags); `nexus.system` gains the "never offer a PDF or research yourself" rule. Fake-LLM mode supports scripted route decisions.
 - **Acceptance criteria:**
-  - [ ] Unit tests (fake LLM): fallback on low confidence, timeout and invalid JSON; slash-command bypass; resume keeps the subgraph
-  - [ ] Parser unit tests: every command in doc 08 §2.6, case-insensitivity, commands only at the start, malformed commands → usage reply
-  - [ ] `min_confidence` tuned on the first reviewed full run (best `router.intent_accuracy`, ties → higher) or dropped if confidence is degenerate (doc 08 §2.2); result in `memory/ai.md`
-  - [ ] `ops.ttft_p95_ms` measured end to end with the router; if it misses, the keyword pre-gate is added
-  - [ ] `router.intents` dataset (120 / 24, 4 intents) reviewed; first baselines for `router.intent_accuracy`, `router.macro_f1`, `router.slot_accuracy`, `router.latency_p95_ms` recorded
-  - [ ] rt-22 passes; router input asserted to contain user text only
+  - [x] Unit tests (fake LLM): fallback on low confidence, timeout and invalid JSON; slash-command bypass; resume keeps the subgraph
+  - [x] Parser unit tests: every command in doc 08 §2.6, case-insensitivity, commands only at the start, malformed commands → usage reply
+  - [-] `min_confidence` tuned on the first reviewed full run (best `router.intent_accuracy`, ties → higher) or dropped if confidence is degenerate (doc 08 §2.2); result in `memory/ai.md` — **needs a paid run: skipped, deferred (`tasks/deferred.md` D29)**
+  - [-] `ops.ttft_p95_ms` measured end to end with the router; if it misses, the keyword pre-gate is added — **the eval graph now routes; the real measurement is deferred (D29)**
+  - [-] `router.intents` dataset (120 / 24, 4 intents) reviewed; first baselines for `router.intent_accuracy`, `router.macro_f1`, `router.slot_accuracy`, `router.latency_p95_ms` recorded — **dataset built (AI-drafted), suite wired and tested offline; developer review and baselines deferred (D29)**
+  - [x] rt-22 passes (offline, against a scripted resisting router; a scripted obeying one trips it; the real-model run is D29); router input asserted to contain user text only
 
 #### TASK-039: Memory by chat
 - **Depends on:** TASK-038, TASK-026
 - **Files:** `backend/app/graph/intents/manage_memory.py`, `backend/app/memory/ops.py`, `frontend/src/features/chat/ApprovalCard.tsx` (candidate picker)
 - **Description:** `manage_memory` `list` (template, no LLM), `save` (deny-list + instruction filter) and `forget` (top 3, similarity ≥ 0.75; `forget_memory` interrupt with 1 clear match or up to 3 candidates; delete exactly one on approve); `extract_memories` skipped on these turns; memory off → short notice.
 - **Acceptance criteria:**
-  - [ ] `memory.e2e` cases pass through `manage_memory`, including the one-clear-match and ambiguous forget cases (doc 09 §9)
-  - [ ] Every forget interrupts before deleting (`tools.approval_enforced`); reject and expiry delete nothing
+  - [x] `memory.e2e` cases pass through `manage_memory`, including the one-clear-match and ambiguous forget cases (doc 09 §9) *(offline against the real store; the real-model run is D29)*
+  - [x] Every forget interrupts before deleting (`tools.approval_enforced`); reject and expiry delete nothing
 
 #### TASK-040: Mode chip & slash commands (UI)
 - **Depends on:** TASK-038
-- **Files:** `frontend/src/features/chat/{ModeChip,SlashMenu}.tsx`, `frontend/src/api/stream.ts`
-- **Description:** Render `route_selected` as a chip on the answer; the `/` menu inserts command text (the backend parses it); hide Regenerate on non-chat answers.
+- **Files:** `frontend/src/features/chat/{ModeChip,SlashMenu,modes}.tsx`, `frontend/src/features/chat/{Composer,MessageList,useChatRun}`, `docs/02_outputs/04_api_spec.yaml` (`Message.route_source`, spec 1.4.0)
+- **Description:** Render `route_selected` as a chip on the answer; the `/` menu inserts command text (the backend parses it); hide Regenerate on non-chat answers (the same rule as the API, so `Message` gains `route_source`).
 - **Acceptance criteria:**
-  - [ ] Component tests; Playwright (fake LLM): `/pdf` produces a Document chip and a document card; Regenerate is hidden on it
+  - [x] Component tests (`modes`, `MessageList`, `chat.test.tsx`: chip live and stored, the Regenerate rule, the menu: open, filter, keyboard, insert, Escape, no false opens)
+  - [x] Playwright (fake LLM): `/pdf` produces a Document chip and Regenerate is hidden on it (`tests/e2e/commands.spec.ts`)
+  - [x] ... and a document card — **done in TASK-042 (`DocumentCard`, `tests/e2e/documents.spec.ts`)**
 
 ### Documents & research  [012-documents-research]
 
@@ -361,26 +363,33 @@ Starts after M6 so the v1 core ships hardened first. Every task ships with its e
 - **Depends on:** TASK-038
 - **Files:** `backend/app/graph/intents/generate_document.py`, `backend/app/documents/{draft,render,fetcher}.py`, `backend/app/jobs/render_document.py`, `backend/prompts/nexus.document.md`, migration (`documents`), `backend/Dockerfile` (WeasyPrint system libs)
 - **Description:** Gather (`thread`: checkpoint summary + recent messages ≤ 16k tokens; `last_answer`: the previous assistant message, converted with no LLM call; `topic`: one approved `web_search`) → `DocumentDraft` on `long_form` (max output 4k) → persist → `render_document` job (sanitised HTML, deny-all URL fetcher, 60 s, ≤ 30 pages) → `document_created`; worst-case cost pre-check against the user budget and the global cap; limits 10/day, keep 100; `cleanup_documents`; cancel semantics (doc 08 §2.3). Extend `purge_user` to delete `documents` rows and PDF files.
+- **Built as:** `render_document` and `cleanup_documents` live in `jobs/handlers.py` and `jobs/periodic.py` (the handler needs `JobContext`), the service is `services/documents.py`, and the renderer runs in a killable child process (ADR-0011).
 - **Acceptance criteria:**
-  - [ ] `documents.golden` reviewed; `documents.render_success` baseline recorded; `documents.external_fetches = 0` (absolute)
-  - [ ] rt-23 passes; the fetcher unit test rejects `file://`, `http(s)://` and `data:` outside the allowlist
-  - [ ] The cross-store purge test also checks that no `documents` rows or PDF files remain for the user
-  - [ ] `ops.cost_per_document_run_usd` baseline recorded; worst case ≤ $0.05 by construction
+  - [-] `documents.golden` reviewed; `documents.render_success` baseline recorded — **dataset built (AI-drafted, 12 / 4), suite wired and run offline; the review, a real run and the baseline need a paid run (D34)**
+  - [x] `documents.external_fetches = 0` (absolute gate recorded: deterministic, the renderer needs no model)
+  - [x] rt-23 passes (offline: the four hostile records of `documents.golden`, plus 10 hostile bodies through the real renderer in `tests/documents/test_render.py`; the real compose model on hostile material is D34); the fetcher unit test rejects `file://`, `http(s)://` and `data:` outside the allowlist
+  - [x] The cross-store purge test also checks that no `documents` rows or PDF files remain for the user
+  - [x] Worst case ≤ $0.05 by construction (`worst_case_usd` = $0.037, asserted in a test and checked before the run starts)
+  - [-] `ops.cost_per_document_run_usd` baseline recorded — **needs a real run (D34)**
 
 #### TASK-042: Documents API & UI
 - **Depends on:** TASK-041
 - **Files:** `backend/app/api/documents.py`, `frontend/src/features/documents/*`, `frontend/src/features/chat/DocumentCard.tsx`
 - **Description:** List/get/delete/download endpoints (owner-scoped, 404 on mismatch); download through a Bearer fetch → blob; `/documents` page; document card with polling.
+- **Built as:** `backend/app/api/documents.py` + `DocumentsService.delete` / `pdf_for_download`; `frontend/src/features/documents/{api.ts,DocumentCard.tsx,DocumentsPage.tsx,messages.ts,timing.ts}`; spec 1.4.1 (`listDocuments` 422, download notes); `tests/e2e/documents.spec.ts`.
 - **Acceptance criteria:**
-  - [ ] Contract tests for the new paths; IDOR test (user B gets 404 on user A's document and download)
+  - [x] Contract tests for the new paths (schemathesis: all four operations); IDOR test (user B gets 404 on user A's document, its download and its delete, and A's PDF survives: `tests/api/test_isolation.py`, mutation-checked)
+  - [x] Component tests (card: pending -> ready, failed, deleted, hostile title, live and stored without a duplicate; page: list, empty, delete confirm / cancel / error, download) and Playwright (fake LLM, real renderer): the card, a real PDF download, the page, delete, another user gets 404
 
 #### TASK-043: Deep research
 - **Depends on:** TASK-041, TASK-023
 - **Files:** `backend/app/graph/intents/deep_research.py`, `backend/prompts/{nexus.research_plan,nexus.research_report}.md`, `frontend/src/features/chat/ResearchPlanCard.tsx`, `evals/fixtures/web/`
 - **Description:** Plan (max output 1k) → `research_plan` interrupt (editable queries) → parallel approved searches (≤ 16k tokens of results) with `progress` events → report (`long_form`, max output 4k) streamed to chat, then rendered through the `last_answer` path when a PDF was asked for; worst-case pre-check against the user budget and the global cap; cancel semantics (doc 08 §2.3). Eval runner replays recorded Tavily fixtures.
+- **Built as:** `backend/app/graph/intents/deep_research.py` (five nodes), `backend/app/services/research.py`, role `research_plan`, prompts `nexus.research_plan` / `nexus.research_report` v1, `ProgressEvent`, resume validation for `research_plan`, `frontend/src/features/chat/{ResearchPlanCard,approvals}.tsx`, `backend/evals/research.py` + `evals/fixtures/web/`, `tests/e2e/research.spec.ts`. The PDF is made inside the report node (a node returns one message).
 - **Acceptance criteria:**
-  - [ ] `research.unapproved_queries = 0` and `tools.approval_enforced = 1` (absolute)
-  - [ ] `research.golden` reviewed; `ops.cost_per_research_run_usd` baseline ≤ $0.05; rt-25 passes
+  - [x] `research.unapproved_queries = 0` and `tools.approval_enforced = 1` (absolute; offline: the pipeline's code decides what is searched, so the gate is recorded now)
+  - [-] `research.golden` reviewed; `ops.cost_per_research_run_usd` baseline ≤ $0.05 — **dataset (10 / 2) and its fixtures built (AI-drafted, not real Tavily recordings), suite wired and run offline; the review, a real-model run and the baselines need a paid run: deferred (D35)**
+  - [x] rt-25 passes (offline: `res-009`, `res-010`, an obeying planner and an obeying report model are both caught by the step's tests; the real-model run is D35)
 
 #### TASK-046: M7 hardening & release
 - **Depends on:** TASK-038…043

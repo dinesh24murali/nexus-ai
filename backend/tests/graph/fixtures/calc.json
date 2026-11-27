@@ -1,0 +1,7 @@
+{
+  "turns": [
+    {"text": "", "tool_calls": [{"name": "calculator", "args": {"expression": "17.5% of 2348901"}}]},
+    {"text": "", "tool_calls": [{"name": "calculator", "args": {"expression": "0.175 * 2348901"}}]},
+    {"text": "It is 411057.675."}
+  ]
+}

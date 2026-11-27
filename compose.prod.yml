@@ -1,0 +1,50 @@
+# Production overlay: GHCR images instead of local builds, nothing but Caddy published.
+#   docker compose -f compose.yml -f compose.prod.yml pull && ... up -d
+# Required in .env on the VM: SITE_ADDRESS (domain), POSTGRES_PASSWORD, AUTH_SECRET, APP_SECRET.
+x-restart: &restart
+  restart: unless-stopped
+
+services:
+  postgres:
+    <<: *restart
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    ports: !reset []
+
+  qdrant:
+    <<: *restart
+    ports: !reset []
+
+  migrate:
+    image: ghcr.io/dinesh24murali/nexus-ai/backend:${NEXUS_TAG:-latest}
+    pull_policy: always
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-nexus}:${POSTGRES_PASSWORD:?}@postgres:5432/${POSTGRES_DB:-nexus}
+      APP_ENV: production
+
+  api:
+    <<: *restart
+    image: ghcr.io/dinesh24murali/nexus-ai/backend:${NEXUS_TAG:-latest}
+    pull_policy: always
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-nexus}:${POSTGRES_PASSWORD:?}@postgres:5432/${POSTGRES_DB:-nexus}
+      APP_ENV: production
+    ports: !reset []
+
+  worker:
+    <<: *restart
+    image: ghcr.io/dinesh24murali/nexus-ai/backend:${NEXUS_TAG:-latest}
+    pull_policy: always
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-nexus}:${POSTGRES_PASSWORD:?}@postgres:5432/${POSTGRES_DB:-nexus}
+      APP_ENV: production
+
+  caddy:
+    <<: *restart
+    image: ghcr.io/dinesh24murali/nexus-ai/web:${NEXUS_TAG:-latest}
+    pull_policy: always
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:?set SITE_ADDRESS (the public domain) in .env}
+    ports: !override
+      - "80:80"
+      - "443:443"

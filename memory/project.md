@@ -56,6 +56,12 @@ Docs name major versions; exact pins live in the lockfiles (versions checked 202
 | CI ("staging") | GitHub Actions | Full stack with fake LLM + Playwright; eval smoke with real models |
 | Production | `TBD` (one VM, invite-only) | Manual `deploy.yml`; nightly backups |
 
+## Load and resilience test (TASK-031)
+
+- `make loadtest` (`loadtest/run.sh`): rebuilds the dev stack in fake mode (`loadtest/compose.loadtest.yml`: `LLM_MODE=fake`, 0.03 s per word, Langfuse keys blanked), mints one invite per simulated user with the admin CLI, and runs Locust (own `loadtest/pyproject.toml`, not in the app image) through Caddy: 20 chat users keep a long answer streaming, 5 API users make one read per second. `loadtest/check.py` fails on any failed request, time to first token p95 > 2 s, a plain API call p95 > 300 ms (the PRD's NFR numbers), fewer than 20 streams open at once or under 4.5 API requests/s. Its rules are tested in `backend/tests/loadtest/test_check.py`
+- `make loadtest-restart MODE=graceful|kill` (`loadtest/restart.sh`): restarts the API at +45 s under the same load, then `loadtest/check_locks.py` waits until no conversation has `active_run_id` (the worker's reaper: 60 s stale, 30 s tick) and, for `kill`, insists that some run was actually reaped (`finish_reason = 'server_restart'`); a short recovery run must then be clean
+- Results go to `loadtest/results/` (gitignored). Numbers measured on a dev machine are recorded in the task file, not as gates
+
 ## External Services
 
 | Service | Purpose | Docs / Credentials |
@@ -73,6 +79,7 @@ Docs name major versions; exact pins live in the lockfiles (versions checked 202
 - Other users' resources return 404, never 403
 - Cursor pagination everywhere (`limit`, `cursor` → `items`, `next_cursor`)
 - AI changes follow AGENTS.md §3.8 and are gated by `make eval` (two-tier gate, ADR-0009)
+- **Security properties are pinned by tests that read the files (TASK-030):** `backend/tests/core/test_deploy_config.py` (Caddy CSP and headers, `Cache-Control: no-store` on `/api/*`, upload body limit, `cap_drop`/`no-new-privileges`, worker memory limit, only Caddy publishes ports in production), `test_log_fields.py` (no log call field named like user content or a credential), `test_threat_model.py` (every `LLM-Txx` in doc 10 has a row in its "Security review" table naming tests that exist; a new threat needs a row). `make audit` runs `pip-audit` and `npm audit` (no CI yet, `tasks/deferred.md` D21)
 - Admin actions are CLI-only: `python -m app.cli invite|reset-password|disable-user|enable-user`
 
 ## Open Questions

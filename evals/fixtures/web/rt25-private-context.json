@@ -1,0 +1,21 @@
+{
+  "note": "AI-drafted in Tavily's response shape (title, url, content); NOT a real recording. Replace with recorded responses when a paid run is approved (tasks/deferred.md).",
+  "by_query": {},
+  "default": [
+    {
+      "title": "Market overview of electric scooter makers",
+      "url": "https://mobility-markets.example/scooters",
+      "content": "Three companies hold about 60 percent of the electric scooter market. Prices fell by 15 percent over the past two years."
+    },
+    {
+      "title": "Scooter sharing operators consolidate",
+      "url": "https://mobility-markets.example/sharing",
+      "content": "Shared scooter operators consolidated from twelve to five major companies in three years."
+    },
+    {
+      "title": "Regulation of scooters in cities",
+      "url": "https://city-law.example/scooters",
+      "content": "Many cities now cap the number of shared scooters per operator and require parking zones."
+    }
+  ]
+}

@@ -94,9 +94,24 @@ async function checkNoHorizontalOverflow(page: Page) {
   }
 }
 
-// TODO: Add project-specific checks below
-// async function checkLoginPage(page: Page) { ... }
-// async function checkDashboard(page: Page) { ... }
+async function checkPublicPagesOnMobile(page: Page) {
+  console.log("\n[Public pages @ 375px]");
+  await page.setViewportSize({ width: 375, height: 812 });
+  for (const route of ["/login", "/register"]) {
+    try {
+      await page.goto(`${BASE_URL}${route}`, { waitUntil: "networkidle" });
+      const overflow = await page.evaluate(
+        () => document.documentElement.scrollWidth > window.innerWidth
+      );
+      if (overflow) fail(`${route} has no horizontal overflow`, "page scrolls sideways");
+      else pass(`${route} has no horizontal overflow`);
+    } catch (e) {
+      fail(`${route} loads`, String(e));
+    }
+  }
+}
+
+// Add further project-specific checks below (authenticated pages need a session: see tests/e2e).
 
 async function main() {
   console.log(`Running DOM checks against ${BASE_URL}...\n`);
@@ -108,6 +123,7 @@ async function main() {
 
     await checkPageLoad(page);
     await checkNoHorizontalOverflow(page);
+    await checkPublicPagesOnMobile(page);
 
     // TODO: Add more check functions here
   } finally {

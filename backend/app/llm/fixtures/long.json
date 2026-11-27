@@ -1,0 +1,7 @@
+{
+  "turns": [
+    {
+      "text": "This is a long scripted answer, used to exercise streaming, stopping and scrolling in tests. It is deliberately verbose so that a client has time to press stop while tokens are still arriving. The fake model emits it word by word with a configurable delay between words. Every sentence here is filler and carries no meaning: alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa quebec romeo sierra tango uniform victor whiskey xray yankee zulu. Then the alphabet repeats, because long answers need to be long: alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa quebec romeo sierra tango uniform victor whiskey xray yankee zulu. The end."
+    }
+  ]
+}

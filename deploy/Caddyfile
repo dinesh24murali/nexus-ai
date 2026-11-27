@@ -1,0 +1,47 @@
+# Dev/CI: SITE_ADDRESS is unset -> plain HTTP on :80 (compose maps it to localhost:8080).
+# Prod: SITE_ADDRESS=<domain> -> automatic HTTPS (Let's Encrypt). See compose.prod.yml.
+{
+	admin off
+}
+
+{$SITE_ADDRESS::80} {
+	header {
+		# default-src 'self' covers scripts, styles, fonts and XHR. The extra directives are not
+		# covered by default-src: <base> and <form> hijacking and plugins.
+		Content-Security-Policy "default-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'self'; object-src 'none'; frame-ancestors 'none'"
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		# The app uses none of these browser features.
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=(), interest-cohort=()"
+		Cross-Origin-Opener-Policy same-origin
+		Cross-Origin-Resource-Policy same-origin
+		-Server
+	}
+
+	# API: never compress or buffer (SSE streams must flush immediately).
+	handle /api/* {
+		# No `Cache-Control: no-store` here on purpose: with it the DOM check (verify/scripts/
+		# check-dom.ts) never sees the page go network-idle (tasks/deferred.md D23).
+		# Uploads are 20 MB at most (the API enforces it; this stops a bigger body at the door).
+		request_body {
+			max_size 22MB
+		}
+		reverse_proxy api:8000 {
+			flush_interval -1
+		}
+	}
+
+	# SPA: static assets, falling back to index.html for client-side routes.
+	handle {
+		encode zstd gzip
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+}
+
+# Container healthcheck target (not published).
+:8081 {
+	respond /healthz 200
+}

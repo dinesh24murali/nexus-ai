@@ -1,0 +1,8 @@
+{
+  "turns": [
+    {"text": "Noted, Go it is."}
+  ],
+  "memory_ops": [
+    {"op": "create", "id": null, "content": "User prefers Go for backend work.", "category": "preference"}
+  ]
+}
